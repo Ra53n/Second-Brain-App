@@ -29,3 +29,22 @@ Vault — источник истины (ARCHITECTURE.md, инвариант №
 - Security-scoped bookmarks: `url.bookmarkData(options: .withSecurityScope)` + `startAccessingSecurityScopedResource`; для не-sandbox приложения не критично, но делаем сразу правильно — sandbox может появиться при дистрибуции.
 - FSEvents: `FSEventStreamCreate` с latency ~0.3 c, либо DispatchSource на директории; MA не имеет аналога — пиши сам, но стиль сохраняй.
 - Пути с кириллицей и пробелами — сразу тестируй (у пользователя «Финансы и активы» и т.п.).
+
+## Результат
+
+Выполнено полностью. 26 тестов зелёные, дерево живого vault пользователя (113 папок, 1199 файлов, кириллица) строится корректно — проверено read-only смоуком.
+
+Что сделано (модуль `Sources/SecondBrain/Vault/`):
+- `VaultTree.swift` — `VaultNode` (Identifiable по пути, `find`, `allFolders`), рекурсивный билдер с сортировкой «папки сначала» (localizedStandardCompare) и фильтрацией dot-элементов; `VaultID` — SHA-256 пути, 16 hex-символов.
+- `VaultFileOperations.swift` — чистые статические CRUD + `VaultError: LocalizedError`. Создание — только с подбором уникального имени; rename/move отказывают, если цель занята; удаление ТОЛЬКО через `FileManager.trashItem`.
+- `VaultWatcher.swift` — FSEvents на корень vault (latency 0.3 c) + собственный `Debouncer` (0.3 c). Свои CRUD-события не фильтруются — лишний rebuild дёшев.
+- `VaultManager.swift` — `@MainActor ObservableObject`: NSOpenPanel, security-scoped bookmark в UserDefaults (fallback на обычный bookmark вне sandbox), недавние vault'ы (до 5), восстановление последнего vault на старте, CRUD с публикацией ошибок в `lastError`.
+- `VaultViews.swift` — приветствие с recents, дерево (OutlineGroup, контекстное меню: создать/переименовать/переместить/в Корзину), тулбар (новая заметка/папка, toggle dot-папок, смена vault), `FileInfoView` (имя/размер/дата).
+- ContentView переведён на 3 колонки: разделы → контент раздела (для «Заметок» — дерево) → detail.
+
+Отклонения и заметки для следующих задач:
+- Перемещение — через контекстное меню «Переместить в…» (список всех папок vault), drag&drop не делал (разрешено задачей). Кандидат в полировку (19).
+- Дерево — иммутабельный снимок, перестраивается целиком на любое изменение (свой CRUD или FSEvents). На vault пользователя это ~150 мс холодного построения; если станет медленно на больших vault — инкрементальность в задаче 19.
+- `manager.selection: URL?` — редактор (задача 03) забирает выбранный файл отсюда; папка тоже может быть выбрана (проверять `isDirectory` через `root.find`).
+- `vaultID` готов для задач 05/13 (папка индексов: `Config.appSupportDirectory/<vault-id>/`).
+- Тест удаления реально кладёт temp-файл в Корзину macOS — мусора минимум (пустые файлы), приемлемо.

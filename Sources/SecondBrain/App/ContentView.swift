@@ -1,8 +1,8 @@
-// ContentView.swift — корневой экран: NavigationSplitView с сайдбаром разделов.
+// ContentView.swift — корневой экран: NavigationSplitView (разделы → контент → detail).
 //
-// Каркас (задача 01): разделы — заглушки; каждый оживёт в своей задаче
-// (Заметки — 02/03, Встречи — 11, Чат — 12, Настройки — 17). Detail-область
-// показывает плейсхолдер, чтобы окно не выглядело сломанным.
+// Раздел «Заметки» жив (задача 02): средняя колонка — дерево vault, detail —
+// информация о выбранном файле (редактор придёт в задаче 03). Остальные разделы —
+// заглушки до своих задач (Встречи — 11, Чат — 12, Настройки — 17).
 
 import SwiftUI
 
@@ -36,9 +36,11 @@ enum AppSection: String, CaseIterable, Identifiable {
     }
 }
 
-/// Корневой view: сайдбар разделов + detail-плейсхолдер.
+/// Корневой view: сайдбар разделов, контент раздела, detail.
+/// VaultManager создаётся здесь — один на приложение, переживает смену разделов.
 struct ContentView: View {
     @State private var selection: AppSection? = .notes
+    @StateObject private var vaultManager = VaultManager()
 
     var body: some View {
         NavigationSplitView {
@@ -46,27 +48,56 @@ struct ContentView: View {
                 Label(section.rawValue, systemImage: section.systemImage)
                     .tag(section)
             }
-            .frame(minWidth: 220)
+            .frame(minWidth: 180)
+        } content: {
+            sectionContent
+                .frame(minWidth: 240)
         } detail: {
-            detailPlaceholder
-                .frame(minWidth: 480, minHeight: 600)
+            sectionDetail
+                .frame(minWidth: 420, minHeight: 600)
         }
     }
 
-    /// Плейсхолдер detail-области: говорит, в какой задаче раздел оживёт.
+    /// Средняя колонка: для «Заметок» — дерево vault, для остальных — заглушка.
     @ViewBuilder
-    private var detailPlaceholder: some View {
-        if let section = selection {
+    private var sectionContent: some View {
+        switch selection {
+        case .notes:
+            VaultPane(manager: vaultManager)
+        case .some(let section):
             ContentUnavailableView {
                 Label(section.rawValue, systemImage: section.systemImage)
             } description: {
                 Text("Раздел появится в задаче \(section.plannedTask).")
             }
-        } else {
+        case nil:
             ContentUnavailableView(
                 "Выберите раздел",
                 systemImage: "sidebar.left",
                 description: Text("Разделы — в сайдбаре слева.")
+            )
+        }
+    }
+
+    /// Detail: для «Заметок» — информация о выбранном файле (редактор — задача 03).
+    @ViewBuilder
+    private var sectionDetail: some View {
+        if selection == .notes {
+            if let url = vaultManager.selection,
+               let node = vaultManager.root?.find(url) {
+                FileInfoView(node: node)
+            } else {
+                ContentUnavailableView(
+                    "Ничего не выбрано",
+                    systemImage: "doc.text",
+                    description: Text("Выберите файл в дереве слева.")
+                )
+            }
+        } else {
+            ContentUnavailableView(
+                "Пусто",
+                systemImage: "square.dashed",
+                description: Text("Содержимое раздела появится в своей задаче.")
             )
         }
     }
