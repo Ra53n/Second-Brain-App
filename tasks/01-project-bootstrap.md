@@ -32,3 +32,22 @@
 - MA ставит иконку в рантайме через AppDelegate для `swift run` — перенеси этот трюк.
 - `windowResizability(.contentMinSize)` как в MA.
 - Info.plist генерируется heredoc-ом внутри run.sh — не заводи отдельный файл.
+
+## Результат
+
+Выполнено полностью, `swift build` / `swift test` (5 тестов) зелёные, `swift run` открывает окно с sidebar, `./run.sh` собирает `SecondBrain.app` с иконкой.
+
+Что сделано:
+- `Package.swift`: executableTarget `SecondBrain` + testTarget, macOS 14, без внешних зависимостей.
+- `App/App.swift` — порт App.swift из MA (activation policy, рантайм-иконка для `swift run`, `applicationShouldTerminateAfterLastWindowClosed`). `applicationWillTerminate` зовёт `BackgroundProcessRegistry.shared.terminateAll()`.
+- `LocalRuntime/BackgroundProcessRegistry.swift` — не совсем пустая заглушка: уже умеет `register(Process)` / `runningCount` / идемпотентный `terminateAll()` под NSLock (TODO на задачу 09 — лаунчер Ollama, idle-таймаут, process group).
+- `App/ContentView.swift` — NavigationSplitView, sidebar с 4 разделами (enum `AppSection`), detail — `ContentUnavailableView`-плейсхолдеры.
+- `App/Config.swift` — `appName`, `bundleID`, `appSupportDirectory`; тест фиксирует совпадение bundleID с run.sh.
+- Иконка: `icon/render_icon.swift` + `icon/make_icon.sh` (порт из MA), бирюзово-зелёный squircle со стилизованным мозгом (NSBezierPath, без emoji). `AppIcon.icns` закоммичен.
+- `run.sh` / `install.sh` — порт из MA (bundle id `com.local.second-brain`, `NSMicrophoneUsageDescription` для задачи 06).
+- Тесты: `ConfigTests` + `BackgroundProcessRegistryTests`.
+
+Отклонения от плана и что важно знать следующим задачам:
+- **run.sh копирует SPM-ресурсный бандл** `SecondBrain_SecondBrain.bundle` в `Contents/Resources/` — в MA этого нет, но без него `Bundle.module` внутри .app падает fatalError при обращении к ресурсам. Новые `.copy`-ресурсы в Package.swift будут подхватываться автоматически.
+- `.gitignore` уже существовал в репо; дополнен рабочими файлами иконки.
+- Структура папок модулей из ARCHITECTURE.md специально НЕ создана заранее (пустые папки не коммитятся) — есть только `App/`, `LocalRuntime/`, `Resources/`. Каждая следующая задача создаёт свою папку сама.

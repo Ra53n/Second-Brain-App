@@ -7,6 +7,10 @@ DerivedData/
 # Артефакты сборки .app (пересоздаются run.sh)
 SecondBrain.app/
 
+# Рабочие файлы генерации иконки (итог — Sources/SecondBrain/Resources/AppIcon.icns)
+icon/*.iconset/
+icon/icon_1024.png
+
 # macOS
 .DS_Store
 
