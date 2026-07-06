@@ -1,0 +1,16 @@
+# Swift / SPM
+.build/
+.swiftpm/
+*.xcodeproj
+DerivedData/
+
+# Артефакты сборки .app (пересоздаются run.sh)
+SecondBrain.app/
+
+# macOS
+.DS_Store
+
+# Секреты и локальные файлы — никогда не коммитим
+*.key
+*.local.*
+.env
