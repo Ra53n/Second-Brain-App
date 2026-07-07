@@ -109,6 +109,18 @@ enum VaultFileOperations {
         try FileManager.default.trashItem(at: url, resultingItemURL: nil)
     }
 
+    /// Сохраняет содержимое РЯДОМ с файлом под именем «Имя (conflict).ext»
+    /// (занято → «Имя (conflict) 2.ext»). Используется редактором, когда файл
+    /// изменили извне при несохранённых правках: оригинал не перезаписываем.
+    @discardableResult
+    static func writeConflictCopy(for url: URL, contents: String) throws -> URL {
+        let base = url.deletingPathExtension().lastPathComponent + " (conflict)"
+        let ext = url.pathExtension.isEmpty ? nil : url.pathExtension
+        let target = try uniqueURL(in: url.deletingLastPathComponent(), baseName: base, ext: ext)
+        try Data(contents.utf8).write(to: target, options: .atomic)
+        return target
+    }
+
     // MARK: - Внутреннее
 
     /// Подбирает свободный URL: `base.ext`, `base 2.ext`, `base 3.ext`, …

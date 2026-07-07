@@ -2,16 +2,22 @@
 import PackageDescription
 
 // SPM-only executable (без .xcodeproj) — как в эталонном Manager Assistant.
-// Внешних зависимостей пока нет: swift-markdown-ui добавит задача 03.
 let package = Package(
     name: "SecondBrain",
     platforms: [
         // macOS 14+: Core Audio process tap для записи системного звука (см. ARCHITECTURE.md).
         .macOS(.v14)
     ],
+    dependencies: [
+        // Рендер markdown в превью редактора (задача 03); та же версия, что в MA.
+        .package(url: "https://github.com/gonzalezreal/swift-markdown-ui", from: "2.0.0")
+    ],
     targets: [
         .executableTarget(
             name: "SecondBrain",
+            dependencies: [
+                .product(name: "MarkdownUI", package: "swift-markdown-ui")
+            ],
             path: "Sources/SecondBrain",
             resources: [
                 .copy("Resources/AppIcon.icns")

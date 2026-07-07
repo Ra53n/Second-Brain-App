@@ -7,7 +7,7 @@
 |---|---|---|---|
 | 01 | [Каркас проекта](01-project-bootstrap.md) | — | [x] |
 | 02 | [Vault: файлы и папки](02-vault-core.md) | 01 | [x] |
-| 03 | [Markdown-редактор](03-markdown-editor.md) | 02 | [ ] |
+| 03 | [Markdown-редактор](03-markdown-editor.md) | 02 | [x] |
 | 04 | [Wikilinks и backlinks](04-wikilinks-backlinks.md) | 03 | [ ] |
 | 05 | [Поиск по vault](05-vault-search.md) | 02 | [ ] |
 | 06 | [Запись звука](06-audio-recording.md) | 02 | [ ] |

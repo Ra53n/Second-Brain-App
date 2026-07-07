@@ -79,13 +79,21 @@ struct ContentView: View {
         }
     }
 
-    /// Detail: для «Заметок» — информация о выбранном файле (редактор — задача 03).
+    /// Расширения файлов, которые открываются в markdown-редакторе.
+    private static let editableExtensions: Set<String> = ["md", "markdown", "txt"]
+
+    /// Detail: для «Заметок» — редактор (markdown/текст) или информация о файле.
     @ViewBuilder
     private var sectionDetail: some View {
         if selection == .notes {
             if let url = vaultManager.selection,
                let node = vaultManager.root?.find(url) {
-                FileInfoView(node: node)
+                if !node.isDirectory,
+                   Self.editableExtensions.contains(url.pathExtension.lowercased()) {
+                    EditorPane(url: url, vaultManager: vaultManager)
+                } else {
+                    FileInfoView(node: node)
+                }
             } else {
                 ContentUnavailableView(
                     "Ничего не выбрано",

@@ -10,6 +10,7 @@
 //  - Debouncer: схлопывание частых вызовов в один.
 
 import XCTest
+import Combine
 @testable import SecondBrain
 
 /// База: temp-директория на каждый тест, сносится в tearDown.
@@ -279,6 +280,31 @@ final class VaultManagerTests: VaultTestCase {
         let node = try XCTUnwrap(manager.root?.find(XCTUnwrap(manager.selection)))
         manager.rename(node, to: "Без названия.md")
         XCTAssertEqual(manager.lastError, .alreadyExists("Без названия.md"))
+        manager.closeVault()
+    }
+
+    /// Регрессия задачи 03: правка ТОЛЬКО содержимого файла (дерево не меняется)
+    /// обязана двигать diskChangeTick — на него подписан редактор для
+    /// checkExternalChange. Реальный FSEvents, поэтому щедрый таймаут.
+    func testContentOnlyChangeBumpsDiskChangeTick() throws {
+        let suiteName = "VaultManagerTests-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let file = try makeFile("заметка.md", contents: "версия 1")
+
+        let manager = VaultManager(defaults: defaults, restoreLast: false)
+        manager.openVault(at: tempDir)
+
+        let ticked = expectation(description: "FSEvents доставил изменение")
+        let cancellable = manager.$diskChangeTick
+            .dropFirst()
+            .sink { _ in ticked.fulfill() }
+        defer { cancellable.cancel() }
+
+        // Внешняя правка содержимого — имена/структура не меняются.
+        try "версия 2".write(to: file, atomically: true, encoding: .utf8)
+
+        wait(for: [ticked], timeout: 5.0)
         manager.closeVault()
     }
 }

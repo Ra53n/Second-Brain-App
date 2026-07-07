@@ -40,6 +40,10 @@ final class VaultManager: ObservableObject {
     @Published var lastError: VaultError?
     /// Недавние vault'ы для быстрого открытия с экрана приветствия.
     @Published private(set) var recentVaults: [RecentVault] = []
+    /// Счётчик FSEvents-сигналов. Дерево (root) не меняется при правке лишь
+    /// СОДЕРЖИМОГО файла — редактор подписывается на тик, а не на root, чтобы
+    /// узнавать и о таких изменениях (checkExternalChange).
+    @Published private(set) var diskChangeTick = 0
 
     /// Стабильный id открытого vault — имя папки индексов в Application Support.
     var vaultID: String? {
@@ -104,6 +108,7 @@ final class VaultManager: ObservableObject {
         rebuild()
 
         watcher = VaultWatcher(url: url) { [weak self] in
+            self?.diskChangeTick += 1
             self?.rebuild()
         }
 
