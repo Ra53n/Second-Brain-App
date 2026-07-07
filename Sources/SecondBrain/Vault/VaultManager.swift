@@ -44,6 +44,12 @@ final class VaultManager: ObservableObject {
     /// СОДЕРЖИМОГО файла — редактор подписывается на тик, а не на root, чтобы
     /// узнавать и о таких изменениях (checkExternalChange).
     @Published private(set) var diskChangeTick = 0
+    /// Индекс связей vault (задача 04). nil, пока строится после открытия.
+    /// LinkIndex — класс, in-place-мутации @Published не видит, поэтому View
+    /// подписываются на linkVersion.
+    private(set) var linkIndex: LinkIndex?
+    /// Версия индекса связей: растёт после каждого построения/refresh.
+    @Published private(set) var linkVersion = 0
 
     /// Стабильный id открытого vault — имя папки индексов в Application Support.
     var vaultID: String? {
@@ -108,8 +114,24 @@ final class VaultManager: ObservableObject {
         rebuild()
 
         watcher = VaultWatcher(url: url) { [weak self] in
-            self?.diskChangeTick += 1
-            self?.rebuild()
+            guard let self else { return }
+            self.diskChangeTick += 1
+            self.rebuild()
+            if self.linkIndex?.refresh() == true {
+                self.linkVersion += 1
+            }
+        }
+
+        // Индекс связей строится в фоне: на vault в тысячи заметок это сотни
+        // миллисекунд, блокировать открытие незачем.
+        let index = LinkIndex(root: url)
+        Task.detached(priority: .userInitiated) { [weak self] in
+            index.buildFull()
+            await MainActor.run { [weak self] in
+                guard let self, self.vaultURL == url else { return } // vault уже сменили
+                self.linkIndex = index
+                self.linkVersion += 1
+            }
         }
 
         if let bookmark = Self.makeBookmark(for: url) {
@@ -137,6 +159,29 @@ final class VaultManager: ObservableObject {
         vaultURL = nil
         root = nil
         selection = nil
+        linkIndex = nil
+    }
+
+    /// Переход по [[ссылке]]: существующая заметка открывается, несуществующая —
+    /// создаётся (как в Obsidian). Цель с «папка/Имя» создаёт промежуточные папки.
+    func openWikilink(_ target: String) {
+        if let url = linkIndex?.resolve(target) {
+            selection = url
+            return
+        }
+        guard let vaultURL else { return }
+        perform {
+            let noteURL = vaultURL.appendingPathComponent(target).appendingPathExtension("md")
+            let folder = noteURL.deletingLastPathComponent()
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            return try VaultFileOperations.createNote(
+                in: folder,
+                named: noteURL.deletingPathExtension().lastPathComponent
+            )
+        }
+        if let linkIndex, linkIndex.refresh() {
+            linkVersion += 1
+        }
     }
 
     // MARK: - CRUD (делегирование VaultFileOperations + rebuild)

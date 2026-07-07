@@ -76,12 +76,37 @@ struct EditorPane: View {
 
     @ViewBuilder
     private var content: some View {
+        VStack(spacing: 0) {
+            editorContent
+            Divider()
+            // Панель backlinks (задача 04) — под любым режимом отображения.
+            BacklinksView(url: url, vaultManager: vaultManager)
+        }
+    }
+
+    /// Редактор с проводкой wikilinks: автокомплит из LinkIndex, Cmd+клик
+    /// открывает/создаёт заметку через VaultManager.
+    private var wiredEditor: MarkdownEditorView {
+        MarkdownEditorView(
+            text: $viewModel.text,
+            completionTargets: { [weak vaultManager] in
+                vaultManager?.linkIndex?.completionTargets ?? []
+            },
+            onWikilinkClick: { [weak vaultManager, weak viewModel] target in
+                viewModel?.saveNow() // ссылка могла быть только что набрана
+                vaultManager?.openWikilink(target)
+            }
+        )
+    }
+
+    @ViewBuilder
+    private var editorContent: some View {
         switch mode {
         case .editor:
-            MarkdownEditorView(text: $viewModel.text)
+            wiredEditor
         case .split:
             HSplitView {
-                MarkdownEditorView(text: $viewModel.text)
+                wiredEditor
                     .frame(minWidth: 200)
                 preview
                     .frame(minWidth: 200)
