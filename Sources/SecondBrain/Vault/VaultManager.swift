@@ -64,7 +64,11 @@ final class VaultManager: ObservableObject {
     init(defaults: UserDefaults = .standard, restoreLast: Bool = true) {
         self.defaults = defaults
         loadRecents()
-        if restoreLast, let data = defaults.data(forKey: Self.lastBookmarkKey) {
+        // Для разработки: `SECONDBRAIN_VAULT=/path swift run` открывает vault
+        // без диалога (env приоритетнее restore — как env-fallback у ключей).
+        if let envPath = ProcessInfo.processInfo.environment["SECONDBRAIN_VAULT"] {
+            openVault(at: URL(fileURLWithPath: envPath))
+        } else if restoreLast, let data = defaults.data(forKey: Self.lastBookmarkKey) {
             if let url = Self.resolveBookmark(data) {
                 openVault(at: url)
             }
