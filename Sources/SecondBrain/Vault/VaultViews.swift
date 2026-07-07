@@ -9,18 +9,31 @@
 
 import SwiftUI
 
-/// Контейнер колонки «Заметки»: приветствие или дерево открытого vault.
+/// Контейнер колонки «Заметки»: приветствие, дерево или результаты поиска.
 struct VaultPane: View {
     @ObservedObject var manager: VaultManager
+    @ObservedObject var searchViewModel: SearchViewModel
 
     var body: some View {
         Group {
             if manager.root != nil {
-                VaultTreeView(manager: manager)
+                // Пока в поле поиска что-то есть — результаты вместо дерева.
+                if searchViewModel.query.trimmingCharacters(in: .whitespaces).isEmpty {
+                    VaultTreeView(manager: manager, onRebuildSearchIndex: {
+                        searchViewModel.rebuildIndex()
+                    })
+                } else {
+                    SearchResultsView(searchViewModel: searchViewModel)
+                }
             } else {
                 welcome
             }
         }
+        .searchable(
+            text: $searchViewModel.query,
+            placement: .toolbar,
+            prompt: "Поиск по vault"
+        )
         // Ошибки операций (занятое имя, недоступная папка…) — alert поверх колонки.
         .alert(
             "Ошибка",
@@ -68,6 +81,8 @@ struct VaultPane: View {
 /// Дерево файлов vault с CRUD через контекстное меню и тулбар.
 struct VaultTreeView: View {
     @ObservedObject var manager: VaultManager
+    /// Команда «Пересоздать поисковый индекс» (живёт в SearchViewModel).
+    var onRebuildSearchIndex: () -> Void = {}
 
     /// Узел, который переименовываем (nil — диалог закрыт), и черновик имени.
     @State private var renameTarget: VaultNode?
@@ -201,6 +216,8 @@ struct VaultTreeView: View {
 
             Menu {
                 Toggle("Показывать скрытые папки", isOn: $manager.showsDotItems)
+                Divider()
+                Button("Пересоздать поисковый индекс") { onRebuildSearchIndex() }
                 Divider()
                 Button("Сменить vault…") { manager.openVaultPanel() }
                 Button("Закрыть vault") { manager.closeVault() }

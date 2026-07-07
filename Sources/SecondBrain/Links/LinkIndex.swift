@@ -141,27 +141,7 @@ final class LinkIndex {
     // MARK: - Внутреннее
 
     private func markdownFiles() -> [URL] {
-        var result: [URL] = []
-        // Свой обход вместо enumerator: dot-папки (.obsidian, .git, .trash)
-        // отсекаются целиком, внутрь не заходим.
-        func walk(_ dir: URL) {
-            let entries = (try? FileManager.default.contentsOfDirectory(
-                at: dir,
-                includingPropertiesForKeys: [.isDirectoryKey, .contentModificationDateKey]
-            )) ?? []
-            for url in entries {
-                let name = url.lastPathComponent
-                if name.hasPrefix(".") { continue }
-                let isDir = (try? url.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory ?? false
-                if isDir {
-                    walk(url)
-                } else if url.pathExtension.lowercased() == "md" {
-                    result.append(url.standardizedFileURL)
-                }
-            }
-        }
-        walk(root)
-        return result
+        VaultScanner.markdownFiles(in: root) // общий обход всех индексов (задача 05)
     }
 
     private func indexFile(_ url: URL) {

@@ -61,5 +61,20 @@ struct SecondBrainApp: App {
             ContentView()
         }
         .windowResizability(.contentMinSize)
+        .commands {
+            // Cmd+P — quick switcher (задача 05). Заменяем штатный File → Print:
+            // печать заметок не нужна, а шорткат в меню перехватывал бы наш.
+            CommandGroup(replacing: .printItem) {
+                Button("Быстрый переход…") {
+                    NotificationCenter.default.post(name: .showQuickSwitcher, object: nil)
+                }
+                .keyboardShortcut("p", modifiers: .command)
+            }
+        }
     }
+}
+
+extension Notification.Name {
+    /// Команда меню «Быстрый переход» (Cmd+P) → ContentView открывает switcher.
+    static let showQuickSwitcher = Notification.Name("com.local.second-brain.showQuickSwitcher")
 }

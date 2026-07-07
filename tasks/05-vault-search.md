@@ -26,3 +26,18 @@
 - FTS5 в системном libsqlite3 macOS доступен — проверь `sqlite3_compileoption_used("ENABLE_FTS5")` в тесте и зафиксируй.
 - Для fuzzy quick-switcher FTS не нужен — фильтруй список имён в памяти (их немного).
 - Все записи в индекс — вне main-потока; UI получает результаты через async.
+
+## Результат
+
+Выполнено полностью. 84 теста зелёные (13 новых). Живой vault (1199 заметок): первичная индексация за секунды, поиск отзывается мгновенно, слова из тел находятся (проверено «дивиденд» → «Планирование финансов» со сниппетом и жирным совпадением), quick switcher открывает заметку по fuzzy-запросу.
+
+Что сделано (модуль `Sources/SecondBrain/Search/`):
+- `SearchIndex.swift` — SQLite FTS5 на system libsqlite3 (паттерн RagSQLiteIndex из MA): files(id, path, mtime) + notes FTS5(path UNINDEXED, title, body), rowid связан с files.id (правильное удаление без скана FTS). Токенизатор `unicode61 remove_diacritics 2` — кириллица регистронезависимо. `refresh()` инкрементальный по mtime (эпсилон 1 мс — REAL теряет наносекунды APFS), первый вызов = полная индексация; `rebuild()` — с нуля. `ftsQuery()`: слова → `"слово"*` (префиксный AND), кавычки экранируются. Сниппеты FTS5 с маркерами \u{1}/\u{2} → жирный в UI. БД: `Application Support/SecondBrain/<vault-id>/search.sqlite`. FTS5-доступность зафиксирована тестом sqlite3_compileoption_used.
+- `SearchViewModel.swift` — debounce запроса 150 мс; ВСЕ обращения к SearchIndex с одной серийной indexQueue (класс не потокобезопасен; `nonisolated(unsafe)` с комментарием); подписки: $vaultURL → новый индекс, $diskChangeTick → инкрементальный refresh; защита от гонки «старый результат затирает новый».
+- `SearchViews.swift` — результаты со сниппетами (совпадения жирным через AttributedString), QuickSwitcherView: fuzzy по относительным путям заметок, стрелки/Enter/Esc с клавиатуры.
+- VaultPane: .searchable в тулбаре колонки; непустой запрос показывает результаты вместо дерева. «Пересоздать поисковый индекс» — в меню «Ещё».
+- `VaultScanner.swift` (Vault/) — общий обход .md-файлов, LinkIndex переведён на него (задача 13 — тоже используйте его).
+
+Важная находка — **Cmd+P перехватывался системным меню File → Print**: скрытая кнопка с keyboardShortcut не работает, если шорткат занят меню. Решение: `CommandGroup(replacing: .printItem)` в App.swift с командой «Быстрый переход…» → NotificationCenter → sheet. Урок: шорткаты, совпадающие с системными пунктами меню, регистрируйте через .commands.
+
+Примечание к живым проверкам: sheet не виден на скриншотах computer-use MCP (фильтрация не показывает дочерние окна процесса) — наличие sheet проверяется через `osascript … get sheets of window 1`, работоспособность — по результату действий в главном окне.

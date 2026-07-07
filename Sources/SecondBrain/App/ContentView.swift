@@ -40,7 +40,16 @@ enum AppSection: String, CaseIterable, Identifiable {
 /// VaultManager создаётся здесь — один на приложение, переживает смену разделов.
 struct ContentView: View {
     @State private var selection: AppSection? = .notes
-    @StateObject private var vaultManager = VaultManager()
+    @StateObject private var vaultManager: VaultManager
+    @StateObject private var searchViewModel: SearchViewModel
+    @State private var showsQuickSwitcher = false
+
+    init() {
+        // SearchViewModel подписан на VaultManager — создаём парой.
+        let manager = VaultManager()
+        _vaultManager = StateObject(wrappedValue: manager)
+        _searchViewModel = StateObject(wrappedValue: SearchViewModel(vaultManager: manager))
+    }
 
     var body: some View {
         NavigationSplitView {
@@ -56,6 +65,22 @@ struct ContentView: View {
             sectionDetail
                 .frame(minWidth: 420, minHeight: 600)
         }
+        // Quick switcher: команда меню (Cmd+P, App.swift) шлёт нотификацию.
+        .onReceive(NotificationCenter.default.publisher(for: .showQuickSwitcher)) { _ in
+            showsQuickSwitcher = true
+        }
+        .sheet(isPresented: $showsQuickSwitcher) {
+            QuickSwitcherView(vaultManager: vaultManager)
+        }
+        .alert(
+            "Поиск",
+            isPresented: Binding(
+                get: { searchViewModel.lastError != nil },
+                set: { if !$0 { searchViewModel.lastError = nil } }
+            ),
+            actions: { Button("OK", role: .cancel) {} },
+            message: { Text(searchViewModel.lastError ?? "") }
+        )
     }
 
     /// Средняя колонка: для «Заметок» — дерево vault, для остальных — заглушка.
@@ -63,7 +88,7 @@ struct ContentView: View {
     private var sectionContent: some View {
         switch selection {
         case .notes:
-            VaultPane(manager: vaultManager)
+            VaultPane(manager: vaultManager, searchViewModel: searchViewModel)
         case .some(let section):
             ContentUnavailableView {
                 Label(section.rawValue, systemImage: section.systemImage)
