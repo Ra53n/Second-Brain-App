@@ -1,0 +1,26 @@
+{
+  "metadata": {
+    "request_id": "req-123",
+    "duration": 3.5,
+    "channels": 1
+  },
+  "results": {
+    "channels": [
+      {
+        "alternatives": [
+          {
+            "transcript": "привет как дела всё хорошо",
+            "confidence": 0.98,
+            "words": [
+              { "word": "привет", "start": 0.08, "end": 0.5, "speaker": 0 },
+              { "word": "как", "start": 0.55, "end": 0.7, "speaker": 0 },
+              { "word": "дела", "start": 0.75, "end": 1.1, "speaker": 0 },
+              { "word": "всё", "start": 1.6, "end": 1.9, "speaker": 1 },
+              { "word": "хорошо", "start": 1.95, "end": 2.4, "speaker": 1 }
+            ]
+          }
+        ]
+      }
+    ]
+  }
+}

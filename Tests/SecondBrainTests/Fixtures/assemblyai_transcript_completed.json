@@ -1,0 +1,13 @@
+{
+  "id": "abc123",
+  "status": "completed",
+  "text": "привет как дела всё хорошо",
+  "language_code": "ru",
+  "words": [
+    { "text": "привет", "start": 80, "end": 500, "speaker": "A" },
+    { "text": "как", "start": 550, "end": 700, "speaker": "A" },
+    { "text": "дела", "start": 750, "end": 1100, "speaker": "A" },
+    { "text": "всё", "start": 1600, "end": 1900, "speaker": "B" },
+    { "text": "хорошо", "start": 1950, "end": 2400, "speaker": "B" }
+  ]
+}

@@ -26,7 +26,11 @@ let package = Package(
         .testTarget(
             name: "SecondBrainTests",
             dependencies: ["SecondBrain"],
-            path: "Tests/SecondBrainTests"
+            path: "Tests/SecondBrainTests",
+            resources: [
+                // JSON/SSE-фикстуры реальных ответов облачных API (задача 08).
+                .copy("Fixtures")
+            ]
         )
     ]
 )

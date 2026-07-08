@@ -42,6 +42,11 @@ struct ContentView: View {
     @State private var selection: AppSection? = .notes
     @StateObject private var vaultManager: VaultManager
     @StateObject private var searchViewModel: SearchViewModel
+    /// Реестр LLM-провайдеров + роутер функций (задачи 07/08). Ещё не используются
+    /// UI (чат — 12, встречи — 11, настройки — 17) — создаются здесь заранее,
+    /// чтобы объектный граф был готов, когда эти разделы появятся.
+    @StateObject private var providerRegistry: ProviderRegistry
+    @StateObject private var functionRouter: FunctionRouter
     @State private var showsQuickSwitcher = false
 
     init() {
@@ -49,6 +54,11 @@ struct ContentView: View {
         let manager = VaultManager()
         _vaultManager = StateObject(wrappedValue: manager)
         _searchViewModel = StateObject(wrappedValue: SearchViewModel(vaultManager: manager))
+
+        let registry = ProviderRegistry()
+        CloudProviders.registerAll(in: registry)
+        _providerRegistry = StateObject(wrappedValue: registry)
+        _functionRouter = StateObject(wrappedValue: FunctionRouter(registry: registry))
     }
 
     var body: some View {
