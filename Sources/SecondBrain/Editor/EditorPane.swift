@@ -1,19 +1,12 @@
-// EditorPane.swift — detail-панель заметки: редактор / сплит / превью + конфликты.
+// EditorPane.swift — detail-панель заметки: единый Live Preview редактор + конфликты.
 //
-// Режимы: «Редактор» (NSTextView), «Сплит» (редактор + превью бок о бок),
-// «Превью» (рендер MarkdownUI). Диалог конфликта появляется, когда файл
-// изменили извне при несохранённых правках (EditorViewModel.conflict).
+// Один режим (не Редактор/Сплит/Превью — тот выбор не прижился, см. заголовок
+// MarkdownEditorView.swift про Live Preview): заметка редактируется прямо в
+// виде, похожем на рендер — MarkdownEditorView сам сворачивает/разворачивает
+// разметку по курсору. Диалог конфликта появляется, когда файл изменили извне
+// при несохранённых правках (EditorViewModel.conflict).
 
 import SwiftUI
-import MarkdownUI
-
-/// Режим отображения заметки.
-enum EditorMode: String, CaseIterable, Identifiable {
-    case editor = "Редактор"
-    case split = "Сплит"
-    case preview = "Превью"
-    var id: String { rawValue }
-}
 
 /// Панель открытой заметки. Владеет EditorViewModel; url приходит из дерева
 /// (VaultManager.selection), внешние изменения — через rebuild дерева.
@@ -21,21 +14,9 @@ struct EditorPane: View {
     let url: URL
     @ObservedObject var vaultManager: VaultManager
     @StateObject private var viewModel = EditorViewModel()
-    @State private var mode: EditorMode = .editor
 
     var body: some View {
         content
-            .toolbar {
-                ToolbarItem {
-                    Picker("Режим", selection: $mode) {
-                        ForEach(EditorMode.allCases) { mode in
-                            Text(mode.rawValue).tag(mode)
-                        }
-                    }
-                    .pickerStyle(.segmented)
-                    .help("Режим отображения заметки")
-                }
-            }
             .navigationTitle(url.lastPathComponent)
             .onAppear { viewModel.open(url) }
             .onChange(of: url) { _, newURL in viewModel.open(newURL) }
@@ -74,12 +55,11 @@ struct EditorPane: View {
             )
     }
 
-    @ViewBuilder
     private var content: some View {
         VStack(spacing: 0) {
-            editorContent
+            wiredEditor
             Divider()
-            // Панель backlinks (задача 04) — под любым режимом отображения.
+            // Панель backlinks (задача 04) — под редактором.
             BacklinksView(url: url, vaultManager: vaultManager)
         }
     }
@@ -97,37 +77,5 @@ struct EditorPane: View {
                 vaultManager?.openWikilink(target)
             }
         )
-    }
-
-    @ViewBuilder
-    private var editorContent: some View {
-        switch mode {
-        case .editor:
-            wiredEditor
-        case .split:
-            HSplitView {
-                wiredEditor
-                    .frame(minWidth: 200)
-                preview
-                    .frame(minWidth: 200)
-            }
-        case .preview:
-            preview
-        }
-    }
-
-    /// Рендер markdown (swift-markdown-ui, как в MA), своя тема — Theme.secondBrain
-    /// (Theme+SecondBrain.swift). Текст сначала проходит PreviewFilter: MarkdownUI
-    /// не понимает Obsidian-синтаксис (^id, %% %%, ==выделение==) — без него он
-    /// вылез бы нечитаемым сырым текстом, как в исходной жалобе. Текст выделяется мышью.
-    private var preview: some View {
-        ScrollView {
-            Markdown(PreviewFilter.apply(viewModel.text))
-                .markdownTheme(.secondBrain)
-                .textSelection(.enabled)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding()
-        }
-        .background(Color(nsColor: .textBackgroundColor))
     }
 }

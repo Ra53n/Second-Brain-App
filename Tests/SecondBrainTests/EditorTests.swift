@@ -235,6 +235,60 @@ final class MarkdownHighlighterTests: XCTestCase {
         XCTAssertTrue(kinds.contains(.blockquote))
     }
 
+    // MARK: - markerRanges (Live Preview сворачивание — ConcealableMarker)
+
+    func testBoldMarkerRangesCoverAsterisksOnly() {
+        let text = "тут **жирный** текст"
+        let match = MarkdownHighlighter.matches(in: text).first { $0.kind == .bold }!
+        let ns = text as NSString
+        XCTAssertEqual(match.markerRanges.map { ns.substring(with: $0) }, ["**", "**"])
+    }
+
+    func testHighlightMarkerRangesCoverEqualsOnly() {
+        let text = "тут ==важно== текст"
+        let match = MarkdownHighlighter.matches(in: text).first { $0.kind == .highlight }!
+        let ns = text as NSString
+        XCTAssertEqual(match.markerRanges.map { ns.substring(with: $0) }, ["==", "=="])
+    }
+
+    func testInlineCodeMarkerRangesCoverBackticksOnly() {
+        let text = "тут `код` текст"
+        let match = MarkdownHighlighter.matches(in: text).first { $0.kind == .inlineCode }!
+        let ns = text as NSString
+        XCTAssertEqual(match.markerRanges.map { ns.substring(with: $0) }, ["`", "`"])
+    }
+
+    func testHeadingMarkerRangeCoversHashesOnly() {
+        let text = "### Заголовок"
+        let match = MarkdownHighlighter.matches(in: text).first { if case .heading = $0.kind { return true }; return false }!
+        let ns = text as NSString
+        XCTAssertEqual(match.markerRanges.map { ns.substring(with: $0) }, ["###"])
+    }
+
+    func testBlockquoteMarkerRangeCoversPrefixOnly() {
+        let text = "> цитата тут"
+        let match = MarkdownHighlighter.matches(in: text).first { $0.kind == .blockquote }!
+        let ns = text as NSString
+        XCTAssertEqual(match.markerRanges.map { ns.substring(with: $0) }, ["> "])
+    }
+
+    func testCodeBlockHasNoMarkerRangesFromRegex() {
+        let text = "```\nкод\n```"
+        let match = MarkdownHighlighter.matches(in: text).first { $0.kind == .codeBlock }!
+        // Границы код-блока считаются отдельно в ConcealableMarker, не отсюда.
+        XCTAssertTrue(match.markerRanges.isEmpty)
+    }
+
+    func testMarkerRangesAreValidUTF16ForCyrillic() {
+        let text = "## Финансы\nтут **жирное слово** и `код`, и > цитата"
+        let ns = text as NSString
+        for match in MarkdownHighlighter.matches(in: text) {
+            for range in match.markerRanges {
+                XCTAssertLessThanOrEqual(range.location + range.length, ns.length)
+            }
+        }
+    }
+
     func testCyrillicRangesAreValidUTF16() {
         // Кириллица: NSRange (UTF-16) не должен выходить за пределы строки.
         let text = "## Финансы и активы\n**жирное слово** и `код`"

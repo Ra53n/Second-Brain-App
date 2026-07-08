@@ -19,14 +19,17 @@
 // межабзацные отступы, отступы списков — раньше их не было вовсе, текст выглядел
 // сплошной стеной.
 //
-// Служебный Obsidian-синтаксис — блок-ссылки `^id` (BlockReferenceParser.swift)
-// и скрытые `%% %%`-комментарии (CommentBlockParser.swift) — ведёт себя как в
-// Obsidian Live Preview: свёрнут (мелкий приглушённый текст), пока курсор
-// редактирования не встанет на эту строку/внутрь блока, тогда раскрывается до
-// нормального размера. Настоящее «схлопывание до нулевой ширины» без изменения
+// Live Preview (единственный режим редактора — Сплит/Превью убраны): маркеры
+// разметки (#, **, ==, `, [[/]], >, -/1., ``` fences, служебные `^id`/`%% %%`
+// Obsidian) сворачиваются — мелкий приглушённый текст, — пока курсор
+// редактирования не встанет на эту строку/внутрь блока, тогда раскрываются до
+// нормального размера (для %%/``` — до моноширинного с фоном код-блока).
+// Содержимое (жирный текст, код и т.п.) стилизуется ВСЕГДА, независимо от
+// сворачивания. Настоящее «схлопывание до нулевой ширины» без изменения
 // textView.string потребовало бы кастомного TextKit-typesetter'а — вместо этого
-// используется тот же механизм атрибутов (шрифт/цвет), что и везде в этом файле,
-// реагирующий на textViewDidChangeSelection; см. Coordinator.restyleConcealedRanges.
+// используется тот же механизм атрибутов (шрифт/цвет), реагирующий на
+// textViewDidChangeSelection; единая модель — ConcealableMarker.swift, см.
+// Coordinator.applyConcealables/styleConcealables/restyleConcealedRanges.
 //
 // Почему NSTextView, а не SwiftUI TextEditor: на больших файлах TextEditor
 // тормозит (подсказка задачи 03). Подсветка «лёгкая» — атрибуты поверх текста,
@@ -52,26 +55,35 @@ enum MarkdownHighlighter {
     struct Match: Equatable {
         let kind: Kind
         let range: NSRange
+        /// Диапазоны маркеров разметки (без содержимого) — для Live Preview
+        /// сворачивания (ConcealableMarker.forHighlighterMatch): heading — сами
+        /// «#», bold/highlight/inlineCode — открывающий+закрывающий разделитель,
+        /// blockquote — префикс «> ». Пусто для codeBlock — границы код-блока
+        /// считаются отдельно (ищутся построчно от match.range, не regex-группой).
+        let markerRanges: [NSRange]
     }
 
     // Скомпилированы один раз: подсветка зовётся на каждый ввод символа.
+    // Группы вокруг разделителей (bold/highlight/inlineCode/blockquote) — не
+    // только для markerRanges, но и чтобы content-диапазон остался доступен
+    // при необходимости через match.range(at: 2).
     private static let headingRegex = try! NSRegularExpression(
         pattern: "^(#{1,6})[ \t].*$", options: [.anchorsMatchLines]
     )
     private static let boldRegex = try! NSRegularExpression(
-        pattern: "\\*\\*[^*\n]+\\*\\*"
+        pattern: "(\\*\\*)([^*\n]+)(\\*\\*)"
     )
     private static let highlightRegex = try! NSRegularExpression(
-        pattern: "==[^=\n]+=="
+        pattern: "(==)([^=\n]+)(==)"
     )
     private static let inlineCodeRegex = try! NSRegularExpression(
-        pattern: "`[^`\n]+`"
+        pattern: "(`)([^`\n]+)(`)"
     )
     private static let codeBlockRegex = try! NSRegularExpression(
         pattern: "^```[\\s\\S]*?^```", options: [.anchorsMatchLines]
     )
     private static let blockquoteRegex = try! NSRegularExpression(
-        pattern: "^>[ \t].*$", options: [.anchorsMatchLines]
+        pattern: "^(>[ \t])(.*)$", options: [.anchorsMatchLines]
     )
 
     /// Все совпадения разметки в тексте. Диапазоны — в UTF-16 (NSString),
@@ -83,22 +95,22 @@ enum MarkdownHighlighter {
 
         for match in headingRegex.matches(in: text, range: full) {
             let level = match.range(at: 1).length
-            result.append(Match(kind: .heading(level: level), range: match.range))
+            result.append(Match(kind: .heading(level: level), range: match.range, markerRanges: [match.range(at: 1)]))
         }
         for match in boldRegex.matches(in: text, range: full) {
-            result.append(Match(kind: .bold, range: match.range))
+            result.append(Match(kind: .bold, range: match.range, markerRanges: [match.range(at: 1), match.range(at: 3)]))
         }
         for match in highlightRegex.matches(in: text, range: full) {
-            result.append(Match(kind: .highlight, range: match.range))
+            result.append(Match(kind: .highlight, range: match.range, markerRanges: [match.range(at: 1), match.range(at: 3)]))
         }
         for match in inlineCodeRegex.matches(in: text, range: full) {
-            result.append(Match(kind: .inlineCode, range: match.range))
+            result.append(Match(kind: .inlineCode, range: match.range, markerRanges: [match.range(at: 1), match.range(at: 3)]))
         }
         for match in codeBlockRegex.matches(in: text, range: full) {
-            result.append(Match(kind: .codeBlock, range: match.range))
+            result.append(Match(kind: .codeBlock, range: match.range, markerRanges: []))
         }
         for match in blockquoteRegex.matches(in: text, range: full) {
-            result.append(Match(kind: .blockquote, range: match.range))
+            result.append(Match(kind: .blockquote, range: match.range, markerRanges: [match.range(at: 1)]))
         }
         return result
     }
@@ -279,11 +291,10 @@ struct MarkdownEditorView: NSViewRepresentable {
         var onWikilinkClick: (String) -> Void
         /// Ссылки текущего текста — для Cmd+клика и подсветки.
         private var currentLinks: [Wikilink] = []
-        /// Блок-ссылки и скрытые комментарии текущего текста — свежие после
-        /// каждого полного highlight(_:); restyleConcealedRanges переиспользует
-        /// их без повторного парсинга при каждом движении курсора.
-        private var currentBlockRefs: [BlockReference] = []
-        private var currentCommentBlocks: [CommentBlock] = []
+        /// Все сворачиваемые маркеры текущего текста — свежие после каждого
+        /// полного highlight(_:); restyleConcealedRanges переиспользует их без
+        /// повторного парсинга при каждом движении курсора.
+        private var currentConcealables: [ConcealableMarker] = []
 
         init(
             text: Binding<String>,
@@ -310,11 +321,11 @@ struct MarkdownEditorView: NSViewRepresentable {
             }
         }
 
-        /// Курсор/выделение сдвинулись — разворачиваем свёрнутые блок-ссылки/
-        /// комментарии под курсором, сворачиваем остальные. НЕ гоняет полный
-        /// regex-скан документа (тот остаётся только на textDidChange) — только
-        /// перекрашивает уже распарсенные диапазоны из currentBlockRefs/
-        /// currentCommentBlocks, поэтому на каждое нажатие стрелки не нагружает.
+        /// Курсор/выделение сдвинулись — разворачиваем свёрнутые маркеры под
+        /// курсором, сворачиваем остальные. НЕ гоняет полный regex-скан
+        /// документа (тот остаётся только на textDidChange) — только
+        /// перекрашивает уже распарсенные диапазоны из currentConcealables,
+        /// поэтому на каждое нажатие стрелки не нагружает.
         func textViewDidChangeSelection(_ notification: Notification) {
             guard let textView = notification.object as? MarkdownTextView else { return }
             restyleConcealedRanges(textView)
@@ -441,45 +452,52 @@ struct MarkdownEditorView: NSViewRepresentable {
             }
         }
 
-        /// Парсит блок-ссылки/комментарии заново (полный проход — только отсюда,
-        /// на textDidChange), кэширует в currentBlockRefs/currentCommentBlocks
-        /// и красит по текущей позиции курсора.
+        /// Парсит ВСЕ сворачиваемые маркеры заново (полный проход — только
+        /// отсюда, на textDidChange): блок-ссылки, %%-комментарии, скобки
+        /// wikilink, заголовки/жирный/выделение/код/цитата/списки. Кэширует
+        /// в currentConcealables и красит по текущей позиции курсора.
         private func applyConcealables(_ storage: NSTextStorage, textView: NSTextView) {
-            currentBlockRefs = BlockReferenceParser.parse(textView.string)
-            currentCommentBlocks = CommentBlockParser.parse(textView.string)
+            let text = textView.string
+            let ns = text as NSString
+
+            var markers = BlockReferenceParser.parse(text).map(ConcealableMarker.forBlockReference)
+            markers += CommentBlockParser.parse(text).map(ConcealableMarker.forCommentBlock)
+            markers += WikilinkParser.parse(text).map(ConcealableMarker.forWikilink)
+            markers += MarkdownHighlighter.matches(in: text).flatMap { ConcealableMarker.forHighlighterMatch($0, in: ns) }
+            markers += ConcealableMarker.forListMarkers(in: text)
+
+            currentConcealables = markers
             styleConcealables(storage, caret: textView.selectedRange())
         }
 
-        /// Красит блок-ссылки/комментарии по УЖЕ закэшированным диапазонам:
-        /// свёрнуты (мелкий приглушённый текст), если курсор не на них,
-        /// развёрнуты (нормальный размер, для комментариев — моноширинный
-        /// код-блок), если курсор внутри — как Obsidian Live Preview.
+        /// Красит УЖЕ закэшированные маркеры: свёрнуты (мелкий приглушённый
+        /// текст), если курсор не пересекает их revealTrigger, развёрнуты
+        /// (обычный размер либо моноширинный код-блок) иначе — как Obsidian
+        /// Live Preview. Один общий цикл вместо отдельной ветки на тип маркера.
         private func styleConcealables(_ storage: NSTextStorage, caret: NSRange) {
             let mono = NSFont.monospacedSystemFont(ofSize: MarkdownEditorView.baseFontSize - 1, weight: .regular)
+            let codeBackground = NSColor.textBackgroundColor.blended(withFraction: 0.5, of: .quaternaryLabelColor) ?? .quaternaryLabelColor
 
-            for ref in currentBlockRefs {
-                if Self.selection(caret, overlaps: ref.lineRange) {
-                    storage.addAttribute(.font, value: NSFont.systemFont(ofSize: MarkdownEditorView.baseFontSize), range: ref.range)
-                    storage.addAttribute(.foregroundColor, value: NSColor.secondaryLabelColor, range: ref.range)
-                } else {
-                    storage.addAttribute(.font, value: NSFont.systemFont(ofSize: 5), range: ref.range)
-                    storage.addAttribute(.foregroundColor, value: NSColor.tertiaryLabelColor, range: ref.range)
-                }
-            }
-
-            for block in currentCommentBlocks {
-                if Self.selection(caret, overlaps: block.range) {
-                    storage.addAttribute(.font, value: mono, range: block.range)
-                    storage.addAttribute(.foregroundColor, value: NSColor.secondaryLabelColor, range: block.range)
-                    storage.addAttribute(
-                        .backgroundColor,
-                        value: NSColor.textBackgroundColor.blended(withFraction: 0.5, of: .quaternaryLabelColor) ?? .quaternaryLabelColor,
-                        range: block.range
-                    )
-                } else {
-                    storage.addAttribute(.font, value: NSFont.systemFont(ofSize: 4), range: block.range)
-                    storage.addAttribute(.foregroundColor, value: NSColor.tertiaryLabelColor, range: block.range)
-                    storage.removeAttribute(.backgroundColor, range: block.range)
+            for marker in currentConcealables {
+                let revealed = Self.selection(caret, overlaps: marker.revealTrigger)
+                for hideRange in marker.hideRanges {
+                    if revealed {
+                        switch marker.revealStyle {
+                        case .plain:
+                            storage.addAttribute(.font, value: NSFont.systemFont(ofSize: MarkdownEditorView.baseFontSize), range: hideRange)
+                            storage.addAttribute(.foregroundColor, value: NSColor.secondaryLabelColor, range: hideRange)
+                        case .codeBlock:
+                            storage.addAttribute(.font, value: mono, range: hideRange)
+                            storage.addAttribute(.foregroundColor, value: NSColor.secondaryLabelColor, range: hideRange)
+                            storage.addAttribute(.backgroundColor, value: codeBackground, range: hideRange)
+                        }
+                    } else {
+                        storage.addAttribute(.font, value: NSFont.systemFont(ofSize: marker.concealedFontSize), range: hideRange)
+                        storage.addAttribute(.foregroundColor, value: NSColor.tertiaryLabelColor, range: hideRange)
+                        if marker.revealStyle == .codeBlock {
+                            storage.removeAttribute(.backgroundColor, range: hideRange)
+                        }
+                    }
                 }
             }
         }

@@ -20,7 +20,9 @@ final class WikilinkParserTests: XCTestCase {
         let links = WikilinkParser.parse(text)
 
         XCTAssertEqual(links.count, 4)
-        XCTAssertEqual(links[0], Wikilink(range: links[0].range, target: "Заметка", heading: nil, alias: nil))
+        XCTAssertEqual(links[0].target, "Заметка")
+        XCTAssertNil(links[0].heading)
+        XCTAssertNil(links[0].alias)
         XCTAssertEqual(links[1].alias, "алиас")
         XCTAssertEqual(links[2].heading, "Секция")
         XCTAssertEqual(links[3].heading, "Секция")
@@ -80,6 +82,80 @@ final class WikilinkParserTests: XCTestCase {
         XCTAssertEqual(links.count, 2)
         XCTAssertNil(links[0].alias)
         XCTAssertNil(links[1].heading)
+    }
+
+    // MARK: - ConcealShape (Live Preview сворачивание)
+
+    func testConcealShapePlainLinkHidesOnlyBrackets() {
+        let text = "текст [[Заметка]] тут"
+        let link = WikilinkParser.parse(text)[0]
+        let ns = text as NSString
+
+        XCTAssertEqual(ns.substring(with: link.concealShape.hidePrefix), "[[")
+        XCTAssertEqual(ns.substring(with: link.concealShape.hideSuffix), "]]")
+        XCTAssertEqual(ns.substring(with: link.concealShape.visible), "Заметка")
+    }
+
+    func testConcealShapeAliasedLinkHidesTargetAndPipe() {
+        let text = "[[Заметка|алиас]]"
+        let link = WikilinkParser.parse(text)[0]
+        let ns = text as NSString
+
+        XCTAssertEqual(ns.substring(with: link.concealShape.hidePrefix), "[[Заметка|")
+        XCTAssertEqual(ns.substring(with: link.concealShape.hideSuffix), "]]")
+        XCTAssertEqual(ns.substring(with: link.concealShape.visible), "алиас")
+    }
+
+    func testConcealShapeAliasedWithHeadingHidesPrefixIncludingHash() {
+        let text = "[[Заметка#Секция|алиас]]"
+        let link = WikilinkParser.parse(text)[0]
+        let ns = text as NSString
+
+        XCTAssertEqual(ns.substring(with: link.concealShape.hidePrefix), "[[Заметка#Секция|")
+        XCTAssertEqual(ns.substring(with: link.concealShape.visible), "алиас")
+    }
+
+    func testConcealShapeHeadingOnlyHidesHashOnward() {
+        let text = "[[Заметка#Секция]]"
+        let link = WikilinkParser.parse(text)[0]
+        let ns = text as NSString
+
+        XCTAssertEqual(ns.substring(with: link.concealShape.hidePrefix), "[[")
+        XCTAssertEqual(ns.substring(with: link.concealShape.hideSuffix), "#Секция]]")
+        XCTAssertEqual(ns.substring(with: link.concealShape.visible), "Заметка")
+    }
+
+    func testConcealShapeTrimsWhitespaceInsideBrackets() {
+        let text = "[[ Заметка | алиас ]]"
+        let link = WikilinkParser.parse(text)[0]
+        let ns = text as NSString
+
+        // Пробелы вокруг alias уходят в hidePrefix/hideSuffix — видимая часть
+        // без хвостовых пробелов.
+        XCTAssertEqual(ns.substring(with: link.concealShape.visible), "алиас")
+        XCTAssertEqual(ns.substring(with: link.concealShape.hidePrefix), "[[ Заметка | ")
+        XCTAssertEqual(ns.substring(with: link.concealShape.hideSuffix), " ]]")
+    }
+
+    func testConcealShapeRangesCoverWholeMatchExactly() {
+        // hidePrefix + visible + hideSuffix должны в сумме давать весь range —
+        // никаких пропущенных/перекрывающихся символов.
+        for text in ["[[Заметка]]", "[[Заметка|алиас]]", "[[Заметка#Секция]]", "[[Заметка#Секция|алиас]]"] {
+            let link = WikilinkParser.parse(text)[0]
+            let shape = link.concealShape
+            XCTAssertEqual(shape.hidePrefix.location, link.range.location)
+            XCTAssertEqual(NSMaxRange(shape.hideSuffix), NSMaxRange(link.range))
+            XCTAssertEqual(NSMaxRange(shape.hidePrefix), shape.visible.location)
+            XCTAssertEqual(NSMaxRange(shape.visible), shape.hideSuffix.location)
+        }
+    }
+
+    func testConcealShapeCyrillicAndEmojiRangesValidUTF16() {
+        let text = "заметка [[Планы 🚀|цель]] конец"
+        let link = WikilinkParser.parse(text)[0]
+        let ns = text as NSString
+        XCTAssertLessThanOrEqual(NSMaxRange(link.concealShape.hideSuffix), ns.length)
+        XCTAssertEqual(ns.substring(with: link.concealShape.visible), "цель")
     }
 }
 
