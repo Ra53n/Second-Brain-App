@@ -41,26 +41,17 @@ enum WikilinkParser {
     private static let linkRegex = try! NSRegularExpression(
         pattern: "\\[\\[([^\\[\\]\\n]+?)\\]\\]"
     )
-    // Код-регионы, внутри которых ссылки не считаются.
-    private static let codeBlockRegex = try! NSRegularExpression(
-        pattern: "^```[\\s\\S]*?^```", options: [.anchorsMatchLines]
-    )
-    private static let inlineCodeRegex = try! NSRegularExpression(
-        pattern: "`[^`\\n]+`"
-    )
 
     /// Все wikilinks текста (вне код-блоков), в порядке появления.
     static func parse(_ text: String) -> [Wikilink] {
         let ns = text as NSString
         let full = NSRange(location: 0, length: ns.length)
-
-        let excluded = codeBlockRegex.matches(in: text, range: full).map(\.range)
-            + inlineCodeRegex.matches(in: text, range: full).map(\.range)
+        let excluded = CodeRegionDetector.excludedRanges(in: text)
 
         var links: [Wikilink] = []
         for match in linkRegex.matches(in: text, range: full) {
             let range = match.range
-            if excluded.contains(where: { NSIntersectionRange($0, range).length > 0 }) {
+            if CodeRegionDetector.isExcluded(range, from: excluded) {
                 continue
             }
             let inner = ns.substring(with: match.range(at: 1))

@@ -210,6 +210,18 @@ final class MarkdownHighlighterTests: XCTestCase {
         XCTAssertTrue(kinds.contains(.inlineCode))
     }
 
+    func testDetectsHighlightSyntax() {
+        let text = "тут ==важно== выделено"
+        let match = MarkdownHighlighter.matches(in: text).first { $0.kind == .highlight }
+        XCTAssertNotNil(match)
+        XCTAssertEqual((text as NSString).substring(with: match!.range), "==важно==")
+    }
+
+    func testHighlightDoesNotSpanNewlines() {
+        let kinds = MarkdownHighlighter.matches(in: "==раз\nдва==").map(\.kind)
+        XCTAssertFalse(kinds.contains(.highlight))
+    }
+
     func testDetectsFencedCodeBlockAndBlockquote() {
         let text = """
         > цитата

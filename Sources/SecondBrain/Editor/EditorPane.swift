@@ -116,10 +116,14 @@ struct EditorPane: View {
         }
     }
 
-    /// Рендер markdown (swift-markdown-ui, как в MA). Текст выделяется мышью.
+    /// Рендер markdown (swift-markdown-ui, как в MA), своя тема — Theme.secondBrain
+    /// (Theme+SecondBrain.swift). Текст сначала проходит PreviewFilter: MarkdownUI
+    /// не понимает Obsidian-синтаксис (^id, %% %%, ==выделение==) — без него он
+    /// вылез бы нечитаемым сырым текстом, как в исходной жалобе. Текст выделяется мышью.
     private var preview: some View {
         ScrollView {
-            Markdown(viewModel.text)
+            Markdown(PreviewFilter.apply(viewModel.text))
+                .markdownTheme(.secondBrain)
                 .textSelection(.enabled)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding()

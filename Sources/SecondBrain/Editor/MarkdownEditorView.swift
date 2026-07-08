@@ -15,6 +15,19 @@
 // подсвечиваются, обычный клик (без Cmd) по «[ ]»/«[x]» переключает состояние
 // прямо в тексте — см. заголовок ChecklistParser.swift о том, почему не WYSIWYG.
 //
+// Типографика (NSParagraphStyle — см. ParagraphStyling.swift): межстрочные и
+// межабзацные отступы, отступы списков — раньше их не было вовсе, текст выглядел
+// сплошной стеной.
+//
+// Служебный Obsidian-синтаксис — блок-ссылки `^id` (BlockReferenceParser.swift)
+// и скрытые `%% %%`-комментарии (CommentBlockParser.swift) — ведёт себя как в
+// Obsidian Live Preview: свёрнут (мелкий приглушённый текст), пока курсор
+// редактирования не встанет на эту строку/внутрь блока, тогда раскрывается до
+// нормального размера. Настоящее «схлопывание до нулевой ширины» без изменения
+// textView.string потребовало бы кастомного TextKit-typesetter'а — вместо этого
+// используется тот же механизм атрибутов (шрифт/цвет), что и везде в этом файле,
+// реагирующий на textViewDidChangeSelection; см. Coordinator.restyleConcealedRanges.
+//
 // Почему NSTextView, а не SwiftUI TextEditor: на больших файлах TextEditor
 // тормозит (подсказка задачи 03). Подсветка «лёгкая» — атрибуты поверх текста,
 // без изменения содержимого; полноценный syntax highlight не цель.
@@ -30,6 +43,7 @@ enum MarkdownHighlighter {
     enum Kind: Equatable {
         case heading(level: Int) // # .. ######
         case bold                // **жирный**
+        case highlight           // ==выделение== (Obsidian)
         case inlineCode          // `код`
         case codeBlock           // ```…```
         case blockquote          // > цитата
@@ -46,6 +60,9 @@ enum MarkdownHighlighter {
     )
     private static let boldRegex = try! NSRegularExpression(
         pattern: "\\*\\*[^*\n]+\\*\\*"
+    )
+    private static let highlightRegex = try! NSRegularExpression(
+        pattern: "==[^=\n]+=="
     )
     private static let inlineCodeRegex = try! NSRegularExpression(
         pattern: "`[^`\n]+`"
@@ -70,6 +87,9 @@ enum MarkdownHighlighter {
         }
         for match in boldRegex.matches(in: text, range: full) {
             result.append(Match(kind: .bold, range: match.range))
+        }
+        for match in highlightRegex.matches(in: text, range: full) {
+            result.append(Match(kind: .highlight, range: match.range))
         }
         for match in inlineCodeRegex.matches(in: text, range: full) {
             result.append(Match(kind: .inlineCode, range: match.range))
@@ -259,6 +279,11 @@ struct MarkdownEditorView: NSViewRepresentable {
         var onWikilinkClick: (String) -> Void
         /// Ссылки текущего текста — для Cmd+клика и подсветки.
         private var currentLinks: [Wikilink] = []
+        /// Блок-ссылки и скрытые комментарии текущего текста — свежие после
+        /// каждого полного highlight(_:); restyleConcealedRanges переиспользует
+        /// их без повторного парсинга при каждом движении курсора.
+        private var currentBlockRefs: [BlockReference] = []
+        private var currentCommentBlocks: [CommentBlock] = []
 
         init(
             text: Binding<String>,
@@ -285,6 +310,16 @@ struct MarkdownEditorView: NSViewRepresentable {
             }
         }
 
+        /// Курсор/выделение сдвинулись — разворачиваем свёрнутые блок-ссылки/
+        /// комментарии под курсором, сворачиваем остальные. НЕ гоняет полный
+        /// regex-скан документа (тот остаётся только на textDidChange) — только
+        /// перекрашивает уже распарсенные диапазоны из currentBlockRefs/
+        /// currentCommentBlocks, поэтому на каждое нажатие стрелки не нагружает.
+        func textViewDidChangeSelection(_ notification: Notification) {
+            guard let textView = notification.object as? MarkdownTextView else { return }
+            restyleConcealedRanges(textView)
+        }
+
         /// Кандидаты для попапа: fuzzy-фильтр имён заметок + закрывающие «]]».
         func textView(
             _ textView: NSTextView,
@@ -309,27 +344,62 @@ struct MarkdownEditorView: NSViewRepresentable {
             return matches.map { alreadyClosed ? $0 : "\($0)]]" }
         }
 
-        /// Красит текст по диапазонам MarkdownHighlighter + wikilinks: сброс к
-        /// базовому стилю + атрибуты поверх. Содержимое не меняется.
+        /// Красит текст целиком: сброс к базовому стилю → абзацные отступы →
+        /// разметка → wikilinks → чеклисты → скрываемый Obsidian-синтаксис.
+        /// Единственное место, где документ перепарсивается регэкспами —
+        /// зовётся на textDidChange и при подмене файла, НЕ на каждое движение
+        /// курсора (для этого — restyleConcealedRanges, ниже).
         func highlight(_ textView: NSTextView) {
             guard let storage = textView.textStorage else { return }
-            let base = NSFont.systemFont(ofSize: MarkdownEditorView.baseFontSize)
-            let mono = NSFont.monospacedSystemFont(ofSize: MarkdownEditorView.baseFontSize - 1, weight: .regular)
-            let full = NSRange(location: 0, length: storage.length)
-
             storage.beginEditing()
+            applyBaseAttributes(storage)
+            applyParagraphStyles(storage, text: textView.string)
+            applyMarkdownHighlighterMatches(storage, text: textView.string)
+            applyWikilinks(storage, text: textView.string)
+            applyChecklists(storage, text: textView.string)
+            applyConcealables(storage, textView: textView)
+            storage.endEditing()
+        }
+
+        /// Реакция на движение курсора: перекрашивает УЖЕ распарсенные (см.
+        /// applyConcealables) блок-ссылки/комментарии по новой позиции курсора.
+        /// Без regex-скана документа — дёшево даже на каждое нажатие стрелки.
+        func restyleConcealedRanges(_ textView: NSTextView) {
+            guard let storage = textView.textStorage else { return }
+            storage.beginEditing()
+            styleConcealables(storage, caret: textView.selectedRange())
+            storage.endEditing()
+        }
+
+        private func applyBaseAttributes(_ storage: NSTextStorage) {
+            let full = NSRange(location: 0, length: storage.length)
             storage.setAttributes([
-                .font: base,
+                .font: NSFont.systemFont(ofSize: MarkdownEditorView.baseFontSize),
                 .foregroundColor: NSColor.textColor
             ], range: full)
+        }
 
-            for match in MarkdownHighlighter.matches(in: textView.string) {
+        /// Отступы абзацев (ParagraphStyling) — до символьных атрибутов ниже,
+        /// они трогают только узкие под-диапазоны и .paragraphStyle не касаются.
+        private func applyParagraphStyles(_ storage: NSTextStorage, text: String) {
+            for paragraph in ParagraphStyling.paragraphRanges(in: text) {
+                storage.addAttribute(.paragraphStyle, value: ParagraphStyling.style(for: paragraph.kind), range: paragraph.range)
+            }
+        }
+
+        private func applyMarkdownHighlighterMatches(_ storage: NSTextStorage, text: String) {
+            let mono = NSFont.monospacedSystemFont(ofSize: MarkdownEditorView.baseFontSize - 1, weight: .regular)
+            for match in MarkdownHighlighter.matches(in: text) {
                 switch match.kind {
                 case .heading(let level):
                     let size = MarkdownHighlighter.headingFontSize(level: level, base: MarkdownEditorView.baseFontSize)
                     storage.addAttribute(.font, value: NSFont.boldSystemFont(ofSize: size), range: match.range)
                 case .bold:
                     storage.addAttribute(.font, value: NSFont.boldSystemFont(ofSize: MarkdownEditorView.baseFontSize), range: match.range)
+                case .highlight:
+                    // «Маркер»-заливка (Obsidian ==выделение==) — жёлтый адаптируется
+                    // к light/dark сам, альфа держит текст читаемым поверх.
+                    storage.addAttribute(.backgroundColor, value: NSColor.systemYellow.withAlphaComponent(0.35), range: match.range)
                 case .inlineCode, .codeBlock:
                     storage.addAttribute(.font, value: mono, range: match.range)
                     storage.addAttribute(
@@ -341,19 +411,23 @@ struct MarkdownEditorView: NSViewRepresentable {
                     storage.addAttribute(.foregroundColor, value: NSColor.secondaryLabelColor, range: match.range)
                 }
             }
+        }
 
-            // Wikilinks — акцентный цвет + подчёркивание; Cmd+клик обрабатывает
-            // MarkdownTextView (атрибут .link не ставим: обычный клик по нему
-            // уводил бы в NSWorkspace вместо позиционирования курсора).
-            currentLinks = WikilinkParser.parse(textView.string)
+        /// Wikilinks — акцентный цвет + подчёркивание; Cmd+клик обрабатывает
+        /// MarkdownTextView (атрибут .link не ставим: обычный клик по нему
+        /// уводил бы в NSWorkspace вместо позиционирования курсора).
+        private func applyWikilinks(_ storage: NSTextStorage, text: String) {
+            currentLinks = WikilinkParser.parse(text)
             for link in currentLinks {
                 storage.addAttribute(.foregroundColor, value: NSColor.controlAccentColor, range: link.range)
                 storage.addAttribute(.underlineStyle, value: NSUnderlineStyle.single.rawValue, range: link.range)
             }
+        }
 
-            // Чеклисты: маркер жирный (акцент — незавершён, приглушённый — готов),
-            // текст выполненного пункта зачёркнут и приглушён — как в Obsidian.
-            for item in ChecklistParser.parse(textView.string) {
+        /// Чеклисты: маркер жирный (акцент — незавершён, приглушённый — готов),
+        /// текст выполненного пункта зачёркнут и приглушён — как в Obsidian.
+        private func applyChecklists(_ storage: NSTextStorage, text: String) {
+            for item in ChecklistParser.parse(text) {
                 storage.addAttribute(.font, value: NSFont.boldSystemFont(ofSize: MarkdownEditorView.baseFontSize), range: item.markerRange)
                 storage.addAttribute(
                     .foregroundColor,
@@ -365,7 +439,62 @@ struct MarkdownEditorView: NSViewRepresentable {
                     storage.addAttribute(.foregroundColor, value: NSColor.secondaryLabelColor, range: item.contentRange)
                 }
             }
-            storage.endEditing()
+        }
+
+        /// Парсит блок-ссылки/комментарии заново (полный проход — только отсюда,
+        /// на textDidChange), кэширует в currentBlockRefs/currentCommentBlocks
+        /// и красит по текущей позиции курсора.
+        private func applyConcealables(_ storage: NSTextStorage, textView: NSTextView) {
+            currentBlockRefs = BlockReferenceParser.parse(textView.string)
+            currentCommentBlocks = CommentBlockParser.parse(textView.string)
+            styleConcealables(storage, caret: textView.selectedRange())
+        }
+
+        /// Красит блок-ссылки/комментарии по УЖЕ закэшированным диапазонам:
+        /// свёрнуты (мелкий приглушённый текст), если курсор не на них,
+        /// развёрнуты (нормальный размер, для комментариев — моноширинный
+        /// код-блок), если курсор внутри — как Obsidian Live Preview.
+        private func styleConcealables(_ storage: NSTextStorage, caret: NSRange) {
+            let mono = NSFont.monospacedSystemFont(ofSize: MarkdownEditorView.baseFontSize - 1, weight: .regular)
+
+            for ref in currentBlockRefs {
+                if Self.selection(caret, overlaps: ref.lineRange) {
+                    storage.addAttribute(.font, value: NSFont.systemFont(ofSize: MarkdownEditorView.baseFontSize), range: ref.range)
+                    storage.addAttribute(.foregroundColor, value: NSColor.secondaryLabelColor, range: ref.range)
+                } else {
+                    storage.addAttribute(.font, value: NSFont.systemFont(ofSize: 5), range: ref.range)
+                    storage.addAttribute(.foregroundColor, value: NSColor.tertiaryLabelColor, range: ref.range)
+                }
+            }
+
+            for block in currentCommentBlocks {
+                if Self.selection(caret, overlaps: block.range) {
+                    storage.addAttribute(.font, value: mono, range: block.range)
+                    storage.addAttribute(.foregroundColor, value: NSColor.secondaryLabelColor, range: block.range)
+                    storage.addAttribute(
+                        .backgroundColor,
+                        value: NSColor.textBackgroundColor.blended(withFraction: 0.5, of: .quaternaryLabelColor) ?? .quaternaryLabelColor,
+                        range: block.range
+                    )
+                } else {
+                    storage.addAttribute(.font, value: NSFont.systemFont(ofSize: 4), range: block.range)
+                    storage.addAttribute(.foregroundColor, value: NSColor.tertiaryLabelColor, range: block.range)
+                    storage.removeAttribute(.backgroundColor, range: block.range)
+                }
+            }
+        }
+
+        /// true, если курсор/выделение пересекается с range. Коллапсированный
+        /// курсор считается «пересекающим», если стоит внутри ИЛИ ровно на правой
+        /// границе (частый случай — курсор сразу после «^id» в конце строки).
+        /// Активное выделение — обычное пересечение диапазонов: если выделение
+        /// частично захватывает скрытый текст, copy/cut не должен обескураживать
+        /// пользователя невидимым содержимым.
+        private static func selection(_ caret: NSRange, overlaps range: NSRange) -> Bool {
+            if caret.length == 0 {
+                return NSLocationInRange(caret.location, range) || caret.location == NSMaxRange(range)
+            }
+            return NSIntersectionRange(caret, range).length > 0
         }
     }
 }
