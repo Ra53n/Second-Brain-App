@@ -11,6 +11,10 @@
 // имена с пробелами резались бы по границе слова); Cmd+клик по [[ссылке]]
 // открывает/создаёт заметку (как в Obsidian; без Cmd клик просто ставит курсор).
 //
+// Чеклисты `- [ ]`/`- [x]` (ChecklistParser.swift): маркер и завершённый текст
+// подсвечиваются, обычный клик (без Cmd) по «[ ]»/«[x]» переключает состояние
+// прямо в тексте — см. заголовок ChecklistParser.swift о том, почему не WYSIWYG.
+//
 // Почему NSTextView, а не SwiftUI TextEditor: на больших файлах TextEditor
 // тормозит (подсказка задачи 03). Подсветка «лёгкая» — атрибуты поверх текста,
 // без изменения содержимого; полноценный syntax highlight не цель.
@@ -126,17 +130,35 @@ final class MarkdownTextView: NSTextView {
         return range.location == NSNotFound ? super.rangeForUserCompletion : range
     }
 
-    /// Cmd+клик по wikilink — переход; обычный клик — обычное поведение.
+    /// Cmd+клик по wikilink — переход; обычный клик по «[ ]»/«[x]» — переключение
+    /// чеклиста (без модификатора, как клик по чекбоксу в Obsidian); иначе —
+    /// обычное поведение (позиционирование курсора/выделение).
     override func mouseDown(with event: NSEvent) {
+        let point = convert(event.locationInWindow, from: nil)
+        let index = characterIndexForInsertion(at: point)
+
         if event.modifierFlags.contains(.command) {
-            let point = convert(event.locationInWindow, from: nil)
-            let index = characterIndexForInsertion(at: point)
             if let link = wikilinkAt?(index) {
                 onWikilinkClick?(link.target)
                 return
             }
+        } else if let item = ChecklistParser.parse(string).first(where: {
+            NSLocationInRange(index, $0.markerRange)
+        }) {
+            toggleChecklistMarker(item)
+            return
         }
         super.mouseDown(with: event)
+    }
+
+    /// Переключает «[ ]»↔«[x]» через shouldChangeText/didChangeText — так же,
+    /// как правки с клавиатуры: попадает в undo-стек и триггерит textDidChange
+    /// (перекраска + автосохранение), а не только правится textStorage напрямую.
+    func toggleChecklistMarker(_ item: ChecklistItem) {
+        let replacement = ChecklistParser.toggledMarker(currentlyChecked: item.isChecked)
+        guard shouldChangeText(in: item.markerRange, replacementString: replacement) else { return }
+        textStorage?.replaceCharacters(in: item.markerRange, with: replacement)
+        didChangeText()
     }
 
     /// Cmd+Return — переход по ссылке под курсором (как в Obsidian).
@@ -327,6 +349,21 @@ struct MarkdownEditorView: NSViewRepresentable {
             for link in currentLinks {
                 storage.addAttribute(.foregroundColor, value: NSColor.controlAccentColor, range: link.range)
                 storage.addAttribute(.underlineStyle, value: NSUnderlineStyle.single.rawValue, range: link.range)
+            }
+
+            // Чеклисты: маркер жирный (акцент — незавершён, приглушённый — готов),
+            // текст выполненного пункта зачёркнут и приглушён — как в Obsidian.
+            for item in ChecklistParser.parse(textView.string) {
+                storage.addAttribute(.font, value: NSFont.boldSystemFont(ofSize: MarkdownEditorView.baseFontSize), range: item.markerRange)
+                storage.addAttribute(
+                    .foregroundColor,
+                    value: item.isChecked ? NSColor.secondaryLabelColor : NSColor.controlAccentColor,
+                    range: item.markerRange
+                )
+                if item.isChecked {
+                    storage.addAttribute(.strikethroughStyle, value: NSUnderlineStyle.single.rawValue, range: item.contentRange)
+                    storage.addAttribute(.foregroundColor, value: NSColor.secondaryLabelColor, range: item.contentRange)
+                }
             }
             storage.endEditing()
         }

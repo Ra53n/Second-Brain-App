@@ -7,7 +7,8 @@
 //  - внешнее изменение: тихое перечитывание без правок, конфликт с правками,
 //    оба исхода конфликта;
 //  - writeConflictCopy: суффикс «(conflict)», уникальность, оригинал не тронут;
-//  - MarkdownHighlighter: диапазоны заголовков/жирного/кода.
+//  - MarkdownHighlighter: диапазоны заголовков/жирного/кода;
+//  - ChecklistParser: разбор `- [ ]`/`- [x]`, переключение маркера в NSTextStorage.
 
 import XCTest
 @testable import SecondBrain
@@ -229,5 +230,102 @@ final class MarkdownHighlighterTests: XCTestCase {
         for match in MarkdownHighlighter.matches(in: text) {
             XCTAssertLessThanOrEqual(match.range.location + match.range.length, ns.length)
         }
+    }
+}
+
+// MARK: - ChecklistParser
+
+final class ChecklistParserTests: XCTestCase {
+
+    func testParsesUncheckedAndChecked() {
+        let text = "- [ ] купить молоко\n- [x] позвонить маме"
+        let items = ChecklistParser.parse(text)
+
+        XCTAssertEqual(items.count, 2)
+        XCTAssertFalse(items[0].isChecked)
+        XCTAssertTrue(items[1].isChecked)
+    }
+
+    func testUppercaseXCountsAsChecked() {
+        XCTAssertTrue(ChecklistParser.parse("- [X] готово")[0].isChecked)
+    }
+
+    func testAllBulletMarkersSupported() {
+        let text = "- [ ] раз\n* [ ] два\n+ [ ] три"
+        XCTAssertEqual(ChecklistParser.parse(text).count, 3)
+    }
+
+    func testNestedIndentationMatched() {
+        let text = "  - [ ] родитель\n    - [x] вложенный пункт"
+        let items = ChecklistParser.parse(text)
+
+        XCTAssertEqual(items.count, 2)
+        XCTAssertTrue(items[1].isChecked)
+    }
+
+    func testPlainBulletsNotMatched() {
+        XCTAssertTrue(ChecklistParser.parse("- обычный пункт списка без чекбокса").isEmpty)
+    }
+
+    func testMarkerRangeCoversOnlyBrackets() {
+        let text = "- [ ] купить молоко"
+        let item = ChecklistParser.parse(text)[0]
+        XCTAssertEqual((text as NSString).substring(with: item.markerRange), "[ ]")
+    }
+
+    func testContentRangeCoversTextAfterMarker() {
+        let text = "- [x] позвонить маме"
+        let item = ChecklistParser.parse(text)[0]
+        XCTAssertEqual((text as NSString).substring(with: item.contentRange), " позвонить маме")
+    }
+
+    func testCyrillicRangesAreValidUTF16() {
+        let text = "- [ ] Финансы и активы: закрыть ипотеку 🏦"
+        let ns = text as NSString
+        let item = ChecklistParser.parse(text)[0]
+        XCTAssertLessThanOrEqual(item.contentRange.location + item.contentRange.length, ns.length)
+    }
+
+    func testToggledMarkerFlipsAndNormalizesCase() {
+        XCTAssertEqual(ChecklistParser.toggledMarker(currentlyChecked: false), "[x]")
+        XCTAssertEqual(ChecklistParser.toggledMarker(currentlyChecked: true), "[ ]")
+    }
+}
+
+// MARK: - MarkdownTextView (переключение чеклиста в реальном NSTextStorage)
+
+@MainActor
+final class MarkdownTextViewChecklistTests: XCTestCase {
+
+    func testToggleChecklistMarkerFlipsTextInStorage() {
+        let textView = MarkdownTextView()
+        textView.string = "- [ ] купить молоко"
+        let item = ChecklistParser.parse(textView.string)[0]
+
+        textView.toggleChecklistMarker(item)
+
+        XCTAssertEqual(textView.string, "- [x] купить молоко")
+    }
+
+    func testToggleTwiceReturnsToOriginal() {
+        let textView = MarkdownTextView()
+        textView.string = "- [x] задача"
+        let checked = ChecklistParser.parse(textView.string)[0]
+
+        textView.toggleChecklistMarker(checked)
+        let unchecked = ChecklistParser.parse(textView.string)[0]
+        textView.toggleChecklistMarker(unchecked)
+
+        XCTAssertEqual(textView.string, "- [x] задача")
+    }
+
+    func testToggleOnlyAffectsTargetedItem() {
+        let textView = MarkdownTextView()
+        textView.string = "- [ ] первый\n- [ ] второй"
+        let second = ChecklistParser.parse(textView.string)[1]
+
+        textView.toggleChecklistMarker(second)
+
+        XCTAssertEqual(textView.string, "- [ ] первый\n- [x] второй")
     }
 }
