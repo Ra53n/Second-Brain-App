@@ -31,3 +31,21 @@
 - Протоколы проектируй по потребителям: задача 11 (транскрипция+summary), 12 (чат+стриминг), 13 (эмбеддинги). Загляни в эти файлы задач, чтобы не пришлось ломать сигнатуры.
 - Стриминг у MA отсутствует (осознанно) — но нам он нужен для чата; SSE-парсинг будет в задаче 08, здесь только сигнатура.
 - Keychain без сторонних обёрток: SecItemAdd/CopyMatching/Update/Delete, ~50 строк.
+
+## Результат
+
+Выполнено полностью. 139 тестов зелёные (43 новых), `swift build` без предупреждений в новом коде.
+
+Что сделано (модуль `Sources/SecondBrain/LLM/`):
+- `ProviderProtocols.swift` — `ChatProvider` (send + stream через `AsyncThrowingStream`), `TranscriptionProvider`, `EmbeddingProvider` (+ `embedOne`); DTO `ChatMessageDTO`, `ChatSettings`, `ChatUsage`, `ChatResult`, `Transcript`/`TranscriptSegment`; `LLMError: LocalizedError`.
+- `ProviderRegistry.swift` — `ProviderID` (строковый, не enum-кейсы: новые провайдеры 08/09/10 регистрируются без правки этого файла), `ProviderCapability`, `ProviderDescriptor` (id/имя/способности/isLocal/defaultModel), `@MainActor ObservableObject` реестр с `register()`/резолвом реализаций по id/`isAvailable()`.
+- `KeyStore.swift` — Keychain (kSecClassGenericPassword, ~70 строк голого Security.framework, без обёрток) + env-fallback с приоритетом env (`SECONDBRAIN_<ID>_KEY`). Осознанное отличие от MA (там ключи в файлах).
+- `FunctionRouting.swift` — `AppFunction` (5 функций из задачи, `requiredCapability` на каждую), `FunctionAssignment`, `FunctionRoutingConfig` (Codable словарь по `rawValue`-ключу — устойчив к будущим полям), `FunctionRoutingStore` (паттерн ChatStore: JSON в Application Support, atomic write, `.corrupt.json`), `FunctionRouter` (`@MainActor ObservableObject`) — резолв явного назначения с валидацией (провайдер существует, поддерживает способность, доступен) и прозрачный дефолт (первый доступный провайдер способности с `defaultModel`).
+- `MockProviders.swift` — `MockChatProvider` (канонированные ответы по кругу, конфигурируемые ошибка/задержка, стриминг по словам, лог полученных сообщений), `MockTranscriptionProvider`, `HashingEmbedder` (порт из MA RagEmbedding.swift — детерминированный bag-of-words, без сети).
+
+Важные решения и заметки для 08/09/10/11/12/13/17:
+- **FunctionAssignment.model** используется по-разному по способностям: для чата уходит в `ChatSettings.model` (один провайдер обслуживает много моделей); для транскрипции/эмбеддингов протокол НЕ принимает model-параметр (сигнатуры зафиксированы 1-в-1 по тексту задачи) — модель обычно «зашита» в конкретный экземпляр провайдера при регистрации (09/10), а поле в assignment — для отображения в UI настроек. Задокументировано в файловых заголовках.
+- **Дефолт роутинга без хардкода провайдеров**: `defaultAssignment` берёт первый ЗАРЕГИСТРИРОВАННЫЙ доступный провайдер способности с непустым `defaultModel` — до задачи 08 реестр пуст, `resolve*` вернёт nil, и это ожидаемо (нечего резолвить).
+- **isAvailable для локальных провайдеров** — опциональный closure, регистрируемый вызывающим (задачи 09/10 передадут реальную проверку живого процесса); без него локальный провайдер считается доступным всегда — не блокирует разработку до появления LocalRuntimeManager.
+- KeyStore.service — `var`, не `let`: тесты подменяют на уникальный сервис (не трогают реальные ключи пользователя). Прогон на реальном Keychain не потребовал разрешающих диалогов (SecItemAdd/CopyMatching для generic password, созданных этим же процессом, проходят молча).
+- Протоколы НЕ помечены `AnyObject`/`Sendable` — конкретные HTTP-клиенты (задача 08) по CONVENTIONS.md должны быть immutable struct'ами; тесты сравнивают идентичность мок-провайдеров (классов) через `as AnyObject`.
