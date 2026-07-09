@@ -295,6 +295,12 @@ struct MarkdownEditorView: NSViewRepresentable {
         /// полного highlight(_:); restyleConcealedRanges переиспользует их без
         /// повторного парсинга при каждом движении курсора.
         private var currentConcealables: [ConcealableMarker] = []
+        /// Индексы маркеров, СЕЙЧАС отрисованных развёрнутыми. Ключевой кэш для
+        /// диффа: на смену курсора перекрашиваем ТОЛЬКО маркеры, чьё состояние
+        /// изменилось (ушёл/зашёл на строку). Иначе повторный addAttribute по
+        /// всем маркерам инвалидирует лэйаут всего документа на каждый клик, и
+        /// NSTextView сбрасывает прокрутку наверх (симптом «бросает наверх»).
+        private var revealedMarkerIndices: Set<Int> = []
 
         init(
             text: Binding<String>,
@@ -372,14 +378,29 @@ struct MarkdownEditorView: NSViewRepresentable {
             storage.endEditing()
         }
 
-        /// Реакция на движение курсора: перекрашивает УЖЕ распарсенные (см.
-        /// applyConcealables) блок-ссылки/комментарии по новой позиции курсора.
-        /// Без regex-скана документа — дёшево даже на каждое нажатие стрелки.
+        /// Реакция на движение курсора: перекрашивает ТОЛЬКО маркеры, чьё
+        /// состояние (свёрнут/развёрнут) изменилось относительно прошлой позиции
+        /// курсора. Никакого regex-скана и — главное — никаких лишних правок
+        /// storage: клик/стрелка в пределах уже-развёрнутой строки или в обычном
+        /// абзаце = полный no-op, поэтому прокрутка не дёргается.
         func restyleConcealedRanges(_ textView: NSTextView) {
             guard let storage = textView.textStorage else { return }
+            let newRevealed = Self.revealedIndices(
+                for: textView.selectedRange(),
+                in: currentConcealables,
+                storageLength: storage.length
+            )
+            guard newRevealed != revealedMarkerIndices else { return }
+
             storage.beginEditing()
-            styleConcealables(storage, caret: textView.selectedRange())
+            for i in newRevealed.subtracting(revealedMarkerIndices) {
+                styleMarker(currentConcealables[i], revealed: true, into: storage)
+            }
+            for i in revealedMarkerIndices.subtracting(newRevealed) where markerFits(i, in: storage.length) {
+                styleMarker(currentConcealables[i], revealed: false, into: storage)
+            }
             storage.endEditing()
+            revealedMarkerIndices = newRevealed
         }
 
         private func applyBaseAttributes(_ storage: NSTextStorage) {
@@ -467,49 +488,60 @@ struct MarkdownEditorView: NSViewRepresentable {
             markers += ConcealableMarker.forListMarkers(in: text)
 
             currentConcealables = markers
-            styleConcealables(storage, caret: textView.selectedRange())
+            // Полный проход: applyBaseAttributes только что сбросил всё к базовому
+            // стилю, поэтому каждый маркер надо прокрасить один раз и запомнить,
+            // какие сейчас развёрнуты (база для последующих диффов на смене курсора).
+            let revealed = Self.revealedIndices(for: textView.selectedRange(), in: markers, storageLength: storage.length)
+            for (i, marker) in markers.enumerated() where markerFits(i, in: storage.length) {
+                styleMarker(marker, revealed: revealed.contains(i), into: storage)
+            }
+            revealedMarkerIndices = revealed
         }
 
-        /// Красит УЖЕ закэшированные маркеры: свёрнуты (мелкий приглушённый
-        /// текст), если курсор не пересекает их revealTrigger, развёрнуты
-        /// (обычный размер либо моноширинный код-блок) иначе — как Obsidian
-        /// Live Preview. Один общий цикл вместо отдельной ветки на тип маркера.
-        ///
-        /// currentConcealables может быть УСТАРЕВШИМ относительно storage прямо
-        /// сейчас: смена textView.string (переключение файла в updateNSView,
-        /// toggleChecklistMarker) синхронно шлёт NSTextViewDidChangeSelection
-        /// ДО того, как highlight() успевает переразобрать новый текст и
-        /// обновить кэш — restyleConcealedRanges может успеть выполниться на
-        /// диапазонах от ПРЕДЫДУЩЕГО (более длинного) текста. Раньше это роняло
-        /// приложение (addAttribute на диапазоне за пределами storage кидает
-        /// NSException) — поэтому каждый диапазон проверяется на попадание в
-        /// текущие границы перед использованием, а не молча падает.
-        private func styleConcealables(_ storage: NSTextStorage, caret: NSRange) {
-            let mono = NSFont.monospacedSystemFont(ofSize: MarkdownEditorView.baseFontSize - 1, weight: .regular)
-            let codeBackground = NSColor.textBackgroundColor.blended(withFraction: 0.5, of: .quaternaryLabelColor) ?? .quaternaryLabelColor
-            let storageLength = storage.length
-
-            for marker in currentConcealables {
+        /// Какие маркеры должны быть развёрнуты при данной позиции курсора.
+        /// Чистая логика (без storage) — сердце диффа, отдельно тестируется по
+        /// углам: движение в пределах строки не меняет множество, переход на
+        /// другую строку меняет; устаревшие (вне текущих границ) маркеры
+        /// исключаются, чтобы не трогать storage за его пределами.
+        static func revealedIndices(for caret: NSRange, in markers: [ConcealableMarker], storageLength: Int) -> Set<Int> {
+            var result = Set<Int>()
+            for (i, marker) in markers.enumerated() {
                 guard NSMaxRange(marker.revealTrigger) <= storageLength,
                       marker.hideRanges.allSatisfy({ NSMaxRange($0) <= storageLength }) else { continue }
-                let revealed = Self.selection(caret, overlaps: marker.revealTrigger)
-                for hideRange in marker.hideRanges {
-                    if revealed {
-                        switch marker.revealStyle {
-                        case .plain:
-                            storage.addAttribute(.font, value: NSFont.systemFont(ofSize: MarkdownEditorView.baseFontSize), range: hideRange)
-                            storage.addAttribute(.foregroundColor, value: NSColor.secondaryLabelColor, range: hideRange)
-                        case .codeBlock:
-                            storage.addAttribute(.font, value: mono, range: hideRange)
-                            storage.addAttribute(.foregroundColor, value: NSColor.secondaryLabelColor, range: hideRange)
-                            storage.addAttribute(.backgroundColor, value: codeBackground, range: hideRange)
-                        }
-                    } else {
-                        storage.addAttribute(.font, value: NSFont.systemFont(ofSize: marker.concealedFontSize), range: hideRange)
-                        storage.addAttribute(.foregroundColor, value: NSColor.tertiaryLabelColor, range: hideRange)
-                        if marker.revealStyle == .codeBlock {
-                            storage.removeAttribute(.backgroundColor, range: hideRange)
-                        }
+                if selection(caret, overlaps: marker.revealTrigger) { result.insert(i) }
+            }
+            return result
+        }
+
+        /// Диапазоны маркера укладываются в текущую длину storage. Защищает от
+        /// краша, когда кэш ещё держит маркеры от предыдущего (более длинного)
+        /// текста между подменой textView.string и re-highlight (см. регрессию).
+        private func markerFits(_ index: Int, in storageLength: Int) -> Bool {
+            guard index < currentConcealables.count else { return false }
+            let marker = currentConcealables[index]
+            return marker.hideRanges.allSatisfy { NSMaxRange($0) <= storageLength }
+        }
+
+        /// Стиль ОДНОГО маркера — развёрнутый (обычный/моно+фон) или свёрнутый
+        /// (мелкий тусклый). Вызывающий гарантирует, что диапазоны в пределах
+        /// storage (markerFits / revealedIndices это уже проверили).
+        private func styleMarker(_ marker: ConcealableMarker, revealed: Bool, into storage: NSTextStorage) {
+            for hideRange in marker.hideRanges {
+                if revealed {
+                    switch marker.revealStyle {
+                    case .plain:
+                        storage.addAttribute(.font, value: NSFont.systemFont(ofSize: MarkdownEditorView.baseFontSize), range: hideRange)
+                        storage.addAttribute(.foregroundColor, value: NSColor.secondaryLabelColor, range: hideRange)
+                    case .codeBlock:
+                        storage.addAttribute(.font, value: NSFont.monospacedSystemFont(ofSize: MarkdownEditorView.baseFontSize - 1, weight: .regular), range: hideRange)
+                        storage.addAttribute(.foregroundColor, value: NSColor.secondaryLabelColor, range: hideRange)
+                        storage.addAttribute(.backgroundColor, value: NSColor.textBackgroundColor.blended(withFraction: 0.5, of: .quaternaryLabelColor) ?? .quaternaryLabelColor, range: hideRange)
+                    }
+                } else {
+                    storage.addAttribute(.font, value: NSFont.systemFont(ofSize: marker.concealedFontSize), range: hideRange)
+                    storage.addAttribute(.foregroundColor, value: NSColor.tertiaryLabelColor, range: hideRange)
+                    if marker.revealStyle == .codeBlock {
+                        storage.removeAttribute(.backgroundColor, range: hideRange)
                     }
                 }
             }
