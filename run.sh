@@ -29,6 +29,22 @@ cp "${BIN_PATH}" "${APP_DIR}/Contents/MacOS/${BIN_NAME}"
 BUNDLE_PATH="$(swift build -c release --show-bin-path)/${APP_NAME}_${APP_NAME}.bundle"
 if [ -d "${BUNDLE_PATH}" ]; then
     cp -R "${BUNDLE_PATH}" "${APP_DIR}/Contents/Resources/"
+    # SPM не кладёт в ресурсный бандл Info.plist — без него CFBundle
+    # (Bundle.module.url) ВИСНЕТ при первом обращении, и приложение не
+    # открывает окно (проявляется на упакованном .app). Пишем минимальный.
+    RES_BUNDLE="${APP_DIR}/Contents/Resources/${APP_NAME}_${APP_NAME}.bundle"
+    if [ ! -f "${RES_BUNDLE}/Info.plist" ]; then
+        cat > "${RES_BUNDLE}/Info.plist" <<BPLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+    <key>CFBundleIdentifier</key><string>com.local.second-brain.resources</string>
+    <key>CFBundleName</key><string>${APP_NAME}_${APP_NAME}</string>
+    <key>CFBundlePackageType</key><string>BNDL</string>
+    <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
+</dict></plist>
+BPLIST
+    fi
 fi
 
 # Иконка приложения (если собрана).

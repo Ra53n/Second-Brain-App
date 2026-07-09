@@ -17,23 +17,32 @@ import AppKit
 final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
-        if let icon = Self.loadAppIcon() {
-            NSApp.applicationIconImage = icon
-        }
         NSApp.activate(ignoringOtherApps: true)
+        // Иконку Dock грузим асинхронно: доступ к ресурсному бандлу (.app)
+        // может блокироваться проверкой Gatekeeper при первом запуске свеже-
+        // собранного .app — нельзя, чтобы косметическая иконка подвешивала
+        // открытие окна (иначе приложение стартует без окна). См. loadAppIcon.
+        DispatchQueue.global(qos: .utility).async {
+            guard let icon = Self.loadAppIcon() else { return }
+            DispatchQueue.main.async { NSApp.applicationIconImage = icon }
+        }
     }
 
     /// Иконка для Dock. Нужна в первую очередь для запуска через `swift run`
     /// (у «голого» бинарника нет .app-обёртки, поэтому иконку ставим в рантайме).
     /// Для собранного .app иконку и так даёт CFBundleIconFile.
     private static func loadAppIcon() -> NSImage? {
-        // Ресурс пакета (`swift run`).
-        if let url = Bundle.module.url(forResource: "AppIcon", withExtension: "icns"),
+        // Ресурс внутри .app (Bundle.main уже создан — быстрый lookup). Пробуем
+        // ПЕРВЫМ: у собранного .app иконка лежит в Contents/Resources, и это
+        // избавляет от обращения к Bundle.module ниже, чьё _CFBundleCreate
+        // (создание ресурсного бандла) при первом запуске .app подвисало на
+        // _CFIterateDirectory и мешало SwiftUI открыть окно.
+        if let url = Bundle.main.url(forResource: "AppIcon", withExtension: "icns"),
            let image = NSImage(contentsOf: url) {
             return image
         }
-        // Ресурс внутри .app.
-        if let url = Bundle.main.url(forResource: "AppIcon", withExtension: "icns"),
+        // Ресурс пакета (`swift run` — «голый» бинарник без .app-обёртки).
+        if let url = Bundle.module.url(forResource: "AppIcon", withExtension: "icns"),
            let image = NSImage(contentsOf: url) {
             return image
         }
