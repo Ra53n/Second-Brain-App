@@ -474,11 +474,24 @@ struct MarkdownEditorView: NSViewRepresentable {
         /// текст), если курсор не пересекает их revealTrigger, развёрнуты
         /// (обычный размер либо моноширинный код-блок) иначе — как Obsidian
         /// Live Preview. Один общий цикл вместо отдельной ветки на тип маркера.
+        ///
+        /// currentConcealables может быть УСТАРЕВШИМ относительно storage прямо
+        /// сейчас: смена textView.string (переключение файла в updateNSView,
+        /// toggleChecklistMarker) синхронно шлёт NSTextViewDidChangeSelection
+        /// ДО того, как highlight() успевает переразобрать новый текст и
+        /// обновить кэш — restyleConcealedRanges может успеть выполниться на
+        /// диапазонах от ПРЕДЫДУЩЕГО (более длинного) текста. Раньше это роняло
+        /// приложение (addAttribute на диапазоне за пределами storage кидает
+        /// NSException) — поэтому каждый диапазон проверяется на попадание в
+        /// текущие границы перед использованием, а не молча падает.
         private func styleConcealables(_ storage: NSTextStorage, caret: NSRange) {
             let mono = NSFont.monospacedSystemFont(ofSize: MarkdownEditorView.baseFontSize - 1, weight: .regular)
             let codeBackground = NSColor.textBackgroundColor.blended(withFraction: 0.5, of: .quaternaryLabelColor) ?? .quaternaryLabelColor
+            let storageLength = storage.length
 
             for marker in currentConcealables {
+                guard NSMaxRange(marker.revealTrigger) <= storageLength,
+                      marker.hideRanges.allSatisfy({ NSMaxRange($0) <= storageLength }) else { continue }
                 let revealed = Self.selection(caret, overlaps: marker.revealTrigger)
                 for hideRange in marker.hideRanges {
                     if revealed {
