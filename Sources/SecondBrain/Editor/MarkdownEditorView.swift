@@ -21,15 +21,14 @@
 //
 // Live Preview (единственный режим редактора — Сплит/Превью убраны): маркеры
 // разметки (#, **, ==, `, [[/]], >, -/1., ``` fences, служебные `^id`/`%% %%`
-// Obsidian) сворачиваются — мелкий приглушённый текст, — пока курсор
-// редактирования не встанет на эту строку/внутрь блока, тогда раскрываются до
-// нормального размера (для %%/``` — до моноширинного с фоном код-блока).
-// Содержимое (жирный текст, код и т.п.) стилизуется ВСЕГДА, независимо от
-// сворачивания. Настоящее «схлопывание до нулевой ширины» без изменения
-// textView.string потребовало бы кастомного TextKit-typesetter'а — вместо этого
-// используется тот же механизм атрибутов (шрифт/цвет), реагирующий на
-// textViewDidChangeSelection; единая модель — ConcealableMarker.swift, см.
-// Coordinator.applyConcealables/styleConcealables/restyleConcealedRanges.
+// Obsidian) НЕВИДИМЫ (глифы нуллифицируются — нулевая ширина, не рисуются, файл
+// не меняется; см. ConcealingLayoutDelegate), пока курсор редактирования не
+// встанет на эту строку/внутрь блока, тогда проявляются (для %%/``` —
+// моноширинными с фоном код-блока). Содержимое (жирный текст, код и т.п.)
+// стилизуется ВСЕГДА, независимо от сокрытия. Единая модель маркеров —
+// ConcealableMarker.swift; сокрытие/проявление по позиции курсора —
+// Coordinator.applyConcealables/restyleConcealedRanges (реагирует на
+// textViewDidChangeSelection, диффом трогает только изменившиеся маркеры).
 //
 // Почему NSTextView, а не SwiftUI TextEditor: на больших файлах TextEditor
 // тормозит (подсказка задачи 03). Подсветка «лёгкая» — атрибуты поверх текста,
@@ -227,6 +226,10 @@ struct MarkdownEditorView: NSViewRepresentable {
     func makeNSView(context: Context) -> NSScrollView {
         // Ручная сборка вместо scrollableTextView(): нужен наш подкласс.
         let textView = MarkdownTextView()
+        // Обращение к layoutManager переводит NSTextView в TextKit 1 (на macOS 14+
+        // по умолчанию TextKit 2) — до конфигурации контейнера, чтобы он не
+        // пересоздался. Делегат скрывает глифы маркеров (см. ConcealingLayoutDelegate).
+        textView.layoutManager?.delegate = context.coordinator.concealingDelegate
         textView.autoresizingMask = [.width]
         textView.isVerticallyResizable = true
         textView.isHorizontallyResizable = false
@@ -295,12 +298,14 @@ struct MarkdownEditorView: NSViewRepresentable {
         /// полного highlight(_:); restyleConcealedRanges переиспользует их без
         /// повторного парсинга при каждом движении курсора.
         private var currentConcealables: [ConcealableMarker] = []
-        /// Индексы маркеров, СЕЙЧАС отрисованных развёрнутыми. Ключевой кэш для
-        /// диффа: на смену курсора перекрашиваем ТОЛЬКО маркеры, чьё состояние
-        /// изменилось (ушёл/зашёл на строку). Иначе повторный addAttribute по
-        /// всем маркерам инвалидирует лэйаут всего документа на каждый клик, и
-        /// NSTextView сбрасывает прокрутку наверх (симптом «бросает наверх»).
+        /// Индексы маркеров, СЕЙЧАС показанных. Ключевой кэш для диффа: на смену
+        /// курсора инвалидируем глифы ТОЛЬКО у маркеров, чьё состояние изменилось
+        /// (ушёл/зашёл на строку). Иначе полная реинвалидация лэйаута на каждый
+        /// клик сбрасывала бы прокрутку наверх.
         private var revealedMarkerIndices: Set<Int> = []
+        /// Делегат layoutManager, скрывающий глифы маркеров (нуллификация). Живёт
+        /// на координаторе (retained); NSTextView ссылается на него слабо.
+        let concealingDelegate = ConcealingLayoutDelegate()
 
         init(
             text: Binding<String>,
@@ -378,28 +383,32 @@ struct MarkdownEditorView: NSViewRepresentable {
             storage.endEditing()
         }
 
-        /// Реакция на движение курсора: перекрашивает ТОЛЬКО маркеры, чьё
-        /// состояние (свёрнут/развёрнут) изменилось относительно прошлой позиции
-        /// курсора. Никакого regex-скана и — главное — никаких лишних правок
-        /// storage: клик/стрелка в пределах уже-развёрнутой строки или в обычном
-        /// абзаце = полный no-op, поэтому прокрутка не дёргается.
+        /// Реакция на движение курсора: показывает/скрывает ТОЛЬКО маркеры, чьё
+        /// состояние изменилось относительно прошлой позиции курсора. Никакого
+        /// regex-скана и — главное — никакой полной реинвалидации: клик/стрелка в
+        /// пределах уже-показанной строки или в обычном абзаце = полный no-op,
+        /// поэтому прокрутка не дёргается.
         func restyleConcealedRanges(_ textView: NSTextView) {
-            guard let storage = textView.textStorage else { return }
+            guard let storage = textView.textStorage, let layoutManager = textView.layoutManager else { return }
+            let length = storage.length
             let newRevealed = Self.revealedIndices(
                 for: textView.selectedRange(),
                 in: currentConcealables,
-                storageLength: storage.length
+                storageLength: length
             )
             guard newRevealed != revealedMarkerIndices else { return }
 
-            storage.beginEditing()
-            for i in newRevealed.subtracting(revealedMarkerIndices) {
-                styleMarker(currentConcealables[i], revealed: true, into: storage)
+            concealingDelegate.concealedRanges = Self.concealedRanges(from: currentConcealables, revealed: newRevealed, storageLength: length)
+
+            // Инвалидируем глифы+лэйаут ТОЛЬКО у маркеров, чьё состояние
+            // изменилось — делегат перегенерирует их с новой видимостью, остальной
+            // документ не трогаем (иначе полная реинвалидация роняла бы прокрутку).
+            for i in newRevealed.symmetricDifference(revealedMarkerIndices) where markerFits(i, in: length) {
+                for range in currentConcealables[i].hideRanges {
+                    layoutManager.invalidateGlyphs(forCharacterRange: range, changeInLength: 0, actualCharacterRange: nil)
+                    layoutManager.invalidateLayout(forCharacterRange: range, actualCharacterRange: nil)
+                }
             }
-            for i in revealedMarkerIndices.subtracting(newRevealed) where markerFits(i, in: storage.length) {
-                styleMarker(currentConcealables[i], revealed: false, into: storage)
-            }
-            storage.endEditing()
             revealedMarkerIndices = newRevealed
         }
 
@@ -488,14 +497,52 @@ struct MarkdownEditorView: NSViewRepresentable {
             markers += ConcealableMarker.forListMarkers(in: text)
 
             currentConcealables = markers
-            // Полный проход: applyBaseAttributes только что сбросил всё к базовому
-            // стилю, поэтому каждый маркер надо прокрасить один раз и запомнить,
-            // какие сейчас развёрнуты (база для последующих диффов на смене курсора).
+            // Атрибуты «показанного» маркера применяются ко ВСЕМ маркерам один
+            // раз (applyBaseAttributes выше только что сбросил всё) — само сокрытие
+            // делает делегат layoutManager нуллификацией глифов, поэтому атрибуты
+            // всегда «как при показе».
+            applyShownMarkerAttributes(storage)
+
             let revealed = Self.revealedIndices(for: textView.selectedRange(), in: markers, storageLength: storage.length)
-            for (i, marker) in markers.enumerated() where markerFits(i, in: storage.length) {
-                styleMarker(marker, revealed: revealed.contains(i), into: storage)
-            }
             revealedMarkerIndices = revealed
+            concealingDelegate.concealedRanges = Self.concealedRanges(from: markers, revealed: revealed, storageLength: storage.length)
+            // Полный highlight сменил шрифт по всему тексту → глифы и так
+            // регенерируются на endEditing, делегат применит concealedRanges;
+            // отдельная инвалидация не нужна.
+        }
+
+        /// «Показанный» вид маркеров: приглушённый цвет (plain) либо моно+фон
+        /// (codeBlock). Применяется ко всем маркерам разом; видимость этих
+        /// диапазонов далее регулирует делегат (нуллификация глифов).
+        private func applyShownMarkerAttributes(_ storage: NSTextStorage) {
+            let mono = NSFont.monospacedSystemFont(ofSize: MarkdownEditorView.baseFontSize - 1, weight: .regular)
+            let codeBackground = NSColor.textBackgroundColor.blended(withFraction: 0.5, of: .quaternaryLabelColor) ?? .quaternaryLabelColor
+            let length = storage.length
+            for marker in currentConcealables {
+                for range in marker.hideRanges where NSMaxRange(range) <= length {
+                    switch marker.revealStyle {
+                    case .plain:
+                        storage.addAttribute(.foregroundColor, value: NSColor.secondaryLabelColor, range: range)
+                    case .codeBlock:
+                        storage.addAttribute(.font, value: mono, range: range)
+                        storage.addAttribute(.foregroundColor, value: NSColor.secondaryLabelColor, range: range)
+                        storage.addAttribute(.backgroundColor, value: codeBackground, range: range)
+                    }
+                }
+            }
+        }
+
+        /// Диапазоны, чьи глифы сейчас скрыты: hideRanges всех НЕ показанных
+        /// маркеров, отсортированы и слиты (предусловие бинарного поиска в
+        /// делегате). Чистая логика — тестируется отдельно.
+        static func concealedRanges(from markers: [ConcealableMarker], revealed: Set<Int>, storageLength: Int) -> [NSRange] {
+            var ranges: [NSRange] = []
+            for (i, marker) in markers.enumerated() where !revealed.contains(i) {
+                for range in marker.hideRanges where NSMaxRange(range) <= storageLength {
+                    ranges.append(range)
+                }
+            }
+            return ConcealingLayoutDelegate.mergeRanges(ranges)
         }
 
         /// Какие маркеры должны быть развёрнуты при данной позиции курсора.
@@ -520,31 +567,6 @@ struct MarkdownEditorView: NSViewRepresentable {
             guard index < currentConcealables.count else { return false }
             let marker = currentConcealables[index]
             return marker.hideRanges.allSatisfy { NSMaxRange($0) <= storageLength }
-        }
-
-        /// Стиль ОДНОГО маркера — развёрнутый (обычный/моно+фон) или свёрнутый
-        /// (мелкий тусклый). Вызывающий гарантирует, что диапазоны в пределах
-        /// storage (markerFits / revealedIndices это уже проверили).
-        private func styleMarker(_ marker: ConcealableMarker, revealed: Bool, into storage: NSTextStorage) {
-            for hideRange in marker.hideRanges {
-                if revealed {
-                    switch marker.revealStyle {
-                    case .plain:
-                        storage.addAttribute(.font, value: NSFont.systemFont(ofSize: MarkdownEditorView.baseFontSize), range: hideRange)
-                        storage.addAttribute(.foregroundColor, value: NSColor.secondaryLabelColor, range: hideRange)
-                    case .codeBlock:
-                        storage.addAttribute(.font, value: NSFont.monospacedSystemFont(ofSize: MarkdownEditorView.baseFontSize - 1, weight: .regular), range: hideRange)
-                        storage.addAttribute(.foregroundColor, value: NSColor.secondaryLabelColor, range: hideRange)
-                        storage.addAttribute(.backgroundColor, value: NSColor.textBackgroundColor.blended(withFraction: 0.5, of: .quaternaryLabelColor) ?? .quaternaryLabelColor, range: hideRange)
-                    }
-                } else {
-                    storage.addAttribute(.font, value: NSFont.systemFont(ofSize: marker.concealedFontSize), range: hideRange)
-                    storage.addAttribute(.foregroundColor, value: NSColor.tertiaryLabelColor, range: hideRange)
-                    if marker.revealStyle == .codeBlock {
-                        storage.removeAttribute(.backgroundColor, range: hideRange)
-                    }
-                }
-            }
         }
 
         /// true, если курсор/выделение пересекается с range. Коллапсированный

@@ -14,7 +14,7 @@ import XCTest
 final class ConcealRevealDiffTests: XCTestCase {
 
     private func marker(trigger: NSRange, hide: NSRange) -> ConcealableMarker {
-        ConcealableMarker(hideRanges: [hide], revealTrigger: trigger, revealStyle: .plain, concealedFontSize: 5)
+        ConcealableMarker(hideRanges: [hide], revealTrigger: trigger, revealStyle: .plain)
     }
 
     // MARK: - Строки и переходы
@@ -97,8 +97,7 @@ final class ConcealRevealDiffTests: XCTestCase {
         let markers = [ConcealableMarker(
             hideRanges: [NSRange(location: 0, length: 1), NSRange(location: 9, length: 2)],
             revealTrigger: NSRange(location: 0, length: 3),
-            revealStyle: .plain,
-            concealedFontSize: 5
+            revealStyle: .plain
         )]
         let result = MarkdownEditorView.Coordinator.revealedIndices(for: NSRange(location: 1, length: 0), in: markers, storageLength: 5)
         XCTAssertTrue(result.isEmpty)
