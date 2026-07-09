@@ -11,7 +11,7 @@
 // текстом — смена типа обязана визуально разрывать поток), пункт списка — тоже
 // всегда одна строка (у каждого свой уровень вложенности → свой отступ, поэтому
 // список не собирается в один общий абзац). Числа отступов рассчитаны на
-// базовый шрифт 14pt (MarkdownEditorView.baseFontSize) — при изменении базового
+// базовый шрифт 15pt (MarkdownEditorView.baseFontSize) — при изменении базового
 // размера стоит пересчитать.
 
 import AppKit // NSParagraphStyle — часть AppKit, не чистого Foundation, на macOS
@@ -92,32 +92,33 @@ enum ParagraphStyling {
         return result
     }
 
-    /// `NSParagraphStyle` для вида абзаца — конкретные точки, подобранные для 14pt.
+    /// `NSParagraphStyle` для вида абзаца — конкретные точки, подобранные для 15pt
+    /// (MarkdownEditorView.baseFontSize) с комфортным «обсидиановским» интерлиньяжем.
     static func style(for kind: ParagraphKind) -> NSParagraphStyle {
         let style = NSMutableParagraphStyle()
         switch kind {
         case .heading(let level):
-            style.lineSpacing = 2
+            style.lineSpacing = 3
             switch level {
-            case 1: style.paragraphSpacingBefore = 20; style.paragraphSpacing = 10
-            case 2: style.paragraphSpacingBefore = 16; style.paragraphSpacing = 8
-            case 3: style.paragraphSpacingBefore = 12; style.paragraphSpacing = 6
-            default: style.paragraphSpacingBefore = 8; style.paragraphSpacing = 4
+            case 1: style.paragraphSpacingBefore = 24; style.paragraphSpacing = 12
+            case 2: style.paragraphSpacingBefore = 20; style.paragraphSpacing = 10
+            case 3: style.paragraphSpacingBefore = 16; style.paragraphSpacing = 8
+            default: style.paragraphSpacingBefore = 12; style.paragraphSpacing = 6
             }
         case .body:
-            style.lineSpacing = 3
-            style.paragraphSpacing = 8
+            style.lineSpacing = 5
+            style.paragraphSpacing = 10
         case .listItem(let indentLevel):
-            style.lineSpacing = 3
-            style.paragraphSpacing = 2
-            style.headIndent = 20 + 16 * CGFloat(indentLevel)
-            style.firstLineHeadIndent = 20 * CGFloat(indentLevel)
+            style.lineSpacing = 4
+            style.paragraphSpacing = 3
+            style.headIndent = 24 + 20 * CGFloat(indentLevel)
+            style.firstLineHeadIndent = 24 * CGFloat(indentLevel)
         case .blockquote:
-            style.lineSpacing = 3
-            style.paragraphSpacingBefore = 4
-            style.paragraphSpacing = 8
-            style.headIndent = 16
-            style.firstLineHeadIndent = 16
+            style.lineSpacing = 4
+            style.paragraphSpacingBefore = 6
+            style.paragraphSpacing = 10
+            style.headIndent = 20
+            style.firstLineHeadIndent = 20
         }
         return style
     }

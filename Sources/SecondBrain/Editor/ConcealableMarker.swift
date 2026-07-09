@@ -34,6 +34,19 @@ struct ConcealableMarker: Equatable {
     let revealTrigger: NSRange
     let revealStyle: ConcealableRevealStyle
 
+    /// Копия со всеми диапазонами (revealTrigger + все hideRanges), сдвинутыми на
+    /// delta — для инкрементальной подсветки: маркеры ПОСЛЕ правки сдвигаются на
+    /// изменение длины, маркеры блока парсятся локально и сдвигаются в абсолютные
+    /// координаты (MarkdownEditorView.rebuiltConcealables / highlightIncrementally).
+    func shifted(by delta: Int) -> ConcealableMarker {
+        guard delta != 0 else { return self }
+        return ConcealableMarker(
+            hideRanges: hideRanges.map { NSRange(location: $0.location + delta, length: $0.length) },
+            revealTrigger: NSRange(location: revealTrigger.location + delta, length: revealTrigger.length),
+            revealStyle: revealStyle
+        )
+    }
+
     // MARK: - Фабрики
 
     /// Для одного BlockReference (см. BlockReferenceParser.swift).
@@ -84,8 +97,11 @@ struct ConcealableMarker: Equatable {
     // Отступ+маркер списка («  - »/«1. ») — прячутся одним диапазоном; сам
     // отступ безопасно скрывать, т.к. визуальный левый край держит
     // ParagraphStyling.headIndent (атрибут абзаца), а не сырые пробелы исходника.
+    // Отступ — только пробелы/табы (`[ \t]*`, НЕ `\s*`): `\s` включает `\n`, и на
+    // всём документе (.anchorsMatchLines) жадный `\s*` схватил бы перевод строки
+    // перед пунктом после пустой строки — пряча его (строки визуально слипались бы).
     private static let listMarkerRegex = try! NSRegularExpression(
-        pattern: "^\\s*(?:[-*+]|\\d+\\.)[ \\t]", options: [.anchorsMatchLines]
+        pattern: "^[ \\t]*(?:[-*+]|\\d+\\.)[ \\t]", options: [.anchorsMatchLines]
     )
 
     /// Один маркер на каждую строку-пункт списка (вне код-блоков).

@@ -94,42 +94,42 @@ final class ParagraphStylingTests: XCTestCase {
 
     func testStyleValuesForHeadings() {
         let h1 = ParagraphStyling.style(for: .heading(level: 1))
-        XCTAssertEqual(h1.paragraphSpacingBefore, 20)
-        XCTAssertEqual(h1.paragraphSpacing, 10)
+        XCTAssertEqual(h1.paragraphSpacingBefore, 24)
+        XCTAssertEqual(h1.paragraphSpacing, 12)
 
         let h2 = ParagraphStyling.style(for: .heading(level: 2))
-        XCTAssertEqual(h2.paragraphSpacingBefore, 16)
-        XCTAssertEqual(h2.paragraphSpacing, 8)
+        XCTAssertEqual(h2.paragraphSpacingBefore, 20)
+        XCTAssertEqual(h2.paragraphSpacing, 10)
 
         let h3 = ParagraphStyling.style(for: .heading(level: 3))
-        XCTAssertEqual(h3.paragraphSpacingBefore, 12)
-        XCTAssertEqual(h3.paragraphSpacing, 6)
+        XCTAssertEqual(h3.paragraphSpacingBefore, 16)
+        XCTAssertEqual(h3.paragraphSpacing, 8)
 
         let h4 = ParagraphStyling.style(for: .heading(level: 4))
-        XCTAssertEqual(h4.paragraphSpacingBefore, 8)
-        XCTAssertEqual(h4.paragraphSpacing, 4)
+        XCTAssertEqual(h4.paragraphSpacingBefore, 12)
+        XCTAssertEqual(h4.paragraphSpacing, 6)
     }
 
     func testStyleValuesForBody() {
         let style = ParagraphStyling.style(for: .body)
-        XCTAssertEqual(style.lineSpacing, 3)
-        XCTAssertEqual(style.paragraphSpacing, 8)
+        XCTAssertEqual(style.lineSpacing, 5)
+        XCTAssertEqual(style.paragraphSpacing, 10)
     }
 
     func testStyleValuesForListItem() {
         let top = ParagraphStyling.style(for: .listItem(indentLevel: 0))
-        XCTAssertEqual(top.headIndent, 20)
+        XCTAssertEqual(top.headIndent, 24)
         XCTAssertEqual(top.firstLineHeadIndent, 0)
 
         let nested = ParagraphStyling.style(for: .listItem(indentLevel: 1))
-        XCTAssertEqual(nested.headIndent, 36)
-        XCTAssertEqual(nested.firstLineHeadIndent, 20)
+        XCTAssertEqual(nested.headIndent, 44)
+        XCTAssertEqual(nested.firstLineHeadIndent, 24)
     }
 
     func testStyleValuesForBlockquote() {
         let style = ParagraphStyling.style(for: .blockquote)
-        XCTAssertEqual(style.headIndent, 16)
-        XCTAssertEqual(style.firstLineHeadIndent, 16)
-        XCTAssertEqual(style.paragraphSpacingBefore, 4)
+        XCTAssertEqual(style.headIndent, 20)
+        XCTAssertEqual(style.firstLineHeadIndent, 20)
+        XCTAssertEqual(style.paragraphSpacingBefore, 6)
     }
 }

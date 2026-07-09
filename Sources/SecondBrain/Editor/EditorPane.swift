@@ -69,6 +69,7 @@ struct EditorPane: View {
     private var wiredEditor: MarkdownEditorView {
         MarkdownEditorView(
             text: $viewModel.text,
+            fileURL: viewModel.fileURL,
             completionTargets: { [weak vaultManager] in
                 vaultManager?.linkIndex?.completionTargets ?? []
             },
