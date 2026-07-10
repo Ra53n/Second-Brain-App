@@ -570,9 +570,7 @@ struct MarkdownEditorView: NSViewRepresentable {
             currentConcealables = Self.rebuiltConcealables(previous: currentConcealables, oldDirty: oldBlock, delta: delta, fresh: freshMarkers)
             currentLinks = Self.rebuiltLinks(previous: currentLinks, oldDirty: oldBlock, delta: delta, fresh: freshLinks)
 
-            let revealed = Self.revealedIndices(for: textView.selectedRange(), in: currentConcealables, storageLength: storage.length)
-            revealedMarkerIndices = revealed
-            concealingDelegate.concealedRanges = Self.concealedRanges(from: currentConcealables, revealed: revealed, storageLength: storage.length)
+            primeConcealment(textView)
 
             // Форсируем перегенерацию глифов блока: новые/сломанные маркеры должны
             // пере-свернуться. Только блок — не весь документ (иначе прокрутка бы прыгала).
@@ -603,14 +601,20 @@ struct MarkdownEditorView: NSViewRepresentable {
             return storage
         }
 
-        /// Ставит concealedRanges/revealedMarkerIndices по currentConcealables и
-        /// текущему курсору — вызывается после build/highlight, чтобы маркеры были
-        /// свёрнуты уже на первом кадре.
+        /// Пересчитывает и отдаёт делегату ВСЁ состояние сокрытия по кэшу маркеров
+        /// и текущему курсору: revealedMarkerIndices, concealedRanges (нуллификация
+        /// глифов) и fullyConcealedLines (строки схлопнутой высоты — фенсы/%%-блоки).
+        /// Зовётся после build/highlight/highlightIncrementally и при смене курсора.
         func primeConcealment(_ textView: NSTextView) {
             guard let storage = textView.textStorage else { return }
+            let ns = textView.string as NSString
             let revealed = Self.revealedIndices(for: textView.selectedRange(), in: currentConcealables, storageLength: storage.length)
             revealedMarkerIndices = revealed
-            concealingDelegate.concealedRanges = Self.concealedRanges(from: currentConcealables, revealed: revealed, storageLength: storage.length)
+            let concealed = Self.concealedRanges(from: currentConcealables, revealed: revealed, storageLength: storage.length)
+            concealingDelegate.concealedRanges = concealed
+            concealingDelegate.fullyConcealedLines = Self.fullyConcealedLines(
+                in: ns, markers: currentConcealables, revealed: revealed, concealed: concealed
+            )
         }
 
         /// Сбрасывает запись правки — после программной подмены текста
@@ -623,27 +627,68 @@ struct MarkdownEditorView: NSViewRepresentable {
         /// пределах уже-показанной строки или в обычном абзаце = полный no-op,
         /// поэтому прокрутка не дёргается.
         func restyleConcealedRanges(_ textView: NSTextView) {
-            guard let storage = textView.textStorage, let layoutManager = textView.layoutManager else { return }
+            guard let storage = textView.textStorage,
+                  let layoutManager = textView.layoutManager,
+                  let container = textView.textContainer else { return }
             let length = storage.length
             let newRevealed = Self.revealedIndices(
                 for: textView.selectedRange(),
                 in: currentConcealables,
                 storageLength: length
             )
+            // Клик/стрелка в пределах той же строки — полный no-op (перф).
             guard newRevealed != revealedMarkerIndices else { return }
 
-            concealingDelegate.concealedRanges = Self.concealedRanges(from: currentConcealables, revealed: newRevealed, storageLength: length)
+            let toggled = newRevealed.symmetricDifference(revealedMarkerIndices)
+            primeConcealment(textView)
 
-            // Инвалидируем глифы+лэйаут ТОЛЬКО у маркеров, чьё состояние
-            // изменилось — делегат перегенерирует их с новой видимостью, остальной
-            // документ не трогаем (иначе полная реинвалидация роняла бы прокрутку).
-            for i in newRevealed.symmetricDifference(revealedMarkerIndices) where markerFits(i, in: length) {
-                for range in currentConcealables[i].hideRanges {
-                    layoutManager.invalidateGlyphs(forCharacterRange: range, changeInLength: 0, actualCharacterRange: nil)
-                    layoutManager.invalidateLayout(forCharacterRange: range, actualCharacterRange: nil)
-                }
+            // Глифы перегенерируем только у переключившихся маркеров — их
+            // нуллификация изменилась; остальные глифы валидны.
+            for i in toggled where markerFits(i, in: length) {
+                let trigger = currentConcealables[i].revealTrigger
+                guard trigger.location < length else { continue }
+                let safe = NSRange(location: trigger.location, length: min(NSMaxRange(trigger), length) - trigger.location)
+                layoutManager.invalidateGlyphs(forCharacterRange: safe, changeInLength: 0, actualCharacterRange: nil)
             }
-            revealedMarkerIndices = newRevealed
+
+            // ДЕТЕРМИНИЗМ ГЕОМЕТРИИ (фикс «строчка съезжает и не возвращается»):
+            // раскрытие/сокрытие меняет высоты строк (схлопывание фенсов,
+            // ре-враппинг), а ЧАСТИЧНАЯ реинвалидация лэйаута в TextKit 1 копит
+            // ошибку. Поэтому раскладка пересчитывается ЦЕЛИКОМ (одинаковый вход →
+            // одинаковый результат, ошибке негде копиться), а строка курсора
+            // ЯКОРИТСЯ по вертикали (scroll anchoring, как в CodeMirror/Obsidian) —
+            // место, куда кликнул пользователь, не прыгает на экране.
+            anchoringCaretLine(textView, layoutManager: layoutManager) {
+                layoutManager.invalidateLayout(forCharacterRange: NSRange(location: 0, length: length), actualCharacterRange: nil)
+                layoutManager.ensureLayout(for: container)
+            }
+        }
+
+        /// Выполняет body (перекладку), сохранив вертикальную экранную позицию
+        /// строки курсора: y строки до → y после → прокрутка сдвигается на дельту.
+        /// Без scroll view (тесты) или на пустом документе — просто body.
+        private func anchoringCaretLine(_ textView: NSTextView, layoutManager: NSLayoutManager, _ body: () -> Void) {
+            let ns = textView.string as NSString
+            guard let scroll = textView.enclosingScrollView, ns.length > 0 else {
+                body()
+                return
+            }
+            let charIndex = min(textView.selectedRange().location, ns.length - 1)
+            let glyphBefore = layoutManager.glyphIndexForCharacter(at: charIndex)
+            let yBefore = layoutManager.lineFragmentRect(forGlyphAt: glyphBefore, effectiveRange: nil).minY
+
+            body()
+
+            // Индекс глифа берём заново: перегенерация могла его сменить.
+            let glyphAfter = layoutManager.glyphIndexForCharacter(at: charIndex)
+            let yAfter = layoutManager.lineFragmentRect(forGlyphAt: glyphAfter, effectiveRange: nil).minY
+            let delta = yAfter - yBefore
+            guard abs(delta) > 0.5 else { return }
+
+            var origin = scroll.contentView.bounds.origin
+            origin.y = max(0, origin.y + delta)
+            scroll.contentView.scroll(to: origin)
+            scroll.reflectScrolledClipView(scroll.contentView)
         }
 
         /// Приглушённый фон код-блоков/инлайн-кода — считается на месте, чтобы
@@ -688,7 +733,7 @@ struct MarkdownEditorView: NSViewRepresentable {
             var markers: [ConcealableMarker] = []
             markers += BlockReferenceParser.parse(blockText).map(ConcealableMarker.forBlockReference)
             if includeMultiBlock {
-                markers += CommentBlockParser.parse(blockText).map(ConcealableMarker.forCommentBlock)
+                markers += CommentBlockParser.parse(blockText).map { ConcealableMarker.forCommentBlock($0, in: blockNS) }
             }
             markers += links.map(ConcealableMarker.forWikilink)
             markers += matches.flatMap { ConcealableMarker.forHighlighterMatch($0, in: blockNS) }
@@ -800,6 +845,54 @@ struct MarkdownEditorView: NSViewRepresentable {
                 }
             }
             return ConcealingLayoutDelegate.mergeRanges(ranges)
+        }
+
+        /// Строки, чей видимый контент скрыт ЦЕЛИКОМ (строки-фенсы ```, строки
+        /// %%-блоков) — делегат даст их фрагментам схлопнутую высоту. Кандидаты —
+        /// строки hideRanges НЕраскрытых маркеров; строка попадает в результат,
+        /// только если весь её непустой контент покрыт concealed (заголовок с
+        /// hideRange «#» не попадёт — текст заголовка виден). Полные lineRange
+        /// (с \n), отсортированы, без дублей. Чистая логика — тестируется.
+        static func fullyConcealedLines(in ns: NSString, markers: [ConcealableMarker], revealed: Set<Int>, concealed: [NSRange]) -> [NSRange] {
+            guard !concealed.isEmpty else { return [] }
+            var seenLineStarts = Set<Int>()
+            var lines: [NSRange] = []
+            for (i, marker) in markers.enumerated() where !revealed.contains(i) {
+                for hide in marker.hideRanges where hide.length > 0 && NSMaxRange(hide) <= ns.length {
+                    let line = ns.lineRange(for: NSRange(location: hide.location, length: 0))
+                    guard !seenLineStarts.contains(line.location) else { continue }
+                    var contentEnd = NSMaxRange(line)
+                    while contentEnd > line.location {
+                        let c = ns.character(at: contentEnd - 1)
+                        if c == 0x0A || c == 0x0D { contentEnd -= 1 } else { break }
+                    }
+                    let content = NSRange(location: line.location, length: contentEnd - line.location)
+                    guard content.length > 0, Self.covers(content, by: concealed) else { continue }
+                    seenLineStarts.insert(line.location)
+                    lines.append(line)
+                }
+            }
+            return lines.sorted { $0.location < $1.location }
+        }
+
+        /// Непрерывный content целиком покрыт одним из слитых диапазонов?
+        /// (Слитые диапазоны не смежны, поэтому покрытие непрерывного диапазона
+        /// возможно только одним элементом.) Бинарный поиск.
+        private static func covers(_ content: NSRange, by merged: [NSRange]) -> Bool {
+            var low = 0
+            var high = merged.count - 1
+            while low <= high {
+                let mid = (low + high) / 2
+                let range = merged[mid]
+                if content.location < range.location {
+                    high = mid - 1
+                } else if content.location >= NSMaxRange(range) {
+                    low = mid + 1
+                } else {
+                    return NSMaxRange(range) >= NSMaxRange(content)
+                }
+            }
+            return false
         }
 
         /// Какие маркеры должны быть развёрнуты при данной позиции курсора.

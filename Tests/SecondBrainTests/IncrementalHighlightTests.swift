@@ -19,7 +19,7 @@ final class IncrementalHighlightTests: XCTestCase {
         let ns = text as NSString
         var m: [ConcealableMarker] = []
         m += BlockReferenceParser.parse(text).map(ConcealableMarker.forBlockReference)
-        m += CommentBlockParser.parse(text).map(ConcealableMarker.forCommentBlock)
+        m += CommentBlockParser.parse(text).map { ConcealableMarker.forCommentBlock($0, in: ns) }
         m += WikilinkParser.parse(text).map(ConcealableMarker.forWikilink)
         m += MarkdownHighlighter.matches(in: text).flatMap { ConcealableMarker.forHighlighterMatch($0, in: ns) }
         m += ConcealableMarker.forListMarkers(in: text)

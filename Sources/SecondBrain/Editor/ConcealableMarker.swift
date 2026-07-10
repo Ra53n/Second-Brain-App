@@ -27,6 +27,11 @@ enum ConcealableRevealStyle: Equatable {
 /// которые невидимы, пока курсор не пересекает revealTrigger.
 struct ConcealableMarker: Equatable {
     /// Диапазон(ы) самих символов разметки — БЕЗ содержимого между ними.
+    /// ИНВАРИАНТ: hideRanges никогда не содержат символов перевода строки —
+    /// нуллификация \n «сливала» строки, и TextKit 1 при частичной
+    /// реинвалидации копил ошибку высот (текст съезжал и не возвращался).
+    /// Полностью скрытые строки схлопывает по высоте ConcealingLayoutDelegate
+    /// (shouldSetLineFragmentRect), а не слияние строк.
     let hideRanges: [NSRange]
     /// Диапазон, пересечение курсора с которым показывает маркер: для
     /// однострочных конструкций — вся строка; для блочных (code fence, %% %%)
@@ -54,9 +59,16 @@ struct ConcealableMarker: Equatable {
         ConcealableMarker(hideRanges: [ref.range], revealTrigger: ref.lineRange, revealStyle: .plain)
     }
 
-    /// Один на CommentBlock (см. CommentBlockParser.swift) — маркер = блок целиком.
-    static func forCommentBlock(_ block: CommentBlock) -> ConcealableMarker {
-        ConcealableMarker(hideRanges: [block.range], revealTrigger: block.range, revealStyle: .codeBlock)
+    /// Один на CommentBlock (см. CommentBlockParser.swift). Скрывается контент
+    /// КАЖДОЙ строки блока по отдельности (без \n — см. инвариант hideRanges);
+    /// пустые строки внутри блока остаются пустыми строками (редкий случай,
+    /// осознанный компромисс ради стабильной геометрии).
+    static func forCommentBlock(_ block: CommentBlock, in ns: NSString) -> ConcealableMarker {
+        ConcealableMarker(
+            hideRanges: lineContentRanges(of: block.range, in: ns),
+            revealTrigger: block.range,
+            revealStyle: .codeBlock
+        )
     }
 
     /// Из Wikilink.concealShape — префикс+суффикс прячутся, alias/target виден.
@@ -78,8 +90,10 @@ struct ConcealableMarker: Equatable {
             let openFence = ns.lineRange(for: NSRange(location: match.range.location, length: 0))
             let closeFenceStart = max(match.range.location, NSMaxRange(match.range) - 1)
             let closeFence = ns.lineRange(for: NSRange(location: closeFenceStart, length: 0))
+            // Контент строк-фенсов БЕЗ \n (инвариант hideRanges): строка остаётся
+            // строкой, её схлопывает по высоте делегат — не слияние строк.
             return [ConcealableMarker(
-                hideRanges: [openFence, closeFence],
+                hideRanges: lineContentRanges(of: openFence, in: ns) + lineContentRanges(of: closeFence, in: ns),
                 revealTrigger: match.range,
                 revealStyle: .codeBlock
             )]
@@ -103,6 +117,29 @@ struct ConcealableMarker: Equatable {
     private static let listMarkerRegex = try! NSRegularExpression(
         pattern: "^[ \\t]*(?:[-*+]|\\d+\\.)[ \\t]", options: [.anchorsMatchLines]
     )
+
+    /// Разбивает диапазон на по-строчные под-диапазоны БЕЗ символов перевода
+    /// строки (инвариант hideRanges). Пустые строки пропускаются — скрывать в
+    /// них нечего.
+    static func lineContentRanges(of range: NSRange, in ns: NSString) -> [NSRange] {
+        var result: [NSRange] = []
+        var location = range.location
+        let end = min(NSMaxRange(range), ns.length)
+        while location < end {
+            let line = ns.lineRange(for: NSRange(location: location, length: 0))
+            var contentEnd = min(NSMaxRange(line), end)
+            while contentEnd > location {
+                let c = ns.character(at: contentEnd - 1)
+                if c == 0x0A || c == 0x0D { contentEnd -= 1 } else { break }
+            }
+            let start = max(line.location, range.location)
+            if contentEnd > start {
+                result.append(NSRange(location: start, length: contentEnd - start))
+            }
+            location = NSMaxRange(line)
+        }
+        return result
+    }
 
     /// Один маркер на каждую строку-пункт списка (вне код-блоков).
     static func forListMarkers(in text: String) -> [ConcealableMarker] {

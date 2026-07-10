@@ -47,7 +47,9 @@ final class ConcealableMarkerTests: XCTestCase {
 
     // MARK: - forHighlighterMatch: code fences (многострочный блок)
 
-    func testCodeBlockProducesFenceLineRanges() {
+    func testCodeBlockProducesFenceLineRangesWithoutNewlines() {
+        // Контент строк-фенсов БЕЗ \n: строка остаётся строкой (её схлопывает по
+        // высоте делегат) — нуллификация \n сливала строки и ломала геометрию.
         let text = "```kotlin\nfun a() {}\nfun b() {}\n```"
         let ns = text as NSString
         let match = MarkdownHighlighter.matches(in: text).first { $0.kind == .codeBlock }!
@@ -56,7 +58,7 @@ final class ConcealableMarkerTests: XCTestCase {
         XCTAssertEqual(markers.count, 1)
         let marker = markers[0]
         XCTAssertEqual(marker.hideRanges.count, 2)
-        XCTAssertEqual(ns.substring(with: marker.hideRanges[0]), "```kotlin\n")
+        XCTAssertEqual(ns.substring(with: marker.hideRanges[0]), "```kotlin")
         XCTAssertEqual(ns.substring(with: marker.hideRanges[1]), "```")
         XCTAssertEqual(marker.revealStyle, .codeBlock)
     }
@@ -77,6 +79,62 @@ final class ConcealableMarkerTests: XCTestCase {
         let marker = ConcealableMarker.forHighlighterMatch(match, in: ns)[0]
 
         XCTAssertEqual(NSIntersectionRange(marker.hideRanges[0], marker.hideRanges[1]).length, 0)
+    }
+
+    func testNoFactoryEverHidesNewlines() {
+        // Инвариант hideRanges: переводы строк не скрываются никогда.
+        let text = "# Заголовок\n\n- пункт **жирный** `код`\n\n```swift\nlet a = 1\n\nlet b = 2\n```\n\n%% многострочный\nкомментарий %%\nтекст [[Ссылка]] ^ref1\n"
+        let ns = text as NSString
+        var allHideRanges: [NSRange] = []
+        for match in MarkdownHighlighter.matches(in: text) {
+            allHideRanges += ConcealableMarker.forHighlighterMatch(match, in: ns).flatMap(\.hideRanges)
+        }
+        allHideRanges += CommentBlockParser.parse(text).map { ConcealableMarker.forCommentBlock($0, in: ns) }.flatMap(\.hideRanges)
+        allHideRanges += WikilinkParser.parse(text).map(ConcealableMarker.forWikilink).flatMap(\.hideRanges)
+        allHideRanges += BlockReferenceParser.parse(text).map(ConcealableMarker.forBlockReference).flatMap(\.hideRanges)
+        allHideRanges += ConcealableMarker.forListMarkers(in: text).flatMap(\.hideRanges)
+
+        XCTAssertFalse(allHideRanges.isEmpty)
+        for range in allHideRanges {
+            let s = ns.substring(with: range)
+            XCTAssertFalse(s.contains("\n"), "hideRange содержит \\n: [\(s)]")
+            XCTAssertFalse(s.contains("\r"), "hideRange содержит \\r: [\(s)]")
+        }
+    }
+
+    func testCommentBlockHidesEachLineSeparately() {
+        let text = "до\n%% раз\nдва\nтри %%\nпосле"
+        let ns = text as NSString
+        let block = CommentBlockParser.parse(text)[0]
+        let marker = ConcealableMarker.forCommentBlock(block, in: ns)
+
+        XCTAssertEqual(marker.hideRanges.map { ns.substring(with: $0) }, ["%% раз", "два", "три %%"])
+        XCTAssertEqual(marker.revealTrigger, block.range)
+    }
+
+    // MARK: - lineContentRanges
+
+    func testLineContentRangesSplitsAndStripsNewlines() {
+        let text = "первая\nвторая\nтретья"
+        let ns = text as NSString
+        let ranges = ConcealableMarker.lineContentRanges(of: NSRange(location: 0, length: ns.length), in: ns)
+        XCTAssertEqual(ranges.map { ns.substring(with: $0) }, ["первая", "вторая", "третья"])
+    }
+
+    func testLineContentRangesSkipsEmptyLines() {
+        let text = "раз\n\nдва"
+        let ns = text as NSString
+        let ranges = ConcealableMarker.lineContentRanges(of: NSRange(location: 0, length: ns.length), in: ns)
+        XCTAssertEqual(ranges.map { ns.substring(with: $0) }, ["раз", "два"])
+    }
+
+    func testLineContentRangesRespectsPartialFirstLine() {
+        // Диапазон начинается посреди строки (инлайн-комментарий).
+        let text = "текст %%скрыто%% хвост"
+        let ns = text as NSString
+        let inner = ns.range(of: "%%скрыто%%")
+        let ranges = ConcealableMarker.lineContentRanges(of: inner, in: ns)
+        XCTAssertEqual(ranges.map { ns.substring(with: $0) }, ["%%скрыто%%"])
     }
 
     // MARK: - forWikilink
