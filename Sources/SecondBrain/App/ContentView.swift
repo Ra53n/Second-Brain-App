@@ -57,6 +57,8 @@ struct ContentView: View {
     @StateObject private var whisperModelsViewModel: WhisperModelsViewModel
     /// Раздел «Чат» (задача 12).
     @StateObject private var chatViewModel: ChatViewModel
+    /// RAG-индекс vault (задача 13).
+    @StateObject private var ragIndexManager: RagIndexManager
     @State private var showsQuickSwitcher = false
 
     init() {
@@ -83,6 +85,8 @@ struct ContentView: View {
                                                                          functionRouter: router))
         _chatViewModel = StateObject(wrappedValue: ChatViewModel(router: router,
                                                                  registry: registry))
+        _ragIndexManager = StateObject(wrappedValue: RagIndexManager(vaultManager: manager,
+                                                                     router: router))
     }
 
     var body: some View {
@@ -140,7 +144,8 @@ struct ContentView: View {
             // остальные настройки добавит задача 17.
             LocalModelsPane(viewModel: localModelsViewModel,
                             manager: ollamaManager,
-                            whisperViewModel: whisperModelsViewModel)
+                            whisperViewModel: whisperModelsViewModel,
+                            ragManager: ragIndexManager)
         case .some(let section):
             ContentUnavailableView {
                 Label(section.rawValue, systemImage: section.systemImage)

@@ -111,6 +111,8 @@ struct LocalModelsPane: View {
     @ObservedObject var manager: OllamaManager
     /// Секция Whisper (задача 10).
     @ObservedObject var whisperViewModel: WhisperModelsViewModel
+    /// Секция RAG-индекса (задача 13).
+    @ObservedObject var ragManager: RagIndexManager
 
     var body: some View {
         Form {
@@ -124,6 +126,7 @@ struct LocalModelsPane: View {
             }
             WhisperModelsSection(viewModel: whisperViewModel,
                                  provider: whisperViewModel.provider)
+            RagStatusSection(manager: ragManager)
         }
         .formStyle(.grouped)
         .task { await viewModel.refresh() }
