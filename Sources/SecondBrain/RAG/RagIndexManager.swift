@@ -64,6 +64,28 @@ final class RagIndexManager: ObservableObject {
     /// Индекс текущего vault (для ретрива задачи 14). nil — vault не открыт.
     var currentIndex: RagIndex? { index }
 
+    /// Ретрив для чата (задача 14). nil — RAG невозможен (нет индекса/vault,
+    /// сменилась модель эмбеддинга): чат работает без контекста, UI индекса
+    /// уже показывает предупреждение.
+    func retrieveForChat(query: String,
+                         history: [ChatMessage],
+                         configuration: ChatConfiguration,
+                         chatProvider: ResolvedChatProvider?) async -> RagRetrievalOutcome? {
+        guard let index = ensureIndex(), chunkCount > 0 else { return nil }
+        guard let (embedder, tag) = currentEmbeddingTag(),
+              index.embeddingTag == tag else { return nil }
+        let options = RagRetriever.Options(topK: configuration.ragTopK,
+                                           minScore: configuration.ragMinScore,
+                                           queryRewrite: configuration.ragQueryRewrite,
+                                           rerank: configuration.ragRerankEnabled)
+        return await RagRetriever.retrieve(index: index,
+                                           embedder: embedder,
+                                           query: query,
+                                           history: history,
+                                           options: options,
+                                           chatProvider: chatProvider)
+    }
+
     /// Тег текущей модели эмбеддинга роутера («model|dim»); nil — нет провайдера.
     func currentEmbeddingTag() -> (embedder: EmbeddingProvider, tag: String)? {
         guard let resolved = router.resolveEmbeddingProvider(for: .embedding) else { return nil }

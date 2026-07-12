@@ -22,8 +22,9 @@ final class ChatViewModel: ObservableObject {
     let router: FunctionRouter
     let registry: ProviderRegistry
 
-    /// Заготовка задачи 14: (чат, текст вопроса) → блок [RAG_CONTEXT] или nil.
-    var ragContextProvider: ((Chat, String) async -> String?)?
+    /// Ретрив задачи 14: (чат, вопрос) → блок [RAG_CONTEXT] + источники.
+    /// Вызывается ТОЛЬКО при включённом тумблере «Отвечать по базе».
+    var ragProvider: ((Chat, String) async -> RagRetrievalOutcome?)?
 
     private let fileURL: URL
     private var saveCancellable: AnyCancellable?
@@ -107,6 +108,15 @@ final class ChatViewModel: ObservableObject {
         chats[index].configuration.model = model
     }
 
+    /// Тумблер «Отвечать по базе» текущего чата (persisted per-чат).
+    var ragEnabledBinding: Bool {
+        get { selectedChat?.configuration.ragEnabled ?? false }
+        set {
+            guard let index = selectedIndex else { return }
+            chats[index].configuration.ragEnabled = newValue
+        }
+    }
+
     var canSend: Bool {
         guard let chat = selectedChat else { return false }
         return !chat.isLoading
@@ -151,12 +161,19 @@ final class ChatViewModel: ObservableObject {
             guard let self else { return }
             let start = Date()
             do {
-                // Точка расширения задачи 14: retrieval перед запросом.
-                let ragContext = await self.ragContextProvider?(chatSnapshot, text)
+                // Ретрив (задача 14): только при включённом тумблере.
+                var retrieval: RagRetrievalOutcome?
+                if chatSnapshot.configuration.ragEnabled {
+                    retrieval = await self.ragProvider?(chatSnapshot, text)
+                    if let sources = retrieval?.sources, !sources.isEmpty {
+                        self.attachSources(chatID: chatID, messageID: placeholderID,
+                                           sources: sources)
+                    }
+                }
                 let messages = ChatPromptBuilder.requestMessages(
                     history: history,
                     historyWindow: configuration.historyWindow,
-                    ragContext: ragContext)
+                    ragContext: retrieval?.block)
                 var settings = ChatSettings(model: resolved.model)
                 settings.temperature = configuration.temperature
 
@@ -203,6 +220,13 @@ final class ChatViewModel: ObservableObject {
               let messageIndex = chats[chatIndex].messages.firstIndex(where: { $0.id == messageID })
         else { return }
         chats[chatIndex].messages[messageIndex].content += chunk
+    }
+
+    private func attachSources(chatID: UUID, messageID: UUID, sources: [RagSource]) {
+        guard let chatIndex = chats.firstIndex(where: { $0.id == chatID }),
+              let messageIndex = chats[chatIndex].messages.firstIndex(where: { $0.id == messageID })
+        else { return }
+        chats[chatIndex].messages[messageIndex].sources = sources
     }
 
     private func finishGeneration(chatID: UUID, messageID: UUID,

@@ -56,6 +56,8 @@ struct ChatListPane: View {
 
 struct ChatDetailView: View {
     @ObservedObject var viewModel: ChatViewModel
+    /// Резолвер [[wikilink]] → URL заметки (LinkIndex задачи 04); nil — vault закрыт.
+    var resolveWikilink: (String) -> URL? = { _ in nil }
 
     private var chat: Chat? { viewModel.selectedChat }
 
@@ -68,8 +70,34 @@ struct ChatDetailView: View {
         }
         .navigationTitle(chat?.title ?? "Чат")
         .toolbar {
+            ToolbarItem(placement: .primaryAction) { ragToggle }
             ToolbarItem(placement: .primaryAction) { modelPicker }
         }
+        // Клик по wikilink в ответе → открыть заметку в разделе «Заметки».
+        .environment(\.openURL, OpenURLAction { url in
+            guard let target = ChatWikilinkRenderer.target(from: url) else {
+                return .systemAction
+            }
+            openNote(target: target)
+            return .handled
+        })
+    }
+
+    /// Тумблер «Отвечать по базе» (persisted per-чат).
+    private var ragToggle: some View {
+        Toggle(isOn: Binding(
+            get: { viewModel.ragEnabledBinding },
+            set: { viewModel.ragEnabledBinding = $0 }
+        )) {
+            Label("По базе", systemImage: "books.vertical")
+        }
+        .toggleStyle(.button)
+        .help("Отвечать по содержимому vault (RAG)")
+    }
+
+    private func openNote(target: String) {
+        guard let url = resolveWikilink(target) else { return }
+        NotificationCenter.default.post(name: .openNoteInEditor, object: url)
     }
 
     private var messagesList: some View {
@@ -82,7 +110,9 @@ struct ChatDetailView: View {
                             .padding()
                     }
                     ForEach(chat?.messages ?? []) { message in
-                        MessageBubble(message: message)
+                        MessageBubble(message: message,
+                                      resolveWikilink: resolveWikilink,
+                                      openNote: openNote)
                             .id(message.id)
                     }
                 }
@@ -192,18 +222,22 @@ struct ChatDetailView: View {
     }
 }
 
-/// Пузырь одного сообщения: markdown-рендер, метрики под ответом.
+/// Пузырь одного сообщения: markdown-рендер с кликабельными [[wikilinks]],
+/// блок «Источники» и метрики под ответом.
 struct MessageBubble: View {
     let message: ChatMessage
+    var resolveWikilink: (String) -> URL? = { _ in nil }
+    var openNote: (String) -> Void = { _ in }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             Text(message.role == .user ? "Вы" : "Ассистент")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
-            Markdown(message.content.isEmpty ? "…" : message.content)
+            Markdown(renderedContent)
                 .markdownTheme(.docC)
                 .textSelection(.enabled)
+            sourcesBlock
             if let metrics = message.metrics {
                 Text(metricsLine(metrics))
                     .font(.caption2)
@@ -218,6 +252,52 @@ struct MessageBubble: View {
                       ? Color.accentColor.opacity(0.08)
                       : Color.secondary.opacity(0.06))
         )
+    }
+
+    /// [[wikilinks]] в ответах ассистента → ссылки/пометки галлюцинаций.
+    private var renderedContent: String {
+        guard !message.content.isEmpty else { return "…" }
+        guard message.role == .assistant else { return message.content }
+        return ChatWikilinkRenderer.render(message.content) { target in
+            resolveWikilink(target) != nil
+        }
+    }
+
+    /// «Источники»: чанки, ушедшие в [RAG_CONTEXT] (задача 14). Клик — заметка;
+    /// нерезолвящийся источник (заметку удалили) помечен и не кликабелен.
+    @ViewBuilder
+    private var sourcesBlock: some View {
+        if let sources = message.sources, !sources.isEmpty {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Источники")
+                    .font(.caption.bold())
+                    .foregroundStyle(.secondary)
+                ForEach(sources) { source in
+                    let resolvable = resolveWikilink(source.noteName) != nil
+                    Button {
+                        openNote(source.noteName)
+                    } label: {
+                        HStack(spacing: 4) {
+                            Image(systemName: resolvable ? "doc.text" : "exclamationmark.triangle")
+                            Text(sourceLine(source))
+                                .lineLimit(1)
+                        }
+                        .font(.caption)
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(resolvable ? Color.accentColor : .orange)
+                    .disabled(!resolvable)
+                }
+            }
+            .padding(.top, 4)
+        }
+    }
+
+    private func sourceLine(_ source: RagSource) -> String {
+        var line = source.noteName
+        if !source.headingPath.isEmpty { line += " · \(source.headingPath)" }
+        line += String(format: " · %.0f %%", max(0, source.score) * 100)
+        return line
     }
 
     private func metricsLine(_ metrics: MessageMetrics) -> String {

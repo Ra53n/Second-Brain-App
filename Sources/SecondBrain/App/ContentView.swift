@@ -161,6 +161,21 @@ struct ContentView: View {
         }
     }
 
+    /// Связка чата с RAG (задача 14): ретрив идёт через менеджер индекса;
+    /// rewrite/rerank используют тот же чат-роутер. Однократно, лениво.
+    private func wireRagProvider() {
+        guard chatViewModel.ragProvider == nil else { return }
+        chatViewModel.ragProvider = { [weak ragIndexManager, weak functionRouter] chat, query in
+            guard let manager = ragIndexManager else { return nil }
+            let needsLLM = chat.configuration.ragQueryRewrite || chat.configuration.ragRerankEnabled
+            let chatProvider = needsLLM ? functionRouter?.resolveChatProvider(for: .chat) : nil
+            return await manager.retrieveForChat(query: query,
+                                                 history: chat.messages,
+                                                 configuration: chat.configuration,
+                                                 chatProvider: chatProvider)
+        }
+    }
+
     /// Расширения файлов, которые открываются в markdown-редакторе.
     private static let editableExtensions: Set<String> = ["md", "markdown", "txt"]
 
@@ -168,7 +183,9 @@ struct ContentView: View {
     @ViewBuilder
     private var sectionDetail: some View {
         if selection == .chat {
-            ChatDetailView(viewModel: chatViewModel)
+            ChatDetailView(viewModel: chatViewModel,
+                           resolveWikilink: { vaultManager.linkIndex?.resolve($0) })
+                .onAppear { wireRagProvider() }
         } else if selection == .notes {
             if let url = vaultManager.selection,
                let node = vaultManager.root?.find(url) {

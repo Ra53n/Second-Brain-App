@@ -59,6 +59,8 @@ struct ChatMessage: Identifiable, Codable, Equatable {
     var role: ChatRole
     var content: String
     var metrics: MessageMetrics?
+    /// Источники RAG-ответа (задача 14): чанки, ушедшие в [RAG_CONTEXT].
+    var sources: [RagSource]?
     var createdAt: Date = Date()
 
     init(role: ChatRole, content: String, metrics: MessageMetrics? = nil) {
@@ -67,7 +69,7 @@ struct ChatMessage: Identifiable, Codable, Equatable {
         self.metrics = metrics
     }
 
-    enum CodingKeys: String, CodingKey { case id, role, content, metrics, createdAt }
+    enum CodingKeys: String, CodingKey { case id, role, content, metrics, sources, createdAt }
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -75,6 +77,7 @@ struct ChatMessage: Identifiable, Codable, Equatable {
         role = try c.decodeIfPresent(ChatRole.self, forKey: .role) ?? .assistant
         content = try c.decodeIfPresent(String.self, forKey: .content) ?? ""
         metrics = try c.decodeIfPresent(MessageMetrics.self, forKey: .metrics)
+        sources = try c.decodeIfPresent([RagSource].self, forKey: .sources)
         createdAt = try c.decodeIfPresent(Date.self, forKey: .createdAt) ?? Date()
     }
 }
@@ -88,12 +91,27 @@ struct ChatConfiguration: Equatable, Codable {
     /// Окно истории: сколько последних сообщений уходит модели.
     var historyWindow: Int = 20
 
+    // --- RAG (задача 14) ---
+    /// Тумблер «Отвечать по базе» (persisted per-чат).
+    var ragEnabled: Bool = false
+    var ragTopK: Int = 4
+    /// Порог косинусной близости; 0 — выключен.
+    var ragMinScore: Double = 0
+    /// LLM-переранжирование кандидатов (выкл: лишние вызовы).
+    var ragRerankEnabled: Bool = false
+    /// Переписывание вопроса в поисковый запрос (выкл: лишний вызов).
+    var ragQueryRewrite: Bool = false
+
     static let historyWindowRange = 4...50
     static let temperatureRange = 0.0...2.0
+    static let ragTopKRange = 1...12
 
     init() {}
 
-    enum CodingKeys: String, CodingKey { case providerID, model, temperature, historyWindow }
+    enum CodingKeys: String, CodingKey {
+        case providerID, model, temperature, historyWindow
+        case ragEnabled, ragTopK, ragMinScore, ragRerankEnabled, ragQueryRewrite
+    }
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -102,6 +120,13 @@ struct ChatConfiguration: Equatable, Codable {
         model = try c.decodeIfPresent(String.self, forKey: .model)
         temperature = try c.decodeIfPresent(Double.self, forKey: .temperature) ?? d.temperature
         historyWindow = try c.decodeIfPresent(Int.self, forKey: .historyWindow) ?? d.historyWindow
+        ragEnabled = try c.decodeIfPresent(Bool.self, forKey: .ragEnabled) ?? d.ragEnabled
+        ragTopK = try c.decodeIfPresent(Int.self, forKey: .ragTopK) ?? d.ragTopK
+        ragMinScore = try c.decodeIfPresent(Double.self, forKey: .ragMinScore) ?? d.ragMinScore
+        ragRerankEnabled = try c.decodeIfPresent(Bool.self, forKey: .ragRerankEnabled)
+            ?? d.ragRerankEnabled
+        ragQueryRewrite = try c.decodeIfPresent(Bool.self, forKey: .ragQueryRewrite)
+            ?? d.ragQueryRewrite
     }
 }
 
