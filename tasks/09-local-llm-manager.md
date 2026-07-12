@@ -32,3 +32,25 @@
 - Process group: `posix_spawn` с `POSIX_SPAWN_SETPGROUP` либо Process + `setpgid` через promoted API нет — практичный путь: запускать через `/bin/sh -c 'exec ollama serve'` и убивать `kill(-pid)`. Посмотри, как выкрутился MA.
 - `applicationShouldTerminateAfterLastWindowClosed = true` (из 01) означает: выход по закрытию окна — тоже путь через `applicationWillTerminate`, проверь оба.
 - Скачивание модели — долго; UI не должен блокироваться, прогресс из NDJSON-стрима /api/pull.
+
+## Результат
+
+Выполнено; `swift build` и `swift test` зелёные (422 теста, +20 новых).
+
+**Что сделано** (порт+обобщение RagOllamaLauncher/LocalModelsClient из MA):
+
+- `LocalRuntime/BackgroundProcessRegistry.swift` — реальная реализация: протокол `ManagedProcess` (моки в тестах), `terminateAll(gracePeriod:)` с эскалацией SIGTERM → 3 с ожидания → SIGKILL выжившим; сигнал группе через killpg, если ребёнок — лидер группы, иначе самому процессу.
+- `LocalRuntime/OllamaManager.swift` — жизненный цикл: детект бинаря (PATH + Ollama.app + Homebrew + /usr/local), ленивый `ensureRunning()` (уже отвечает → external, не спавним дубль; защита от параллельных стартов через startupTask), health-check GET /api/version с ретраями, `IdleShutdownPolicy` (10 мин, инжектируемые часы) + таймер каждые 30 с, `stopNow()`/`shutdownIfIdle()` гасят ТОЛЬКО свой спавн. Не установлен → `OllamaError.notInstalled` с понятным текстом (ollama.com / brew). Все зависимости (spawn/health/detect/часы) инжектируются.
+- `LocalRuntime/OllamaModels.swift` — DTO (`OllamaModel`, `OllamaPullProgress`), чистые парсеры `OllamaParsing` (tags/pull-NDJSON/chat/chat-stream/embed), HTTP-клиент `OllamaClient` (tags, pull со стримом прогресса и отменой, delete, chat, chatStream NDJSON, embed). Рекомендуемый набор: qwen3:8b (чат) + nomic-embed-text (эмбеддинги RAG).
+- `LocalRuntime/OllamaProvider.swift` — ChatProvider (+stream) и EmbeddingProvider (dimension 768, модель эмбеддингов nomic-embed-text фиксирована отдельно от чата); каждый вызов: ensureRunning → запрос → markUsed. `LocalProviders.register`: id "ollama", isLocal (ключ не нужен), доступен если бинарь установлен либо сервер уже отвечает.
+- UI `LocalRuntime/LocalModelsPane.swift` — статус рантайма (остановлен/запускается/наш/внешний) + запуск/«Остановить сейчас», установка (ollama.com + brew-команда), список моделей с удалением, рекомендуемый набор и произвольный pull с прогресс-баром из NDJSON (не блокирует UI, отменяем).
+
+**Отклонения**:
+- UI живёт в разделе «Настройки» (задача 17 добавит остальные настройки вокруг) — отдельного раздела в сайдбаре по VISION нет.
+- Process group при spawn НЕ устанавливается: Foundation.Process не даёт POSIX_SPAWN_SETPGROUP, трюк из подсказки (`sh -c 'exec …'`) группу тоже не создаёт. Реализовано: оппортунистический killpg + эскалация TERM→KILL; Ollama на SIGTERM сам корректно гасит runner-детей. ARCHITECTURE.md обновлён под реальность.
+
+**Тесты**: BackgroundProcessRegistryTests (TERM всем живым, эскалация KILL «зависшему», идемпотентность, мёртвые не сигналятся; старые смоук-тесты переехали из ConfigTests), IdleShutdownPolicyTests (граница таймаута, сдвиг окна markUsed), OllamaManagerTests (external-сервер не гасится никогда, ленивый спавн с регистрацией в реестре, notInstalled, idle гасит только свой, hostPort), OllamaParsingTests (фикстуры ollama_tags/chat/embed + pull-стадии/ошибки/мусор).
+
+**Ручная проверка не выполнялась** (нужен установленный Ollama): чат с локальной моделью; `pgrep ollama` пуст после 10 мин простоя и после выхода из приложения; при уже запущенном пользователем Ollama приложение подключается и при выходе НЕ убивает его.
+
+**Агентам следующих задач**: 10 — секцию Whisper-моделей добавить в LocalModelsPane; 12/13 — Ollama уже в реестре провайдеров, роутер выбирает его для .chat/.embedding при недоступном облаке; 17 — настройка idle-таймаута.

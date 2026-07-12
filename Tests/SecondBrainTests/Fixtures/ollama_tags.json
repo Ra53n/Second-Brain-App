@@ -1,0 +1,32 @@
+{
+  "models": [
+    {
+      "name": "qwen3:8b",
+      "model": "qwen3:8b",
+      "modified_at": "2026-06-30T12:10:22.000Z",
+      "size": 5026369536,
+      "digest": "a1b2c3d4",
+      "details": {
+        "parent_model": "",
+        "format": "gguf",
+        "family": "qwen3",
+        "families": ["qwen3"],
+        "parameter_size": "8.2B",
+        "quantization_level": "Q4_K_M"
+      }
+    },
+    {
+      "name": "nomic-embed-text:latest",
+      "model": "nomic-embed-text:latest",
+      "modified_at": "2026-06-30T12:20:00.000Z",
+      "size": 274302450,
+      "digest": "deadbeef",
+      "details": {
+        "format": "gguf",
+        "family": "nomic-bert",
+        "parameter_size": "137M",
+        "quantization_level": "F16"
+      }
+    }
+  ]
+}

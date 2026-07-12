@@ -14,7 +14,7 @@
 | 06 | [Запись звука](06-audio-recording.md) | 02 | [x] |
 | 07 | [Абстракция LLM-провайдеров](07-provider-abstraction.md) | 01 | [x] |
 | 08 | [Облачные провайдеры](08-cloud-providers.md) | 07 | [x] |
-| 09 | [Менеджер локальных LLM](09-local-llm-manager.md) | 07 | [ ] |
+| 09 | [Менеджер локальных LLM](09-local-llm-manager.md) | 07 | [x] |
 | 10 | [Локальная транскрипция](10-local-transcription.md) | 07 | [ ] |
 | 11 | [Пайплайн встречи](11-meeting-flow.md) | 06, 08 (жел. 09, 10) | [x] |
 | 12 | [Чат](12-chat-ui.md) | 08 (жел. 09) | [ ] |

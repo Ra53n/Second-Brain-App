@@ -49,6 +49,9 @@ struct ContentView: View {
     @StateObject private var functionRouter: FunctionRouter
     /// Раздел «Встречи»: запись и список записей (задача 06).
     @StateObject private var meetingsViewModel: MeetingsViewModel
+    /// Локальный рантайм Ollama + экран управления моделями (задача 09).
+    @StateObject private var ollamaManager: OllamaManager
+    @StateObject private var localModelsViewModel: LocalModelsViewModel
     @State private var showsQuickSwitcher = false
 
     init() {
@@ -59,6 +62,10 @@ struct ContentView: View {
 
         let registry = ProviderRegistry()
         CloudProviders.registerAll(in: registry)
+        let ollama = OllamaManager()
+        LocalProviders.register(in: registry, ollamaManager: ollama)
+        _ollamaManager = StateObject(wrappedValue: ollama)
+        _localModelsViewModel = StateObject(wrappedValue: LocalModelsViewModel(manager: ollama))
         _providerRegistry = StateObject(wrappedValue: registry)
         let router = FunctionRouter(registry: registry)
         _functionRouter = StateObject(wrappedValue: router)
@@ -115,6 +122,10 @@ struct ContentView: View {
             VaultPane(manager: vaultManager, searchViewModel: searchViewModel)
         case .meetings:
             MeetingsPane(viewModel: meetingsViewModel)
+        case .settings:
+            // Пока единственная секция настроек — локальные модели (задача 09);
+            // остальные настройки добавит задача 17.
+            LocalModelsPane(viewModel: localModelsViewModel, manager: ollamaManager)
         case .some(let section):
             ContentUnavailableView {
                 Label(section.rawValue, systemImage: section.systemImage)
