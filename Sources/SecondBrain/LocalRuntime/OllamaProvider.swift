@@ -85,4 +85,19 @@ enum LocalProviders {
                 return manager.isInstalled || manager.status != .stopped
             })
     }
+
+    /// Whisper (задача 10): доступен, только когда скачана хоть одна модель —
+    /// иначе роутер мог бы молча запустить закачку гигабайтов с Hugging Face.
+    static func registerWhisper(in registry: ProviderRegistry, provider: WhisperKitProvider) {
+        registry.register(
+            ProviderDescriptor(id: WhisperKitProvider.id,
+                               displayName: "Whisper (локально)",
+                               capabilities: [.transcription],
+                               isLocal: true,
+                               defaultModel: WhisperVariant.recommendedName),
+            transcription: provider,
+            isAvailable: { [weak provider] in
+                provider?.hasInstalledModel(base: WhisperModelStorage.defaultDownloadBase) ?? false
+            })
+    }
 }

@@ -109,6 +109,8 @@ final class LocalModelsViewModel: ObservableObject {
 struct LocalModelsPane: View {
     @ObservedObject var viewModel: LocalModelsViewModel
     @ObservedObject var manager: OllamaManager
+    /// Секция Whisper (задача 10).
+    @ObservedObject var whisperViewModel: WhisperModelsViewModel
 
     var body: some View {
         Form {
@@ -120,6 +122,8 @@ struct LocalModelsPane: View {
             } else {
                 installSection
             }
+            WhisperModelsSection(viewModel: whisperViewModel,
+                                 provider: whisperViewModel.provider)
         }
         .formStyle(.grouped)
         .task { await viewModel.refresh() }

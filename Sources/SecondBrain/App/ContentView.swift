@@ -52,6 +52,9 @@ struct ContentView: View {
     /// Локальный рантайм Ollama + экран управления моделями (задача 09).
     @StateObject private var ollamaManager: OllamaManager
     @StateObject private var localModelsViewModel: LocalModelsViewModel
+    /// Локальная транскрипция WhisperKit (задача 10).
+    @StateObject private var whisperProvider: WhisperKitProvider
+    @StateObject private var whisperModelsViewModel: WhisperModelsViewModel
     @State private var showsQuickSwitcher = false
 
     init() {
@@ -66,6 +69,10 @@ struct ContentView: View {
         LocalProviders.register(in: registry, ollamaManager: ollama)
         _ollamaManager = StateObject(wrappedValue: ollama)
         _localModelsViewModel = StateObject(wrappedValue: LocalModelsViewModel(manager: ollama))
+        let whisper = WhisperKitProvider()
+        LocalProviders.registerWhisper(in: registry, provider: whisper)
+        _whisperProvider = StateObject(wrappedValue: whisper)
+        _whisperModelsViewModel = StateObject(wrappedValue: WhisperModelsViewModel(provider: whisper))
         _providerRegistry = StateObject(wrappedValue: registry)
         let router = FunctionRouter(registry: registry)
         _functionRouter = StateObject(wrappedValue: router)
@@ -123,9 +130,11 @@ struct ContentView: View {
         case .meetings:
             MeetingsPane(viewModel: meetingsViewModel)
         case .settings:
-            // Пока единственная секция настроек — локальные модели (задача 09);
+            // Пока единственная секция настроек — локальные модели (задачи 09/10);
             // остальные настройки добавит задача 17.
-            LocalModelsPane(viewModel: localModelsViewModel, manager: ollamaManager)
+            LocalModelsPane(viewModel: localModelsViewModel,
+                            manager: ollamaManager,
+                            whisperViewModel: whisperModelsViewModel)
         case .some(let section):
             ContentUnavailableView {
                 Label(section.rawValue, systemImage: section.systemImage)

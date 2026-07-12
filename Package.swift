@@ -10,13 +10,16 @@ let package = Package(
     ],
     dependencies: [
         // Рендер markdown в превью редактора (задача 03); та же версия, что в MA.
-        .package(url: "https://github.com/gonzalezreal/swift-markdown-ui", from: "2.0.0")
+        .package(url: "https://github.com/gonzalezreal/swift-markdown-ui", from: "2.0.0"),
+        // Локальная транскрипция Whisper на CoreML (задача 10).
+        .package(url: "https://github.com/argmaxinc/WhisperKit.git", from: "0.9.0")
     ],
     targets: [
         .executableTarget(
             name: "SecondBrain",
             dependencies: [
-                .product(name: "MarkdownUI", package: "swift-markdown-ui")
+                .product(name: "MarkdownUI", package: "swift-markdown-ui"),
+                .product(name: "WhisperKit", package: "WhisperKit")
             ],
             path: "Sources/SecondBrain",
             resources: [

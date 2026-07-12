@@ -31,7 +31,8 @@
 - гасится по idle-таймауту (настраиваемому; дефолт 10 мин, `IdleShutdownPolicy`);
 - **гарантированно** убивается в `applicationWillTerminate`: SIGTERM → grace-период 3 с → SIGKILL выжившим (`BackgroundProcessRegistry.terminateAll`);
 - сигнал шлётся группе процесса (killpg), если ребёнок стал её лидером, иначе самому процессу — Foundation.Process не даёт установить process group при spawn (нет POSIX_SPAWN_SETPGROUP), поэтому дерево Ollama гасится через его собственную корректную обработку SIGTERM;
-- чужой (не нами запущенный) сервер не гасится никогда — ни по idle, ни при выходе.
+- чужой (не нами запущенный) сервер не гасится никогда — ни по idle, ни при выходе;
+- WhisperKit — не процесс, а in-process CoreML-модель (гигабайты RAM): та же `IdleShutdownPolicy` выгружает её из памяти после простоя (`WhisperKitProvider.unloadIfIdle`), кэш моделей — в `Application Support/SecondBrain/WhisperKit` (виден UI управления).
 
 ## Модули (папки внутри Sources/SecondBrain/)
 
