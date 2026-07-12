@@ -30,3 +30,29 @@
 - LLM может вернуть несуществующую папку — валидируй против реального дерева vault, фолбэк в дефолтную, но покажи пользователю.
 - Название от LLM чисти для файловой системы (`/`, `:` и т.п.).
 - Summary длинной встречи может не влезть в контекст маленькой модели — чанкуй транскрипт с промежуточными summary (map-reduce), задокументируй лимиты.
+
+## Результат
+
+Выполнено полностью; `swift build` и `swift test` зелёные (402 теста, +45 новых).
+
+**Что сделано** (порт паттернов TaskFSM/TaskContext/ChatStore из MA):
+
+- `Meetings/MeetingModels.swift` — `MeetingState` (`recorded → transcribing → transcribed → summarizing → awaitingTitle → filing → done` + `failed`), `MeetingRunStatus` (running/paused/awaitingUser/failed/finished — статус прогона поверх этапа, как TaskRunStatus в MA), `MeetingFSM.transitions` (таблица — единственный источник истины, guarded `transitioned(to:)` с precondition), `MeetingContext` (Codable, каждый ключ через decodeIfPresent), `TrackTranscript` (многодорожечные записи), `MeetingError`.
+- `Meetings/MeetingStore.swift` — паттерн ChatStore: атомарная запись, битый файл → `meetings.corrupt.json`, debounce 300 мс + `persistNow()` после каждого перехода, `normalize()` на старте (running → paused). URL файла инжектируется (тесты).
+- `Meetings/MeetingPrompts.swift` — системный промпт + структурный user-блок `[TRANSCRIPT]/[VAULT_FOLDERS]/[USER_RULES]/[PRESET_TITLE]`; парсер `TITLE:/FOLDER:/SUMMARY:` (снисходительный: частичный ответ отдаёт что нашёл, мусор целиком в summary); map-reduce чанкование >24 тыс. символов (лимит под локальные модели с контекстом 8k).
+- `Meetings/MeetingNoteWriter.swift` — sanitize названия (ФС-запрещённые символы → «-», кап 80), валидация папки LLM по дереву vault (фолбэк `Meetings/YYYY-MM` + флаг для UI; `Meetings/*` легальны всегда), путь с коллизией → « (2)», заметка (frontmatter: date/duration/transcription/audio-wikilinks + Саммари + Транскрипт с таймкодами по дорожкам), запись без перезаписи существующего.
+- `Meetings/MeetingPipeline.swift` — идемпотентный `run(id:)`: цикл по state, после каждого перехода persistNow; ретраи шага до `maxStepRetries=2`, затем `failed` (+`failedStage` для ретрая); `confirmTitle` продолжает из awaitingTitle; vault инжектируется замыканиями (тестируемость). Транскрибируются ВСЕ дорожки записи.
+- `Meetings/MeetingSettings.swift` — правила раскладки (`[USER_RULES]`), JSON в App Support; задача 17 заберёт в общий экран настроек.
+- UI: поле «Название встречи» до записи (минует диалог), кнопки у записи (Транскрибировать/Продолжить/Повторить/Подтвердить название…/Открыть заметку), прогресс по стадиям, sheet подтверждения названия/папки с саммари и предупреждением о заменённой папке, DisclosureGroup правил раскладки. «Открыть заметку» переключает на раздел «Заметки» (Notification `.openNoteInEditor`).
+
+**Тесты**: MeetingFSMTests (эталонная таблица + перебор всех пар, терминальность, guarded-переход), MeetingPromptsTests (полный/частичный/мусорный ответ, регистр, многострочный summary, чанкование), MeetingNoteWriterTests (кириллица, коллизии, фолбэк папки, frontmatter, запрет перезаписи), MeetingStoreTests (round-trip, миграция минимального JSON, карантин, normalize), MeetingPipelineTests (полный прогон с/без преднастроенного названия, resume из середины пайплайна по JSON, ретраи + ретрай из failed, отсутствие провайдера/файла, map-reduce: 2 map-запроса + финальный).
+
+**Отклонения/решения**:
+- Добавлен статус прогона `MeetingRunStatus` поверх этапов FSM (в описании задачи неявно) — иначе «paused» пришлось бы делать состоянием и таблица бы распухла; это ровно паттерн MA.
+- Ретрай после лимита: state=`failed`, кнопка «Повторить» возвращает в упавший этап (переходы `failed → transcribing/summarizing/filing` в таблице).
+- `swift run`/UI-запуск не проверялся вручную (нужны API-ключи и живой vault): записать встречу → Транскрибировать (ключ OpenAI/Deepgram в Keychain/env) → подтвердить название → заметка в папке; убить приложение во время транскрипции → «Продолжить» доводит до конца.
+
+**Агентам следующих задач**:
+- 09/10: локальные провайдеры достаточно зарегистрировать в ProviderRegistry — роутер подхватит их для `.transcription`/`.meetingSummary` без изменений пайплайна.
+- 17: забрать `MeetingSettings.filingRules` в экран настроек; роутинг функций уже настраивается через FunctionRouter.assign.
+- 12 (чат): паттерн вызова ChatProvider через роутер — в `MeetingPipeline.summarizeStep`.

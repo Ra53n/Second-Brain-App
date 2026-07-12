@@ -1,14 +1,15 @@
-// MeetingsViewModel.swift — состояние раздела «Встречи» (задача 06):
-// запись + список прошлых записей + плеер.
+// MeetingsViewModel.swift — состояние раздела «Встречи» (задачи 06 + 11):
+// запись, список записей с плеером и пайплайн «запись → заметка».
 //
 // Владеет RecordingSession (создаёт на старте записи), списком записей
-// (скан <vault>/Meetings/_recordings/: sidecar-метаданные + файлы-сироты)
-// и одним AVPlayer на раздел. Разрешение на микрофон запрашивается перед
-// стартом; статусы разрешений опубликованы для UI. При открытии раздела и
-// смене vault подхватывает осиротевшие .caf после краша (recoverOrphans).
+// (скан <vault>/Meetings/_recordings/: sidecar-метаданные + файлы-сироты),
+// одним AVPlayer на раздел, MeetingStore + MeetingPipeline (задача 11).
+// Разрешение на микрофон запрашивается перед стартом; статусы разрешений
+// опубликованы для UI. При открытии раздела и смене vault подхватывает
+// осиротевшие .caf после краша (recoverOrphans).
 //
-// Пайплайн встречи (транскрипция → summary → заметка) появится в задаче 11
-// и будет строиться поверх этого VM.
+// Поле «название встречи» заполняется ДО записи — тогда пайплайн после
+// summary идёт в filing без диалога подтверждения.
 
 import AVFoundation
 import Combine
@@ -37,6 +38,24 @@ final class MeetingsViewModel: ObservableObject {
     @Published private(set) var micAuthorized: Bool?
     @Published private(set) var playingURL: URL?
 
+    // --- пайплайн встречи (задача 11) ---
+    /// Название встречи, заданное ДО записи: пайплайн минует диалог подтверждения.
+    @Published var presetTitle: String = ""
+    /// Контекст, ждущий подтверждения названия/папки (открывает sheet).
+    @Published var titleDialog: MeetingContext?
+    @Published var pipelineError: String?
+    /// Правила раскладки для LLM (редактируются в разделе, [USER_RULES] промпта).
+    @Published var filingRules: String {
+        didSet {
+            guard filingRules != oldValue else { return }
+            var settings = MeetingSettings()
+            settings.filingRules = filingRules
+            MeetingSettingsStore.save(settings)
+        }
+    }
+    let meetingStore: MeetingStore
+    private(set) var pipeline: MeetingPipeline!
+
     /// Поддерживает ли эта macOS запись системного звука (process tap, 14.4+).
     nonisolated static var systemAudioSupported: Bool {
         if #available(macOS 14.4, *) { return true }
@@ -48,8 +67,25 @@ final class MeetingsViewModel: ObservableObject {
     private var playbackObserver: NSObjectProtocol?
     private var cancellables: Set<AnyCancellable> = []
 
-    init(vaultManager: VaultManager) {
+    init(vaultManager: VaultManager, functionRouter: FunctionRouter) {
         self.vaultManager = vaultManager
+        self.meetingStore = MeetingStore()
+        self.filingRules = MeetingSettingsStore.load().filingRules
+        self.pipeline = MeetingPipeline(
+            router: functionRouter,
+            store: meetingStore,
+            vaultURL: { [weak vaultManager] in vaultManager?.vaultURL },
+            vaultFolders: { [weak vaultManager] in
+                guard let manager = vaultManager,
+                      let vault = manager.vaultURL,
+                      let root = manager.root else { return [] }
+                // Относительные пути папок vault для промпта и валидации.
+                let prefix = vault.path.hasSuffix("/") ? vault.path : vault.path + "/"
+                return root.allFolders
+                    .map { $0.url.path }
+                    .compactMap { $0.hasPrefix(prefix) ? String($0.dropFirst(prefix.count)) : nil }
+                    .filter { !$0.isEmpty }
+            })
         // Статус без промпта: notDetermined оставляем nil («спросим при записи»).
         switch AVCaptureDevice.authorizationStatus(for: .audio) {
         case .authorized: micAuthorized = true
@@ -119,12 +155,88 @@ final class MeetingsViewModel: ObservableObject {
     func stopRecording() async {
         guard let session else { return }
         do {
-            _ = try await session.stop()
+            let result = try await session.stop()
+            // Название задано до записи — сразу заводим контекст встречи:
+            // пайплайн потом пройдёт мимо диалога подтверждения (задача 11).
+            let preset = presetTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !preset.isEmpty, let base = session.currentBaseName {
+                meetingStore.upsert(MeetingContext(
+                    recordingBase: base,
+                    audioFiles: result.metadata.files,
+                    recordedAt: result.metadata.date,
+                    duration: result.metadata.duration,
+                    presetTitle: preset))
+                presetTitle = ""
+            }
         } catch {
             lastError = normalize(error)
         }
         self.session = nil
         refresh()
+    }
+
+    // MARK: - Пайплайн встречи (задача 11)
+
+    /// Контекст встречи для строки списка (nil — пайплайн не запускался).
+    func meeting(for item: RecordingItem) -> MeetingContext? {
+        meetingStore.context(forRecordingBase: item.id)
+    }
+
+    /// Кнопка «Транскрибировать»/«Продолжить»/«Повторить»: создаёт контекст
+    /// при необходимости и (воз)обновляет прогон.
+    func runPipeline(for item: RecordingItem) {
+        let context: MeetingContext
+        if let existing = meeting(for: item) {
+            context = existing
+        } else {
+            context = MeetingContext(
+                recordingBase: item.id,
+                audioFiles: trackFileNames(for: item),
+                recordedAt: item.date ?? .distantPast,
+                duration: item.duration ?? 0,
+                presetTitle: nil)
+            meetingStore.upsert(context)
+        }
+        Task { [weak self] in
+            await self?.pipeline.run(context.id)
+            self?.presentTitleDialogIfNeeded(context.id)
+        }
+    }
+
+    /// Подтверждение из диалога названия/папки.
+    func confirmTitle(_ title: String, folder: String) {
+        guard let context = titleDialog else { return }
+        titleDialog = nil
+        Task { [weak self] in
+            await self?.pipeline.confirmTitle(context.id, title: title, folder: folder)
+        }
+    }
+
+    /// Открывает диалог, если прогон дошёл до awaitingTitle (в т.ч. после рестарта).
+    func presentTitleDialogIfNeeded(_ id: UUID) {
+        guard let context = meetingStore.context(id: id) else { return }
+        if context.state == .awaitingTitle {
+            titleDialog = context
+        } else if context.status == .failed {
+            pipelineError = context.errorText
+        }
+    }
+
+    /// Заметка встречи открывается в разделе «Заметки».
+    func openNote(_ context: MeetingContext) {
+        guard let vault = vaultManager.vaultURL, let path = context.notePath else { return }
+        NotificationCenter.default.post(name: .openNoteInEditor,
+                                        object: vault.appendingPathComponent(path))
+    }
+
+    /// Имена всех дорожек записи (из sidecar; сирота — единственный файл).
+    private func trackFileNames(for item: RecordingItem) -> [String] {
+        guard let directory = recordingsDirectory else { return [item.playbackURL.lastPathComponent] }
+        let sidecar = RecordingMetadataStore.sidecarURL(base: item.id, in: directory)
+        if let metadata = try? RecordingMetadataStore.load(from: sidecar), !metadata.files.isEmpty {
+            return metadata.files
+        }
+        return [item.playbackURL.lastPathComponent]
     }
 
     // MARK: - Список записей
@@ -234,4 +346,9 @@ final class MeetingsViewModel: ObservableObject {
     private func normalize(_ error: Error) -> AudioRecordingError {
         (error as? AudioRecordingError) ?? .fileWriteFailed(error.localizedDescription)
     }
+}
+
+extension Notification.Name {
+    /// Открыть заметку в разделе «Заметки»: object — URL файла (ловит ContentView).
+    static let openNoteInEditor = Notification.Name("openNoteInEditor")
 }

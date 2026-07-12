@@ -56,12 +56,15 @@ struct ContentView: View {
         let manager = VaultManager()
         _vaultManager = StateObject(wrappedValue: manager)
         _searchViewModel = StateObject(wrappedValue: SearchViewModel(vaultManager: manager))
-        _meetingsViewModel = StateObject(wrappedValue: MeetingsViewModel(vaultManager: manager))
 
         let registry = ProviderRegistry()
         CloudProviders.registerAll(in: registry)
         _providerRegistry = StateObject(wrappedValue: registry)
-        _functionRouter = StateObject(wrappedValue: FunctionRouter(registry: registry))
+        let router = FunctionRouter(registry: registry)
+        _functionRouter = StateObject(wrappedValue: router)
+        // Встречи зависят от vault (записи) и роутера (транскрипция/summary).
+        _meetingsViewModel = StateObject(wrappedValue: MeetingsViewModel(vaultManager: manager,
+                                                                         functionRouter: router))
     }
 
     var body: some View {
@@ -81,6 +84,13 @@ struct ContentView: View {
         // Quick switcher: команда меню (Cmd+P, App.swift) шлёт нотификацию.
         .onReceive(NotificationCenter.default.publisher(for: .showQuickSwitcher)) { _ in
             showsQuickSwitcher = true
+        }
+        // «Открыть заметку» из раздела встреч: переключаемся на «Заметки».
+        .onReceive(NotificationCenter.default.publisher(for: .openNoteInEditor)) { notification in
+            guard let url = notification.object as? URL else { return }
+            selection = .notes
+            vaultManager.rebuild() // свежесозданная заметка могла ещё не попасть в дерево
+            vaultManager.selection = url
         }
         .sheet(isPresented: $showsQuickSwitcher) {
             QuickSwitcherView(vaultManager: vaultManager)

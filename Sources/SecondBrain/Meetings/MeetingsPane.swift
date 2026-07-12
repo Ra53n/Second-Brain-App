@@ -1,7 +1,7 @@
-// MeetingsPane.swift — UI раздела «Встречи» (задача 06): панель записи
-// (источник, кнопка, таймер, индикаторы уровня, статусы разрешений) и
-// список прошлых записей с плеером. Транскрипция и заметки встреч придут
-// в задаче 11 и займут detail-колонку.
+// MeetingsPane.swift — UI раздела «Встречи» (задачи 06 + 11): панель записи
+// (источник, название до записи, кнопка, таймер, уровни, разрешения), правила
+// раскладки, список записей с плеером и статусом пайплайна «запись → заметка»
+// (кнопки Транскрибировать/Продолжить/Повторить, диалог названия/папки).
 
 import SwiftUI
 
@@ -25,6 +25,18 @@ struct MeetingsPane: View {
             actions: { Button("OK", role: .cancel) {} },
             message: { Text(viewModel.lastError?.errorDescription ?? "") }
         )
+        .alert(
+            "Пайплайн встречи",
+            isPresented: Binding(
+                get: { viewModel.pipelineError != nil },
+                set: { if !$0 { viewModel.pipelineError = nil } }
+            ),
+            actions: { Button("OK", role: .cancel) {} },
+            message: { Text(viewModel.pipelineError ?? "") }
+        )
+        .sheet(item: $viewModel.titleDialog) { context in
+            TitleConfirmationView(context: context, viewModel: viewModel)
+        }
     }
 
     // MARK: - Панель записи
@@ -40,7 +52,7 @@ struct MeetingsPane: View {
         }
     }
 
-    /// Панель до старта: выбор источника, кнопка записи, статусы разрешений.
+    /// Панель до старта: выбор источника, название, кнопка записи, разрешения.
     @ViewBuilder
     private var idleControls: some View {
         Picker("Источник", selection: $viewModel.sourceChoice) {
@@ -50,6 +62,11 @@ struct MeetingsPane: View {
         }
         .pickerStyle(.segmented)
         .labelsHidden()
+
+        // Название до записи: пайплайн пройдёт без диалога подтверждения.
+        TextField("Название встречи (можно оставить пустым — предложит ИИ)",
+                  text: $viewModel.presetTitle)
+            .textFieldStyle(.roundedBorder)
 
         HStack(spacing: 12) {
             Button {
@@ -63,6 +80,21 @@ struct MeetingsPane: View {
         }
 
         permissionStatus
+
+        DisclosureGroup("Правила раскладки (для ИИ)") {
+            TextEditor(text: $viewModel.filingRules)
+                .font(.callout)
+                .frame(minHeight: 48, maxHeight: 96)
+                .overlay(alignment: .topLeading) {
+                    if viewModel.filingRules.isEmpty {
+                        Text("Например: встречи 1:1 клади в «Управление командой/1на1»")
+                            .foregroundStyle(.tertiary)
+                            .padding(.top, 8).padding(.leading, 5)
+                            .allowsHitTesting(false)
+                    }
+                }
+        }
+        .font(.caption)
     }
 
     /// Статусы разрешений — видны до записи, чтобы сюрпризов не было.
@@ -103,11 +135,118 @@ struct MeetingsPane: View {
         } else {
             List(viewModel.recordings) { item in
                 RecordingRow(item: item,
-                             isPlaying: viewModel.playingURL == item.playbackURL) {
+                             isPlaying: viewModel.playingURL == item.playbackURL,
+                             viewModel: viewModel) {
                     viewModel.togglePlayback(of: item)
                 }
             }
             .listStyle(.inset)
+        }
+    }
+}
+
+/// Статус и действия пайплайна встречи для строки записи.
+private struct PipelineStatusView: View {
+    let item: MeetingsViewModel.RecordingItem
+    @ObservedObject var meetingStore: MeetingStore
+    let viewModel: MeetingsViewModel
+
+    var body: some View {
+        let context = viewModel.meeting(for: item)
+        HStack(spacing: 8) {
+            switch (context?.state, context?.status) {
+            case (nil, _), (.recorded, _):
+                Button("Транскрибировать") { viewModel.runPipeline(for: item) }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+            case (.done, _):
+                if let context {
+                    Button {
+                        viewModel.openNote(context)
+                    } label: {
+                        Label("Открыть заметку", systemImage: "doc.text")
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                }
+            case (.failed, _):
+                Label(context?.errorText ?? "Ошибка", systemImage: "exclamationmark.triangle")
+                    .foregroundStyle(.orange)
+                    .lineLimit(1)
+                Button("Повторить") { viewModel.runPipeline(for: item) }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+            case (.awaitingTitle, _):
+                Button("Подтвердить название…") {
+                    if let context { viewModel.titleDialog = context }
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.small)
+            case (_, .paused):
+                Button {
+                    viewModel.runPipeline(for: item)
+                } label: {
+                    Label("Продолжить (\(context?.state.label ?? ""))", systemImage: "play")
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+            default:
+                ProgressView()
+                    .controlSize(.small)
+                Text(context?.state.label ?? "")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+}
+
+/// Диалог подтверждения названия/папки (пайплайн стоит в awaitingTitle).
+private struct TitleConfirmationView: View {
+    let context: MeetingContext
+    let viewModel: MeetingsViewModel
+    @State private var title: String = ""
+    @State private var folder: String = ""
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Оформление встречи")
+                .font(.headline)
+            if context.folderWasInvalid {
+                Label("ИИ предложил несуществующую папку — подставлена папка по умолчанию.",
+                      systemImage: "exclamationmark.triangle")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+            }
+            TextField("Название встречи", text: $title)
+                .textFieldStyle(.roundedBorder)
+            TextField("Папка в vault", text: $folder)
+                .textFieldStyle(.roundedBorder)
+            if !context.summary.isEmpty {
+                ScrollView {
+                    Text(context.summary)
+                        .font(.callout)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .frame(maxHeight: 180)
+            }
+            HStack {
+                Spacer()
+                Button("Отмена") { viewModel.titleDialog = nil }
+                Button("Создать заметку") {
+                    viewModel.confirmTitle(title, folder: folder)
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(title.trimmingCharacters(in: .whitespaces).isEmpty)
+            }
+        }
+        .padding()
+        .frame(minWidth: 460)
+        .onAppear {
+            title = context.effectiveTitle
+            folder = context.effectiveFolder.isEmpty
+                ? MeetingNoteWriter.defaultFolder(for: context.recordedAt)
+                : context.effectiveFolder
         }
     }
 }
@@ -209,10 +348,11 @@ private struct PermissionRow: View {
     }
 }
 
-/// Строка списка записей: имя, дата, длительность, режим, кнопка плеера.
+/// Строка списка записей: имя, дата, длительность, режим, плеер + пайплайн.
 private struct RecordingRow: View {
     let item: MeetingsViewModel.RecordingItem
     let isPlaying: Bool
+    let viewModel: MeetingsViewModel
     let togglePlay: () -> Void
 
     private static let dateFormatter: DateFormatter = {
@@ -251,6 +391,9 @@ private struct RecordingRow: View {
                 .foregroundStyle(.secondary)
             }
             Spacer()
+            PipelineStatusView(item: item,
+                               meetingStore: viewModel.meetingStore,
+                               viewModel: viewModel)
         }
         .contextMenu {
             Button("Показать в Finder") {
