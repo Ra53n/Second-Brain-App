@@ -55,6 +55,8 @@ struct ContentView: View {
     /// Локальная транскрипция WhisperKit (задача 10).
     @StateObject private var whisperProvider: WhisperKitProvider
     @StateObject private var whisperModelsViewModel: WhisperModelsViewModel
+    /// Раздел «Чат» (задача 12).
+    @StateObject private var chatViewModel: ChatViewModel
     @State private var showsQuickSwitcher = false
 
     init() {
@@ -79,6 +81,8 @@ struct ContentView: View {
         // Встречи зависят от vault (записи) и роутера (транскрипция/summary).
         _meetingsViewModel = StateObject(wrappedValue: MeetingsViewModel(vaultManager: manager,
                                                                          functionRouter: router))
+        _chatViewModel = StateObject(wrappedValue: ChatViewModel(router: router,
+                                                                 registry: registry))
     }
 
     var body: some View {
@@ -129,6 +133,8 @@ struct ContentView: View {
             VaultPane(manager: vaultManager, searchViewModel: searchViewModel)
         case .meetings:
             MeetingsPane(viewModel: meetingsViewModel)
+        case .chat:
+            ChatListPane(viewModel: chatViewModel)
         case .settings:
             // Пока единственная секция настроек — локальные модели (задачи 09/10);
             // остальные настройки добавит задача 17.
@@ -153,10 +159,12 @@ struct ContentView: View {
     /// Расширения файлов, которые открываются в markdown-редакторе.
     private static let editableExtensions: Set<String> = ["md", "markdown", "txt"]
 
-    /// Detail: для «Заметок» — редактор (markdown/текст) или информация о файле.
+    /// Detail: «Заметки» — редактор или информация о файле, «Чат» — диалог.
     @ViewBuilder
     private var sectionDetail: some View {
-        if selection == .notes {
+        if selection == .chat {
+            ChatDetailView(viewModel: chatViewModel)
+        } else if selection == .notes {
             if let url = vaultManager.selection,
                let node = vaultManager.root?.find(url) {
                 if !node.isDirectory,
