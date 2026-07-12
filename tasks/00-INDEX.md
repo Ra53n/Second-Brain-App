@@ -11,7 +11,7 @@
 | 03b | [Live Preview: плавность + типографика + удобства](03b-live-preview-rework.md) | 03, 04 | [x] |
 | 04 | [Wikilinks и backlinks](04-wikilinks-backlinks.md) | 03 | [x] |
 | 05 | [Поиск по vault](05-vault-search.md) | 02 | [x] |
-| 06 | [Запись звука](06-audio-recording.md) | 02 | [ ] |
+| 06 | [Запись звука](06-audio-recording.md) | 02 | [x] |
 | 07 | [Абстракция LLM-провайдеров](07-provider-abstraction.md) | 01 | [x] |
 | 08 | [Облачные провайдеры](08-cloud-providers.md) | 07 | [x] |
 | 09 | [Менеджер локальных LLM](09-local-llm-manager.md) | 07 | [ ] |

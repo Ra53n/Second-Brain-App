@@ -28,3 +28,32 @@
 - Process tap — новый и капризный API; смотри WWDC24 «Capture system audio» и заголовки CoreAudio/AudioHardwareTapping.h. Если совсем не взлетит — зафиксируй в «Результате» и оставь микрофонный режим (для встреч в переговорке его достаточно), систему — отдельной подзадачей.
 - Пиши AAC сразу через AVAudioFile с настройками формата, без промежуточного WAV (минута WAV ~10 МБ).
 - Захват системного звука требует TCC-разрешения (аналог Screen Recording) — при отладке через `swift run` разрешение выдаётся терминалу, у .app своё; проверяй оба сценария.
+
+## Результат
+
+Выполнено полностью; `swift build` и `swift test` зелёные (357 тестов, +25 новых).
+
+**Что сделано** (Manager Assistant аудио-кода не содержит — модуль написан с нуля в стиле проекта):
+
+- `Audio/MicrophoneRecorder.swift` — AVAudioEngine → tap → AVAudioFile (AAC), уровень сигнала через `AudioLevelMeter` (RMS → 0…1).
+- `Audio/SystemAudioRecorder.swift` — Core Audio process tap (macOS 14.4+): `CATapDescription(stereoGlobalTapButExcludeProcesses:)` → `AudioHardwareCreateProcessTap` → приватный агрегат-девайс (default output + тап, drift-компенсация) → IOProc → AVAudioFile. Любой сбой → `AudioRecordingError.coreAudio(operation:status:)` с внятным сообщением; на macOS < 14.4 — `.systemAudioUnsupported`, микрофонный режим работает (graceful fallback).
+- `Audio/RecordingSession.swift` — FSM `idle → recording ⇄ paused → stopped` с guarded transitions (как в MA); дорожки за протоколом `AudioTrackRecorder` (в тестах моки); часы/дата/конвертер инжектируются; чистая длительность без пауз.
+- `Audio/RecordingNamer.swift`, `Audio/RecordingMetadata.swift` — имена `YYYY-MM-DD HH-mm` (+` (2)` при коллизии), sidecar JSON со снисходительным декодером.
+- `Audio/AudioFileConverter.swift` — перепаковка CAF→m4a (passthrough, fallback перекодирование) + `recoverOrphans()`.
+- UI: `Meetings/MeetingsPane.swift` + `MeetingsViewModel.swift` — выбор источника, запись/пауза/стоп (⌘⇧R / ⌘.), таймер, индикаторы уровня обеих дорожек, статусы разрешений, список записей с AVPlayer и «Показать в Finder». Подключено в ContentView (`AppSection.meetings`).
+- `run.sh`: добавлен `NSAudioCaptureUsageDescription` (микрофонный ключ уже был с задачи 01).
+
+**Ключевые решения** (задокументированы в ARCHITECTURE.md):
+
+1. **Crash-safety через CAF**: `.m4a` нечитаем без финализации moov-атома, поэтому во время записи дорожка стримится как AAC-в-CAF (валиден на любом префиксе), при остановке перепаковывается в `.m4a` без перекодирования. После kill -9 остаётся читаемый `.caf`; его при следующем открытии раздела подхватывает `recoverOrphans()`: перепаковка + восстановление sidecar (дата из имени, длительность из файла).
+2. **Режим «оба» = две дорожки в два файла** (`<base>.m4a` + `<base> (система).m4a`), не микс: два асинхронных clock-домена мешать в реалтайме сложно и рискованно, транскрипции раздельные дорожки удобнее.
+3. **Sidecar рядом с записью** (`<base>.json` в `_recordings/`), не в Application Support: запись самодостаточна и уезжает с vault при git-синхронизации (задача 16).
+4. Пауза — атомарный флаг «не писать буферы», движок/тап не перезапускаются.
+
+**Тесты**: `RecordingSessionTests` (полная таблица недопустимых переходов, длительность с паузами на инжектированных часах, две дорожки, sidecar, подчистка при сбое старта, коллизии имён), `RecordingNamerTests`, `RecordingMetadataTests` (round-trip + миграции + битый JSON), `AudioLevelMeterTests`, `AudioFileConverterTests` (реальная перепаковка синтезированного CAF, восстановление сирот — тест поймал баг апгрейда `.system`→`.both` при недетерминированном порядке дорожек).
+
+**Агентам следующих задач**:
+
+- Задача 11 (пайплайн встречи): вход — `RecordingSession.Result` (файлы + sidecar) либо скан `_recordings/`; у записи может быть ДВЕ дорожки (`metadata.files`), транскрибировать стоит обе. `MeetingsViewModel` — точка расширения UI.
+- Задача 19: рассмотреть штатное закрытие записи в `applicationWillTerminate` (сейчас quit во время записи ведёт себя как краш — запись восстановится из .caf при следующем запуске, но потеряет несколько последних буферизованных сэмплов и факт пауз).
+- **Ручная проверка не выполнялась** (агент без доступа к аудио-железу/TCC-промптам): записать минуту с микрофона, записать YouTube-звук системным тапом, kill -9 во время записи → после перезапуска запись в списке. TCC: у `swift run` разрешения терминала, у `SecondBrain.app` свои — проверить оба.

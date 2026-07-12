@@ -53,8 +53,9 @@ if [ -f "${ICON_SRC}" ]; then
     cp "${ICON_SRC}" "${APP_DIR}/Contents/Resources/AppIcon.icns"
 fi
 
-# NSMicrophoneUsageDescription — заранее: запись встреч появится в задаче 06,
-# а без ключа в Info.plist macOS молча убивает приложение при обращении к микрофону.
+# NSMicrophoneUsageDescription / NSAudioCaptureUsageDescription — без этих
+# ключей в Info.plist macOS молча убивает приложение при обращении к микрофону
+# или системному звуку (Core Audio process tap, задача 06).
 cat > "${APP_DIR}/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -84,6 +85,8 @@ cat > "${APP_DIR}/Contents/Info.plist" <<PLIST
     <string>NSApplication</string>
     <key>NSMicrophoneUsageDescription</key>
     <string>Second Brain записывает встречи с микрофона для последующей транскрипции.</string>
+    <key>NSAudioCaptureUsageDescription</key>
+    <string>Second Brain записывает системный звук (голоса собеседников в Zoom/Meet) для транскрипции встреч.</string>
 </dict>
 </plist>
 PLIST

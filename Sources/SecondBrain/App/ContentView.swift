@@ -1,8 +1,8 @@
 // ContentView.swift — корневой экран: NavigationSplitView (разделы → контент → detail).
 //
-// Раздел «Заметки» жив (задача 02): средняя колонка — дерево vault, detail —
-// информация о выбранном файле (редактор придёт в задаче 03). Остальные разделы —
-// заглушки до своих задач (Встречи — 11, Чат — 12, Настройки — 17).
+// Живые разделы: «Заметки» (задачи 02–05) и «Встречи» (запись — задача 06;
+// транскрипция и заметки встреч придут в 11). Остальные — заглушки до своих
+// задач (Чат — 12, Настройки — 17).
 
 import SwiftUI
 
@@ -29,7 +29,7 @@ enum AppSection: String, CaseIterable, Identifiable {
     var plannedTask: String {
         switch self {
         case .notes: return "02–05"
-        case .meetings: return "06, 11"
+        case .meetings: return "11" // запись уже есть (06), пайплайн встречи — в 11
         case .chat: return "12–14"
         case .settings: return "17"
         }
@@ -47,6 +47,8 @@ struct ContentView: View {
     /// чтобы объектный граф был готов, когда эти разделы появятся.
     @StateObject private var providerRegistry: ProviderRegistry
     @StateObject private var functionRouter: FunctionRouter
+    /// Раздел «Встречи»: запись и список записей (задача 06).
+    @StateObject private var meetingsViewModel: MeetingsViewModel
     @State private var showsQuickSwitcher = false
 
     init() {
@@ -54,6 +56,7 @@ struct ContentView: View {
         let manager = VaultManager()
         _vaultManager = StateObject(wrappedValue: manager)
         _searchViewModel = StateObject(wrappedValue: SearchViewModel(vaultManager: manager))
+        _meetingsViewModel = StateObject(wrappedValue: MeetingsViewModel(vaultManager: manager))
 
         let registry = ProviderRegistry()
         CloudProviders.registerAll(in: registry)
@@ -93,12 +96,15 @@ struct ContentView: View {
         )
     }
 
-    /// Средняя колонка: для «Заметок» — дерево vault, для остальных — заглушка.
+    /// Средняя колонка: «Заметки» — дерево vault, «Встречи» — запись и
+    /// список записей, остальные — заглушки.
     @ViewBuilder
     private var sectionContent: some View {
         switch selection {
         case .notes:
             VaultPane(manager: vaultManager, searchViewModel: searchViewModel)
+        case .meetings:
+            MeetingsPane(viewModel: meetingsViewModel)
         case .some(let section):
             ContentUnavailableView {
                 Label(section.rawValue, systemImage: section.systemImage)
