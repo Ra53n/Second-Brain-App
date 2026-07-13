@@ -55,28 +55,23 @@ final class SyncViewModel: ObservableObject {
     @Published private(set) var missingIgnoreEntries: [String] = []
     /// Черновик сообщения коммита в панели; пустой → авто-сообщение бэкапа.
     @Published var commitMessageDraft = ""
-    /// Интервал авто-бэкапа в минутах; 0 — выключен. Персистентно.
-    @Published var autoBackupMinutes: Int {
-        didSet { defaults.set(autoBackupMinutes, forKey: Self.autoBackupKey) }
-    }
+    /// Интервал авто-бэкапа в минутах; 0 — выключен. Источник истины —
+    /// SettingsStore (задача 17), двустороннюю связку держит AppModel.
+    @Published var autoBackupMinutes = 0
     /// Время последнего успешного авто-бэкапа (для строки статуса).
     @Published private(set) var lastBackupDate: Date?
 
     /// Варианты интервала авто-бэкапа для UI (минуты; 0 — выключен).
     static let autoBackupChoices = [0, 5, 15, 30, 60]
-    static let autoBackupKey = "gitSync.autoBackupMinutes"
 
     private(set) var client: GitClient?
     private var vaultURL: URL?
-    private let defaults: UserDefaults
     private var timer: Timer?
     /// Последняя ПОПЫТКА авто-бэкапа (не успех): неудачный push не должен
     /// превращаться в ретрай каждые 30 секунд.
     private var lastAutoBackupAttempt: Date?
 
-    init(defaults: UserDefaults = .standard) {
-        self.defaults = defaults
-        self.autoBackupMinutes = defaults.integer(forKey: Self.autoBackupKey)
+    init() {
         // Тик раз в 30 с; сам решает, пора ли (AutoBackup.isDue) — так смена
         // интервала в настройках не требует пересоздания таймера.
         timer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in

@@ -31,3 +31,22 @@
 ## Подсказки
 - SwiftUI `Settings` scene даёт стандартное окно с тулбар-вкладками бесплатно.
 - Ключи никогда не отображай (только статус «задан»); кнопка «показать» не нужна.
+
+## Результат
+
+Сделано по плану; заглушек не потребовалось — все зависимые задачи (09, 11, 15, 16) к этому моменту выполнены, окно собрано полностью.
+
+- **Окно Settings (Cmd+,)**: SwiftUI `Settings`-сцена, `Settings/SettingsViews.swift` — TabView с вкладками: Общие (vault: текущий/смена/недавние, dot-папки, авто-открытие; RAG-индекс), Провайдеры (ключи: статус «задан», ввод SecureField, удаление, проверка кнопкой), Модели (роутинг функция → провайдер+модель с пикером «Авто», предупреждения о недействующих назначениях), Встречи (промпт раскладки с плейсхолдером-дефолтом и сбросом, папка и источник записи по умолчанию), Локальные модели (Ollama/Whisper + новый idle-таймаут), MCP (существующая секция), Синхронизация (интервал авто-бэкапа, состояние ветки/remote без секретов в URL).
+- **AppModel** (`App/AppModel.swift`): объектный граф переехал из ContentView.init — окно Settings живёт в отдельной сцене и должно видеть те же объекты. Владелец — `SecondBrainApp` (@StateObject). Здесь же Combine-связки «настройка ↔ поведение»: dot-папки (двусторонняя с тулбаром дерева), интервал авто-бэкапа (двусторонняя с панелью синка), idle-таймаут → OllamaManager/WhisperKitProvider, привязка git-синка к vault (переехала из ContentView).
+- **SettingsStore** (`Settings/SettingsStore.swift`): settings.json (паттерн ChatStore: атомарно, карантин, decodeIfPresent). Поля: showsDotItems, restoreLastVault, autoBackupMinutes, localIdleMinutes. Одноразовая миграция из UserDefaults `gitSync.autoBackupMinutes` (задача 16) — существующий файл имеет приоритет. Специализированные сторы (routing.json, mcp-servers.json, meeting_settings.json, Keychain) остались на месте — они уже соответствуют конвенциям.
+- **RoutingValidator** — чистая валидация назначений (провайдер не найден / способность не совпадает / недоступен) для предупреждений на вкладке «Модели».
+- **KeyVerifier** (`Settings/KeyVerifier.swift`) — проверка ключа дешёвым GET (models/projects), секрет только в заголовке, вердикт: 2xx ok / 401,403 не принят / прочее «не удалось проверить».
+- **MeetingSettings** расширен: defaultFolder (фолбэк вместо Meetings/YYYY-MM — прокинут в resolveFolder и fileStep пайплайна), defaultSource (предвыбор источника записи). **Починен баг**: редактор filingRules сохранял `MeetingSettings()` целиком и стирал бы новые поля — теперь только `MeetingSettingsStore.update` (load-modify-save).
+- IdleShutdownPolicy.timeout стал настраиваемым (`setIdleTimeout` у OllamaManager и WhisperKitProvider), дефолт прежний 10 мин.
+- Раздел «Настройки» в сайдбаре теперь ведёт в окно Settings (SettingsLink); LocalModelsPane лишился секций RAG/MCP (переехали на свои вкладки), получил секцию idle-таймаута.
+
+Отклонения: SyncViewModel больше не персистит интервал сам (источник истины — SettingsStore, связку держит AppModel).
+
+Тесты: +17 (сериализация и миграция AppSettings/SettingsStore, карантин битого файла, RoutingValidator включая недоступный провайдер, миграция MeetingSettings и регрессия точечного update, KeyVerifier: ключ не попадает в URL). Всего 552 зелёные. Smoke-запуск приложения после рефакторинга графа — ок.
+
+Для задачи 18: security-scoped bookmarks и Keychain уже готовы к подписанной сборке; entitlements понадобятся для микрофона.

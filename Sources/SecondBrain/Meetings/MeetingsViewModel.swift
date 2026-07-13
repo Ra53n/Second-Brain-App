@@ -48,9 +48,9 @@ final class MeetingsViewModel: ObservableObject {
     @Published var filingRules: String {
         didSet {
             guard filingRules != oldValue else { return }
-            var settings = MeetingSettings()
-            settings.filingRules = filingRules
-            MeetingSettingsStore.save(settings)
+            // load-modify-save: файл настроек общий с окном Settings (задача 17),
+            // слепая перезапись стирала бы остальные поля.
+            MeetingSettingsStore.update { $0.filingRules = filingRules }
         }
     }
     let meetingStore: MeetingStore
@@ -70,7 +70,10 @@ final class MeetingsViewModel: ObservableObject {
     init(vaultManager: VaultManager, functionRouter: FunctionRouter) {
         self.vaultManager = vaultManager
         self.meetingStore = MeetingStore()
-        self.filingRules = MeetingSettingsStore.load().filingRules
+        let settings = MeetingSettingsStore.load()
+        self.filingRules = settings.filingRules
+        // Источник записи по умолчанию — из настроек (задача 17).
+        self.sourceChoice = settings.defaultSource ?? .microphone
         self.pipeline = MeetingPipeline(
             router: functionRouter,
             store: meetingStore,

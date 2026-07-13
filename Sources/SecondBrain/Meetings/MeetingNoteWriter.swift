@@ -58,11 +58,16 @@ enum MeetingNoteWriter {
 
     /// Валидация предложения LLM против реального дерева vault: несуществующая
     /// папка → фолбэк в дефолтную (wasInvalid=true — UI покажет пользователю).
-    /// Пустое предложение — не ошибка, просто дефолт.
+    /// Пустое предложение — не ошибка, просто дефолт. customDefault —
+    /// пользовательская папка по умолчанию из настроек (задача 17); пустая
+    /// строка — штатная Meetings/YYYY-MM.
     static func resolveFolder(suggested: String?,
                               existingFolders: [String],
-                              date: Date) -> (folder: String, wasInvalid: Bool) {
-        let fallback = defaultFolder(for: date)
+                              date: Date,
+                              customDefault: String = "") -> (folder: String, wasInvalid: Bool) {
+        let trimmedCustom = customDefault
+            .trimmingCharacters(in: CharacterSet.whitespaces.union(CharacterSet(charactersIn: "/")))
+        let fallback = trimmedCustom.isEmpty ? defaultFolder(for: date) : trimmedCustom
         guard let suggested else { return (fallback, false) }
         let normalized = suggested
             .trimmingCharacters(in: CharacterSet.whitespaces.union(CharacterSet(charactersIn: "/")))

@@ -1,8 +1,9 @@
 // ContentView.swift — корневой экран: NavigationSplitView (разделы → контент → detail).
 //
-// Живые разделы: «Заметки» (задачи 02–05) и «Встречи» (запись — задача 06;
-// транскрипция и заметки встреч придут в 11). Остальные — заглушки до своих
-// задач (Чат — 12, Настройки — 17).
+// Живые разделы: «Заметки» (02–05), «Встречи» (06/11), «Чат» (12–15).
+// «Настройки» с задачи 17 живут в стандартном окне Settings (Cmd+,) —
+// раздел сайдбара лишь открывает его. Объектный граф приложения создаёт
+// AppModel (общий для главного окна и окна Settings), View только читают.
 
 import SwiftUI
 
@@ -24,75 +25,23 @@ enum AppSection: String, CaseIterable, Identifiable {
         case .settings: return "gearshape"
         }
     }
-
-    /// Номер задачи из tasks/, в которой раздел получит содержимое.
-    var plannedTask: String {
-        switch self {
-        case .notes: return "02–05"
-        case .meetings: return "11" // запись уже есть (06), пайплайн встречи — в 11
-        case .chat: return "12–14"
-        case .settings: return "17"
-        }
-    }
 }
 
 /// Корневой view: сайдбар разделов, контент раздела, detail.
-/// VaultManager создаётся здесь — один на приложение, переживает смену разделов.
 struct ContentView: View {
     @State private var selection: AppSection? = .notes
-    @StateObject private var vaultManager: VaultManager
-    @StateObject private var searchViewModel: SearchViewModel
-    /// Реестр LLM-провайдеров + роутер функций (задачи 07/08). Ещё не используются
-    /// UI (чат — 12, встречи — 11, настройки — 17) — создаются здесь заранее,
-    /// чтобы объектный граф был готов, когда эти разделы появятся.
-    @StateObject private var providerRegistry: ProviderRegistry
-    @StateObject private var functionRouter: FunctionRouter
-    /// Раздел «Встречи»: запись и список записей (задача 06).
-    @StateObject private var meetingsViewModel: MeetingsViewModel
-    /// Локальный рантайм Ollama + экран управления моделями (задача 09).
-    @StateObject private var ollamaManager: OllamaManager
-    @StateObject private var localModelsViewModel: LocalModelsViewModel
-    /// Локальная транскрипция WhisperKit (задача 10).
-    @StateObject private var whisperProvider: WhisperKitProvider
-    @StateObject private var whisperModelsViewModel: WhisperModelsViewModel
-    /// Раздел «Чат» (задача 12).
-    @StateObject private var chatViewModel: ChatViewModel
-    /// RAG-индекс vault (задача 13).
-    @StateObject private var ragIndexManager: RagIndexManager
-    /// MCP-серверы (задача 15).
-    @StateObject private var mcpServersViewModel: MCPServersViewModel
-    /// Git-синхронизация vault (задача 16).
-    @StateObject private var syncViewModel: SyncViewModel
+    /// Общий объектный граф (владелец — SecondBrainApp).
+    let model: AppModel
+    /// Наблюдаемые здесь объекты: body читает их состояние напрямую
+    /// (дерево/выбор vault — detail, ошибки поиска — alert).
+    @ObservedObject private var vaultManager: VaultManager
+    @ObservedObject private var searchViewModel: SearchViewModel
     @State private var showsQuickSwitcher = false
 
-    init() {
-        // SearchViewModel подписан на VaultManager — создаём парой.
-        let manager = VaultManager()
-        _vaultManager = StateObject(wrappedValue: manager)
-        _searchViewModel = StateObject(wrappedValue: SearchViewModel(vaultManager: manager))
-
-        let registry = ProviderRegistry()
-        CloudProviders.registerAll(in: registry)
-        let ollama = OllamaManager()
-        LocalProviders.register(in: registry, ollamaManager: ollama)
-        _ollamaManager = StateObject(wrappedValue: ollama)
-        _localModelsViewModel = StateObject(wrappedValue: LocalModelsViewModel(manager: ollama))
-        let whisper = WhisperKitProvider()
-        LocalProviders.registerWhisper(in: registry, provider: whisper)
-        _whisperProvider = StateObject(wrappedValue: whisper)
-        _whisperModelsViewModel = StateObject(wrappedValue: WhisperModelsViewModel(provider: whisper))
-        _providerRegistry = StateObject(wrappedValue: registry)
-        let router = FunctionRouter(registry: registry)
-        _functionRouter = StateObject(wrappedValue: router)
-        // Встречи зависят от vault (записи) и роутера (транскрипция/summary).
-        _meetingsViewModel = StateObject(wrappedValue: MeetingsViewModel(vaultManager: manager,
-                                                                         functionRouter: router))
-        _chatViewModel = StateObject(wrappedValue: ChatViewModel(router: router,
-                                                                 registry: registry))
-        _ragIndexManager = StateObject(wrappedValue: RagIndexManager(vaultManager: manager,
-                                                                     router: router))
-        _mcpServersViewModel = StateObject(wrappedValue: MCPServersViewModel())
-        _syncViewModel = StateObject(wrappedValue: SyncViewModel())
+    init(model: AppModel) {
+        self.model = model
+        _vaultManager = ObservedObject(wrappedValue: model.vaultManager)
+        _searchViewModel = ObservedObject(wrappedValue: model.searchViewModel)
     }
 
     var body: some View {
@@ -112,13 +61,8 @@ struct ContentView: View {
         // Индикатор git-синхронизации vault (задача 16) — глобальный тулбар.
         .toolbar {
             ToolbarItem {
-                SyncStatusButton(viewModel: syncViewModel)
+                SyncStatusButton(viewModel: model.syncViewModel)
             }
-        }
-        // Синк привязан к открытому vault: подхватываем стартовый и смену.
-        .task { syncViewModel.attach(vaultURL: vaultManager.vaultURL) }
-        .onChange(of: vaultManager.vaultURL) { _, url in
-            syncViewModel.attach(vaultURL: url)
         }
         // Quick switcher: команда меню (Cmd+P, App.swift) шлёт нотификацию.
         .onReceive(NotificationCenter.default.publisher(for: .showQuickSwitcher)) { _ in
@@ -146,29 +90,26 @@ struct ContentView: View {
     }
 
     /// Средняя колонка: «Заметки» — дерево vault, «Встречи» — запись и
-    /// список записей, остальные — заглушки.
+    /// список записей, «Настройки» — переход к окну Settings.
     @ViewBuilder
     private var sectionContent: some View {
         switch selection {
         case .notes:
             VaultPane(manager: vaultManager, searchViewModel: searchViewModel)
         case .meetings:
-            MeetingsPane(viewModel: meetingsViewModel)
+            MeetingsPane(viewModel: model.meetingsViewModel)
         case .chat:
-            ChatListPane(viewModel: chatViewModel)
+            ChatListPane(viewModel: model.chatViewModel)
         case .settings:
-            // Пока единственная секция настроек — локальные модели (задачи 09/10);
-            // остальные настройки добавит задача 17.
-            LocalModelsPane(viewModel: localModelsViewModel,
-                            manager: ollamaManager,
-                            whisperViewModel: whisperModelsViewModel,
-                            ragManager: ragIndexManager,
-                            mcpViewModel: mcpServersViewModel)
-        case .some(let section):
+            // Настройки живут в стандартном окне Settings (задача 17).
             ContentUnavailableView {
-                Label(section.rawValue, systemImage: section.systemImage)
+                Label("Настройки", systemImage: "gearshape")
             } description: {
-                Text("Раздел появится в задаче \(section.plannedTask).")
+                Text("Все настройки — в отдельном окне (⌘,).")
+            } actions: {
+                SettingsLink {
+                    Text("Открыть настройки")
+                }
             }
         case nil:
             ContentUnavailableView(
@@ -182,8 +123,10 @@ struct ContentView: View {
     /// Связка чата с RAG (задача 14): ретрив идёт через менеджер индекса;
     /// rewrite/rerank используют тот же чат-роутер. Однократно, лениво.
     private func wireRagProvider() {
+        let chatViewModel = model.chatViewModel
         guard chatViewModel.ragProvider == nil else { return }
-        chatViewModel.ragProvider = { [weak ragIndexManager, weak functionRouter] chat, query in
+        chatViewModel.ragProvider = { [weak ragIndexManager = model.ragIndexManager,
+                                       weak functionRouter = model.functionRouter] chat, query in
             guard let manager = ragIndexManager else { return nil }
             let needsLLM = chat.configuration.ragQueryRewrite || chat.configuration.ragRerankEnabled
             let chatProvider = needsLLM ? functionRouter?.resolveChatProvider(for: .chat) : nil
@@ -197,10 +140,11 @@ struct ContentView: View {
     /// Связка чата с MCP (задача 15): инструменты включённых серверов и
     /// исполнитель вызовов. Однократно, лениво.
     private func wireMCPBridge() {
+        let chatViewModel = model.chatViewModel
         guard chatViewModel.mcpBridge == nil else { return }
-        let manager = mcpServersViewModel.manager
+        let manager = model.mcpServersViewModel.manager
         chatViewModel.mcpBridge = ChatViewModel.MCPBridge(
-            tools: { [weak mcpServersViewModel] serverIDs in
+            tools: { [weak mcpServersViewModel = model.mcpServersViewModel] serverIDs in
                 await mcpServersViewModel?.tools(for: serverIDs) ?? []
             },
             execute: { name, args in
@@ -215,9 +159,9 @@ struct ContentView: View {
     @ViewBuilder
     private var sectionDetail: some View {
         if selection == .chat {
-            ChatDetailView(viewModel: chatViewModel,
+            ChatDetailView(viewModel: model.chatViewModel,
                            resolveWikilink: { vaultManager.linkIndex?.resolve($0) },
-                           mcpServers: mcpServersViewModel.servers)
+                           mcpServers: model.mcpServersViewModel.servers)
                 .onAppear {
                     wireRagProvider()
                     wireMCPBridge()
@@ -242,7 +186,7 @@ struct ContentView: View {
             ContentUnavailableView(
                 "Пусто",
                 systemImage: "square.dashed",
-                description: Text("Содержимое раздела появится в своей задаче.")
+                description: Text("Содержимое раздела — в средней колонке.")
             )
         }
     }

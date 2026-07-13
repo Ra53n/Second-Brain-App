@@ -46,7 +46,8 @@ enum OllamaError: LocalizedError, Equatable {
 
 /// Политика idle-гашения: чистая, часы инжектируются (тестируемость).
 final class IdleShutdownPolicy {
-    let timeout: TimeInterval
+    /// Настраивается пользователем (задача 17) через set*IdleTimeout владельца.
+    var timeout: TimeInterval
     private let clock: () -> TimeInterval
     private var lastUsed: TimeInterval
 
@@ -166,6 +167,10 @@ final class OllamaManager: ObservableObject {
 
     /// Отметка использования (каждый запрос к серверу) — сдвигает idle-окно.
     func markUsed() { idlePolicy.markUsed() }
+
+    /// Новый idle-таймаут из настроек (задача 17); действует со следующей
+    /// проверки таймера.
+    func setIdleTimeout(_ seconds: TimeInterval) { idlePolicy.timeout = seconds }
 
     /// Гасит сервер, ТОЛЬКО если запускали мы. Чужой (external) не трогаем —
     /// кнопка «Остановить сейчас» и idle-таймер оба идут сюда.

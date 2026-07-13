@@ -146,6 +146,10 @@ final class WhisperKitProvider: ObservableObject, TranscriptionProvider {
 
     // MARK: - Память
 
+    /// Новый idle-таймаут из настроек (задача 17); действует со следующей
+    /// проверки таймера.
+    func setIdleTimeout(_ seconds: TimeInterval) { idlePolicy.timeout = seconds }
+
     /// Выгрузка простаивающей модели (гигабайты RAM). Зовётся таймером и тестами.
     func unloadIfIdle() {
         guard engine != nil, idlePolicy.shouldShutdown else { return }

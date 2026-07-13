@@ -64,10 +64,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 @main
 struct SecondBrainApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
+    /// Объектный граф приложения — один на процесс, общий для главного окна
+    /// и окна Settings (задача 17).
+    @StateObject private var model = AppModel()
 
     var body: some Scene {
         WindowGroup("Second Brain") {
-            ContentView()
+            ContentView(model: model)
         }
         .windowResizability(.contentMinSize)
         .commands {
@@ -79,6 +82,11 @@ struct SecondBrainApp: App {
                 }
                 .keyboardShortcut("p", modifiers: .command)
             }
+        }
+
+        // Стандартное окно настроек macOS (Cmd+,) со вкладками (задача 17).
+        Settings {
+            SettingsRootView(model: model)
         }
     }
 }

@@ -213,11 +213,13 @@ final class MeetingPipeline {
         let result = try await resolved.provider.send(
             messages, settings: ChatSettings(model: resolved.model))
         let parsed = MeetingPrompts.parseSummaryResponse(result.text)
-        // Папку LLM валидируем против реального дерева vault (фолбэк — дефолтная).
+        // Папку LLM валидируем против реального дерева vault (фолбэк —
+        // папка по умолчанию из настроек либо штатная Meetings/YYYY-MM).
         let (folder, wasInvalid) = MeetingNoteWriter.resolveFolder(
             suggested: parsed.folder,
             existingFolders: vaultFolders(),
-            date: context.recordedAt)
+            date: context.recordedAt,
+            customDefault: settings().defaultFolder)
         store.mutate(id: context.id) {
             $0.summary = parsed.summary
             $0.suggestedTitle = parsed.title ?? ""
@@ -232,7 +234,14 @@ final class MeetingPipeline {
         let title = context.effectiveTitle
         var folder = context.effectiveFolder
         if folder.isEmpty {
-            folder = MeetingNoteWriter.defaultFolder(for: context.recordedAt)
+            // Пустая папка возможна только у старых прогонов: фолбэк тот же,
+            // что при валидации (настройки → штатная).
+            let (resolved, _) = MeetingNoteWriter.resolveFolder(
+                suggested: nil,
+                existingFolders: [],
+                date: context.recordedAt,
+                customDefault: settings().defaultFolder)
+            folder = resolved
         }
         let path = MeetingNoteWriter.notePath(
             folder: folder,

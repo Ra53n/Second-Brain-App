@@ -111,10 +111,9 @@ struct LocalModelsPane: View {
     @ObservedObject var manager: OllamaManager
     /// Секция Whisper (задача 10).
     @ObservedObject var whisperViewModel: WhisperModelsViewModel
-    /// Секция RAG-индекса (задача 13).
-    @ObservedObject var ragManager: RagIndexManager
-    /// Секция MCP-серверов (задача 15).
-    @ObservedObject var mcpViewModel: MCPServersViewModel
+    /// Idle-таймаут рантаймов — из SettingsStore (задача 17); nil — без секции
+    /// (если панель когда-нибудь встроят без стора).
+    var settingsStore: SettingsStore?
 
     var body: some View {
         Form {
@@ -128,8 +127,9 @@ struct LocalModelsPane: View {
             }
             WhisperModelsSection(viewModel: whisperViewModel,
                                  provider: whisperViewModel.provider)
-            RagStatusSection(manager: ragManager)
-            MCPServersSection(viewModel: mcpViewModel)
+            if let settingsStore {
+                IdleTimeoutSection(store: settingsStore)
+            }
         }
         .formStyle(.grouped)
         .task { await viewModel.refresh() }
@@ -299,6 +299,27 @@ struct LocalModelsPane: View {
         case .stopped: return .secondary.opacity(0.5)
         case .starting: return .orange
         case .runningSpawned, .runningExternal: return .green
+        }
+    }
+}
+
+/// Idle-таймаут локальных рантаймов (Ollama-процесс и WhisperKit-модель в
+/// памяти). Значение живёт в SettingsStore; применение к менеджерам — AppModel.
+struct IdleTimeoutSection: View {
+    @ObservedObject var store: SettingsStore
+
+    private static let choices = [5, 10, 30, 60]
+
+    var body: some View {
+        Section("Простой") {
+            Picker("Гасить после простоя", selection: $store.settings.localIdleMinutes) {
+                ForEach(Self.choices, id: \.self) { minutes in
+                    Text("\(minutes) мин").tag(minutes)
+                }
+            }
+            Text("Через это время без обращений процесс Ollama останавливается, а модель WhisperKit выгружается из памяти.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
         }
     }
 }
