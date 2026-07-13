@@ -4,8 +4,9 @@
 *.xcodeproj
 DerivedData/
 
-# Артефакты сборки .app (пересоздаются run.sh)
+# Артефакты сборки .app (пересоздаются run.sh) и дистрибутивы (dist.sh)
 SecondBrain.app/
+dist/
 
 # Рабочие файлы генерации иконки (итог — Sources/SecondBrain/Resources/AppIcon.icns)
 icon/*.iconset/

@@ -28,4 +28,7 @@ macOS-приложение «второй мозг»: Obsidian-совмести�
 swift build        # debug
 ./run.sh           # release + SecondBrain.app
 ./install.sh       # установка в /Applications
+./dist.sh          # дистрибутив: подпись + dist/*.dmg|*.zip (задача 18)
 ```
+
+Установка на другом Mac — [INSTALL.md](INSTALL.md).

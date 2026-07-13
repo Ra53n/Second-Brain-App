@@ -9,6 +9,11 @@ APP_NAME="SecondBrain"
 APP_DIR="${APP_NAME}.app"
 BIN_NAME="SecondBrain"
 
+# Версия приложения: dist.sh подставляет значение из git-тега; при ручном
+# запуске run.sh остаётся дефолт для разработки.
+APP_VERSION="${APP_VERSION:-1.0}"
+APP_BUILD="${APP_BUILD:-1}"
+
 # Если лицензия Xcode не принята (`sudo xcodebuild -license accept`),
 # можно собрать тулчейном Command Line Tools, раскомментировав строку:
 # export DEVELOPER_DIR=/Library/Developer/CommandLineTools
@@ -72,9 +77,9 @@ cat > "${APP_DIR}/Contents/Info.plist" <<PLIST
     <key>CFBundleIconFile</key>
     <string>AppIcon</string>
     <key>CFBundleVersion</key>
-    <string>1.0</string>
+    <string>${APP_BUILD}</string>
     <key>CFBundleShortVersionString</key>
-    <string>1.0</string>
+    <string>${APP_VERSION}</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>LSMinimumSystemVersion</key>

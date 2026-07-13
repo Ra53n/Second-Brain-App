@@ -81,3 +81,4 @@ Persistence/  — общие сторы (Codable→JSON, атомарная за
 - Swift/SwiftUI, а не KMP — macOS-only, системные API важнее знакомого стека.
 - Ollama, а не встроенный llama.cpp — меньше своего кода, проверено в MA.
 - Провайдер транскрипции по умолчанию не фиксируем: пользователь сравнит OpenAI/Deepgram/AssemblyAI/Gemini на своих встречах (см. задачу 19 — инструмент сравнения).
+- Дистрибуция (задача 18): только arm64 (Mac пользователя — Apple Silicon; WhisperKit/Ollama целятся в него); подпись ad-hoc + hardened runtime + entitlement микрофона (ветка Б — Developer ID сертификата в Keychain нет), ветка А (Developer ID + нотаризация) заготовлена в dist.sh и включается автоматически при появлении сертификата. Версия — из git-тега в Info.plist.
