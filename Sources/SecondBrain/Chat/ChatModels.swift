@@ -61,6 +61,8 @@ struct ChatMessage: Identifiable, Codable, Equatable {
     var metrics: MessageMetrics?
     /// Источники RAG-ответа (задача 14): чанки, ушедшие в [RAG_CONTEXT].
     var sources: [RagSource]?
+    /// Вызовы MCP-инструментов при генерации ответа (задача 15).
+    var toolCalls: [ToolCallDisplay]?
     var createdAt: Date = Date()
 
     init(role: ChatRole, content: String, metrics: MessageMetrics? = nil) {
@@ -69,7 +71,9 @@ struct ChatMessage: Identifiable, Codable, Equatable {
         self.metrics = metrics
     }
 
-    enum CodingKeys: String, CodingKey { case id, role, content, metrics, sources, createdAt }
+    enum CodingKeys: String, CodingKey {
+        case id, role, content, metrics, sources, toolCalls, createdAt
+    }
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -78,6 +82,7 @@ struct ChatMessage: Identifiable, Codable, Equatable {
         content = try c.decodeIfPresent(String.self, forKey: .content) ?? ""
         metrics = try c.decodeIfPresent(MessageMetrics.self, forKey: .metrics)
         sources = try c.decodeIfPresent([RagSource].self, forKey: .sources)
+        toolCalls = try c.decodeIfPresent([ToolCallDisplay].self, forKey: .toolCalls)
         createdAt = try c.decodeIfPresent(Date.self, forKey: .createdAt) ?? Date()
     }
 }
@@ -102,6 +107,10 @@ struct ChatConfiguration: Equatable, Codable {
     /// Переписывание вопроса в поисковый запрос (выкл: лишний вызов).
     var ragQueryRewrite: Bool = false
 
+    // --- MCP (задача 15) ---
+    /// Включённые для этого чата MCP-серверы (как enabledMCPServerIDs в MA).
+    var enabledMCPServerIDs: Set<UUID> = []
+
     static let historyWindowRange = 4...50
     static let temperatureRange = 0.0...2.0
     static let ragTopKRange = 1...12
@@ -111,6 +120,7 @@ struct ChatConfiguration: Equatable, Codable {
     enum CodingKeys: String, CodingKey {
         case providerID, model, temperature, historyWindow
         case ragEnabled, ragTopK, ragMinScore, ragRerankEnabled, ragQueryRewrite
+        case enabledMCPServerIDs
     }
 
     init(from decoder: Decoder) throws {
@@ -127,6 +137,8 @@ struct ChatConfiguration: Equatable, Codable {
             ?? d.ragRerankEnabled
         ragQueryRewrite = try c.decodeIfPresent(Bool.self, forKey: .ragQueryRewrite)
             ?? d.ragQueryRewrite
+        enabledMCPServerIDs = try c.decodeIfPresent(Set<UUID>.self, forKey: .enabledMCPServerIDs)
+            ?? d.enabledMCPServerIDs
     }
 }
 

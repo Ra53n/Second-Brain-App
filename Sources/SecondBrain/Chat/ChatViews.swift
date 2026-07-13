@@ -58,6 +58,8 @@ struct ChatDetailView: View {
     @ObservedObject var viewModel: ChatViewModel
     /// Резолвер [[wikilink]] → URL заметки (LinkIndex задачи 04); nil — vault закрыт.
     var resolveWikilink: (String) -> URL? = { _ in nil }
+    /// Список MCP-серверов для меню инструментов (задача 15).
+    var mcpServers: [MCPServer] = []
 
     private var chat: Chat? { viewModel.selectedChat }
 
@@ -70,6 +72,7 @@ struct ChatDetailView: View {
         }
         .navigationTitle(chat?.title ?? "Чат")
         .toolbar {
+            ToolbarItem(placement: .primaryAction) { mcpMenu }
             ToolbarItem(placement: .primaryAction) { ragToggle }
             ToolbarItem(placement: .primaryAction) { modelPicker }
         }
@@ -81,6 +84,36 @@ struct ChatDetailView: View {
             openNote(target: target)
             return .handled
         })
+    }
+
+    /// Меню MCP-инструментов: чекбоксы серверов per-чат (задача 15).
+    @ViewBuilder
+    private var mcpMenu: some View {
+        if !mcpServers.isEmpty {
+            Menu {
+                ForEach(mcpServers.filter(\.enabled)) { server in
+                    Button {
+                        viewModel.toggleMCPServer(server.id)
+                    } label: {
+                        let enabled = chat?.configuration.enabledMCPServerIDs
+                            .contains(server.id) ?? false
+                        if enabled {
+                            Label(server.name, systemImage: "checkmark")
+                        } else {
+                            Text(server.name)
+                        }
+                    }
+                }
+                Divider()
+                Text("Инструменты требуют модель с function calling: GPT-4o+, qwen3+.")
+            } label: {
+                let count = chat?.configuration.enabledMCPServerIDs.count ?? 0
+                Label(count > 0 ? "Инструменты (\(count))" : "Инструменты",
+                      systemImage: count > 0 ? "wrench.and.screwdriver.fill"
+                                             : "wrench.and.screwdriver")
+            }
+            .help("MCP-серверы, доступные модели в этом чате")
+        }
     }
 
     /// Тумблер «Отвечать по базе» (persisted per-чат).
@@ -234,6 +267,7 @@ struct MessageBubble: View {
             Text(message.role == .user ? "Вы" : "Ассистент")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
+            toolCallsBlock
             Markdown(renderedContent)
                 .markdownTheme(.docC)
                 .textSelection(.enabled)
@@ -260,6 +294,44 @@ struct MessageBubble: View {
         guard message.role == .assistant else { return message.content }
         return ChatWikilinkRenderer.render(message.content) { target in
             resolveWikilink(target) != nil
+        }
+    }
+
+    /// Вызовы MCP-инструментов (задача 15): свёрнутый блок с именем,
+    /// аргументами и результатом каждого вызова.
+    @ViewBuilder
+    private var toolCallsBlock: some View {
+        if let calls = message.toolCalls, !calls.isEmpty {
+            DisclosureGroup {
+                VStack(alignment: .leading, spacing: 6) {
+                    ForEach(calls) { call in
+                        VStack(alignment: .leading, spacing: 2) {
+                            Label(call.name,
+                                  systemImage: call.ok ? "checkmark.circle" : "xmark.circle")
+                                .font(.caption.bold())
+                                .foregroundStyle(call.ok ? Color.primary : .orange)
+                            if !call.argumentsJSON.isEmpty, call.argumentsJSON != "{}" {
+                                Text(call.argumentsJSON)
+                                    .font(.caption2.monospaced())
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(4)
+                            }
+                            Text(call.result)
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(8)
+                                .textSelection(.enabled)
+                        }
+                        .padding(6)
+                        .background(RoundedRectangle(cornerRadius: 4)
+                            .fill(Color.secondary.opacity(0.08)))
+                    }
+                }
+            } label: {
+                Label("Инструменты (\(calls.count))", systemImage: "wrench.and.screwdriver")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
         }
     }
 

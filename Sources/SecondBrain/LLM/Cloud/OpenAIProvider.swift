@@ -196,12 +196,12 @@ struct OpenAIProvider: ChatProvider, TranscriptionProvider, EmbeddingProvider {
 
     // MARK: - Внутреннее
 
-    private func apiKey() throws -> String {
+    func apiKey() throws -> String {
         guard let key = KeyStore.key(for: Self.id) else { throw LLMError.missingAPIKey(Self.id) }
         return key
     }
 
-    private func post<Body: Encodable>(path: String, body: Body, apiKey: String) async throws -> Data {
+    func post<Body: Encodable>(path: String, body: Body, apiKey: String) async throws -> Data {
         var request = URLRequest(url: baseURL.appendingPathComponent(path))
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")

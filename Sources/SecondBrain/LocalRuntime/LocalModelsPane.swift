@@ -113,6 +113,8 @@ struct LocalModelsPane: View {
     @ObservedObject var whisperViewModel: WhisperModelsViewModel
     /// Секция RAG-индекса (задача 13).
     @ObservedObject var ragManager: RagIndexManager
+    /// Секция MCP-серверов (задача 15).
+    @ObservedObject var mcpViewModel: MCPServersViewModel
 
     var body: some View {
         Form {
@@ -127,6 +129,7 @@ struct LocalModelsPane: View {
             WhisperModelsSection(viewModel: whisperViewModel,
                                  provider: whisperViewModel.provider)
             RagStatusSection(manager: ragManager)
+            MCPServersSection(viewModel: mcpViewModel)
         }
         .formStyle(.grouped)
         .task { await viewModel.refresh() }

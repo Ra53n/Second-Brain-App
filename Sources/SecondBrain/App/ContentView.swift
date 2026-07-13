@@ -59,6 +59,8 @@ struct ContentView: View {
     @StateObject private var chatViewModel: ChatViewModel
     /// RAG-индекс vault (задача 13).
     @StateObject private var ragIndexManager: RagIndexManager
+    /// MCP-серверы (задача 15).
+    @StateObject private var mcpServersViewModel: MCPServersViewModel
     @State private var showsQuickSwitcher = false
 
     init() {
@@ -87,6 +89,7 @@ struct ContentView: View {
                                                                  registry: registry))
         _ragIndexManager = StateObject(wrappedValue: RagIndexManager(vaultManager: manager,
                                                                      router: router))
+        _mcpServersViewModel = StateObject(wrappedValue: MCPServersViewModel())
     }
 
     var body: some View {
@@ -145,7 +148,8 @@ struct ContentView: View {
             LocalModelsPane(viewModel: localModelsViewModel,
                             manager: ollamaManager,
                             whisperViewModel: whisperModelsViewModel,
-                            ragManager: ragIndexManager)
+                            ragManager: ragIndexManager,
+                            mcpViewModel: mcpServersViewModel)
         case .some(let section):
             ContentUnavailableView {
                 Label(section.rawValue, systemImage: section.systemImage)
@@ -176,6 +180,20 @@ struct ContentView: View {
         }
     }
 
+    /// Связка чата с MCP (задача 15): инструменты включённых серверов и
+    /// исполнитель вызовов. Однократно, лениво.
+    private func wireMCPBridge() {
+        guard chatViewModel.mcpBridge == nil else { return }
+        let manager = mcpServersViewModel.manager
+        chatViewModel.mcpBridge = ChatViewModel.MCPBridge(
+            tools: { [weak mcpServersViewModel] serverIDs in
+                await mcpServersViewModel?.tools(for: serverIDs) ?? []
+            },
+            execute: { name, args in
+                await manager.call(qualifiedName: name, argumentsJSON: args)
+            })
+    }
+
     /// Расширения файлов, которые открываются в markdown-редакторе.
     private static let editableExtensions: Set<String> = ["md", "markdown", "txt"]
 
@@ -184,8 +202,12 @@ struct ContentView: View {
     private var sectionDetail: some View {
         if selection == .chat {
             ChatDetailView(viewModel: chatViewModel,
-                           resolveWikilink: { vaultManager.linkIndex?.resolve($0) })
-                .onAppear { wireRagProvider() }
+                           resolveWikilink: { vaultManager.linkIndex?.resolve($0) },
+                           mcpServers: mcpServersViewModel.servers)
+                .onAppear {
+                    wireRagProvider()
+                    wireMCPBridge()
+                }
         } else if selection == .notes {
             if let url = vaultManager.selection,
                let node = vaultManager.root?.find(url) {

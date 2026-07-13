@@ -9,8 +9,9 @@ import Foundation
 final class OllamaProvider: ChatProvider, EmbeddingProvider {
     static let id: ProviderID = "ollama"
 
-    private let manager: OllamaManager
-    private let client: OllamaClient
+    // internal: tools-расширение (задача 15) живёт в MCP/ProviderToolSupport.swift.
+    let manager: OllamaManager
+    let client: OllamaClient
     /// Размерность эмбеддингов дефолтной модели (nomic-embed-text — 768).
     let dimension: Int
 

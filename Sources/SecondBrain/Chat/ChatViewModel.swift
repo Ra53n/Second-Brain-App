@@ -26,6 +26,13 @@ final class ChatViewModel: ObservableObject {
     /// Вызывается ТОЛЬКО при включённом тумблере «Отвечать по базе».
     var ragProvider: ((Chat, String) async -> RagRetrievalOutcome?)?
 
+    /// MCP-мост (задача 15): инструменты включённых серверов чата и исполнитель.
+    struct MCPBridge {
+        var tools: (Set<UUID>) async -> [ToolDefinition]
+        var execute: (String, String) async -> String
+    }
+    var mcpBridge: MCPBridge?
+
     private let fileURL: URL
     private var saveCancellable: AnyCancellable?
     private var terminateObserver: NSObjectProtocol?
@@ -177,8 +184,31 @@ final class ChatViewModel: ObservableObject {
                 var settings = ChatSettings(model: resolved.model)
                 settings.temperature = configuration.temperature
 
-                for try await chunk in resolved.provider.stream(messages, settings: settings) {
-                    self.appendToMessage(chatID: chatID, messageID: placeholderID, chunk: chunk)
+                // MCP-инструменты (задача 15): включённые серверы чата → tool-use
+                // цикл БЕЗ стриминга (ответ приходит целиком после вызовов).
+                var tools: [ToolDefinition] = []
+                if !chatSnapshot.configuration.enabledMCPServerIDs.isEmpty, let bridge = self.mcpBridge {
+                    tools = await bridge.tools(chatSnapshot.configuration.enabledMCPServerIDs)
+                }
+                if !tools.isEmpty {
+                    guard let toolProvider = resolved.provider as? ToolCapableChatProvider else {
+                        throw MCPError.toolsUnsupportedByProvider
+                    }
+                    let bridge = self.mcpBridge!
+                    let outcome = try await ToolUseLoop.run(
+                        provider: toolProvider,
+                        settings: settings,
+                        messages: messages.map(ToolAwareMessage.init),
+                        tools: tools,
+                        execute: { name, args in await bridge.execute(name, args) })
+                    self.appendToMessage(chatID: chatID, messageID: placeholderID,
+                                         chunk: outcome.text)
+                    self.attachToolCalls(chatID: chatID, messageID: placeholderID,
+                                         calls: outcome.transcript)
+                } else {
+                    for try await chunk in resolved.provider.stream(messages, settings: settings) {
+                        self.appendToMessage(chatID: chatID, messageID: placeholderID, chunk: chunk)
+                    }
                 }
                 self.finishGeneration(chatID: chatID, messageID: placeholderID,
                                       duration: Date().timeIntervalSince(start), error: nil)
@@ -227,6 +257,24 @@ final class ChatViewModel: ObservableObject {
               let messageIndex = chats[chatIndex].messages.firstIndex(where: { $0.id == messageID })
         else { return }
         chats[chatIndex].messages[messageIndex].sources = sources
+    }
+
+    private func attachToolCalls(chatID: UUID, messageID: UUID, calls: [ToolCallDisplay]) {
+        guard !calls.isEmpty,
+              let chatIndex = chats.firstIndex(where: { $0.id == chatID }),
+              let messageIndex = chats[chatIndex].messages.firstIndex(where: { $0.id == messageID })
+        else { return }
+        chats[chatIndex].messages[messageIndex].toolCalls = calls
+    }
+
+    /// Тумблер MCP-сервера для текущего чата.
+    func toggleMCPServer(_ id: UUID) {
+        guard let index = selectedIndex else { return }
+        if chats[index].configuration.enabledMCPServerIDs.contains(id) {
+            chats[index].configuration.enabledMCPServerIDs.remove(id)
+        } else {
+            chats[index].configuration.enabledMCPServerIDs.insert(id)
+        }
     }
 
     private func finishGeneration(chatID: UUID, messageID: UUID,
