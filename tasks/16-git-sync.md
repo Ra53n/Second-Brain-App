@@ -30,3 +30,24 @@ Git LFS автоматизация, ветки/PR, построчный merge-р
 - `Process` для git: наследуй окружение (`HOME`, `SSH_AUTH_SOCK`), иначе auth сломается; рабочая директория — корень vault.
 - Все git-вызовы сериализуй в одну очередь — параллельные `git` в одном репо портят index.lock.
 - Сообщения авто-коммитов — как у пользователя сейчас: `vault backup: YYYY-MM-DD HH:mm:ss`.
+
+## Результат
+
+Сделано по плану, все критерии приёмки закрыты.
+
+- `GitSync/GitClient.swift` — actor-обёртка над git CLI: детект бинаря (/usr/bin, homebrew), FIFO-очередь операций (защита index.lock), таймауты со сторожевым SIGKILL, `GIT_TERMINAL_PROMPT=0` + ssh BatchMode (GUI никогда не виснет на запросе пароля), `core.quotepath=false` (кириллические пути). Операции: status porcelain v2, add -A + commit (без изменений коммит не создаётся), push (без upstream — фолбэк `push -u origin HEAD`), pull `--no-rebase` (+ `-X ours/theirs` для разрешения конфликтов), fetch, log, remote -v / set-url / add, init, `credential fill`-проверка (секреты не сохраняются). Парсеры — чистые enum: `GitStatusParser`, `GitLogParser`, `GitRemoteURL`.
+- `GitSync/AutoBackup.swift` — чистая логика авто-бэкапа: `isDue` (мок-часы), `plan` (нет изменений → нет коммита; после неудачного push — только допушить, без дублей), формат сообщения `vault backup: YYYY-MM-DD HH:mm:ss`; + `GitignoreAdvisor` (рекомендации `.obsidian/workspace*`, `.DS_Store`, `Meetings/_recordings/` — записи встреч отдельной кнопкой, по выбору пользователя).
+- `GitSync/SyncViewModel.swift` — состояние (noVault/checking/gitUnavailable/notARepo/ready), защита от параллельных операций (isBusy), таймер авто-бэкапа (тик 30 с, интервал персистентен в UserDefaults `gitSync.autoBackupMinutes`, дефолт выкл), включение синка (init + первый коммит + опц. remote), починка remote с токеном.
+- `GitSync/GitSyncViews.swift` — индикатор в тулбаре (чисто/изменения/ahead/behind/ошибка) + popover-панель: изменённые файлы, Commit+Push / Pull / Обновить (fetch), история, авто-бэкап, `.gitignore`-рекомендации, баннер токена в URL, confirmationDialog конфликтов.
+- Интеграция: ContentView — тулбар + attach на смену vaultURL.
+
+Отклонения/решения:
+- Конфликты: вместо «сохранить локальную копию с маркером» (старый текст ARCHITECTURE.md) — схема из этой задачи: abort → выбор «свои/удалённые/Finder»; ARCHITECTURE.md обновлён.
+- Vault, вложенный в чужой git-репозиторий, считается «не репозиторием» (`rev-parse --show-toplevel` ≠ корень vault) — иначе приложение коммитило бы родительский репо целиком.
+- ahead/behind берутся из `status --porcelain=v2 --branch` (`# branch.ab`), отдельный `rev-list --count` не нужен; актуализация — кнопкой «Обновить» (fetch).
+
+Тесты: 27 новых (парсер status v2 включая пути с пробелами/кириллицей, детект/стрип токена в URL, авто-бэкап на мок-часах, .gitignore-советчик; интеграционные на реальном git: commit+log round-trip, отсутствие дублей коммитов, ahead/behind между двумя клонами bare-remote, конфликт → abort → чистый статус и целые данные, set-url). Всего 535 тестов зелёные.
+
+Ручная проверка на копии реального vault (clone в temp): статус видит правки, commit+push в тестовый bare-remote проходит, конфликт двух копий → abort без потери данных. В реальном vault подтверждён PAT в URL remote — панель предложит починку.
+
+Для задачи 17: интервал авто-бэкапа пока в UserDefaults (`gitSync.autoBackupMinutes`) — забрать в SettingsStore с миграцией; секция «Синхронизация» может переиспользовать SyncViewModel (он один на приложение, живёт в ContentView).

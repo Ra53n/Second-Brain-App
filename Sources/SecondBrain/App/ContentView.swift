@@ -61,6 +61,8 @@ struct ContentView: View {
     @StateObject private var ragIndexManager: RagIndexManager
     /// MCP-серверы (задача 15).
     @StateObject private var mcpServersViewModel: MCPServersViewModel
+    /// Git-синхронизация vault (задача 16).
+    @StateObject private var syncViewModel: SyncViewModel
     @State private var showsQuickSwitcher = false
 
     init() {
@@ -90,6 +92,7 @@ struct ContentView: View {
         _ragIndexManager = StateObject(wrappedValue: RagIndexManager(vaultManager: manager,
                                                                      router: router))
         _mcpServersViewModel = StateObject(wrappedValue: MCPServersViewModel())
+        _syncViewModel = StateObject(wrappedValue: SyncViewModel())
     }
 
     var body: some View {
@@ -105,6 +108,17 @@ struct ContentView: View {
         } detail: {
             sectionDetail
                 .frame(minWidth: 420, minHeight: 600)
+        }
+        // Индикатор git-синхронизации vault (задача 16) — глобальный тулбар.
+        .toolbar {
+            ToolbarItem {
+                SyncStatusButton(viewModel: syncViewModel)
+            }
+        }
+        // Синк привязан к открытому vault: подхватываем стартовый и смену.
+        .task { syncViewModel.attach(vaultURL: vaultManager.vaultURL) }
+        .onChange(of: vaultManager.vaultURL) { _, url in
+            syncViewModel.attach(vaultURL: url)
         }
         // Quick switcher: команда меню (Cmd+P, App.swift) шлёт нотификацию.
         .onReceive(NotificationCenter.default.publisher(for: .showQuickSwitcher)) { _ in
