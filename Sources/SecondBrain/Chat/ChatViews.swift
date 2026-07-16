@@ -86,11 +86,25 @@ struct ChatDetailView: View {
         })
     }
 
-    /// Меню MCP-инструментов: чекбоксы серверов per-чат (задача 15).
+    /// Меню инструментов: встроенные инструменты проекта (задача 21) и
+    /// чекбоксы MCP-серверов per-чат (задача 15).
     @ViewBuilder
     private var mcpMenu: some View {
-        if !mcpServers.isEmpty {
+        if !mcpServers.isEmpty || viewModel.projectToolsAvailable {
             Menu {
+                if viewModel.projectToolsAvailable {
+                    Button {
+                        viewModel.toggleProjectTools()
+                    } label: {
+                        let enabled = chat?.configuration.projectToolsEnabled ?? false
+                        if enabled {
+                            Label("Инструменты проекта (git)", systemImage: "checkmark")
+                        } else {
+                            Text("Инструменты проекта (git)")
+                        }
+                    }
+                    if !mcpServers.filter(\.enabled).isEmpty { Divider() }
+                }
                 ForEach(mcpServers.filter(\.enabled)) { server in
                     Button {
                         viewModel.toggleMCPServer(server.id)
@@ -107,13 +121,20 @@ struct ChatDetailView: View {
                 Divider()
                 Text("Инструменты требуют модель с function calling: GPT-4o+, qwen3+.")
             } label: {
-                let count = chat?.configuration.enabledMCPServerIDs.count ?? 0
-                Label(count > 0 ? "Инструменты (\(count))" : "Инструменты",
-                      systemImage: count > 0 ? "wrench.and.screwdriver.fill"
-                                             : "wrench.and.screwdriver")
+                Label(enabledToolSourcesCount > 0
+                      ? "Инструменты (\(enabledToolSourcesCount))" : "Инструменты",
+                      systemImage: enabledToolSourcesCount > 0 ? "wrench.and.screwdriver.fill"
+                                                               : "wrench.and.screwdriver")
             }
-            .help("MCP-серверы, доступные модели в этом чате")
+            .help("Инструменты, доступные модели в этом чате: git-обзор проекта и MCP-серверы")
         }
+    }
+
+    /// Счётчик включённых источников инструментов (MCP-серверы + проект).
+    private var enabledToolSourcesCount: Int {
+        let mcp = chat?.configuration.enabledMCPServerIDs.count ?? 0
+        let project = (chat?.configuration.projectToolsEnabled ?? false) ? 1 : 0
+        return mcp + project
     }
 
     /// Тумблер «Отвечать по базе» (persisted per-чат).

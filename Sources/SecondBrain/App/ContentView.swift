@@ -152,6 +152,24 @@ struct ContentView: View {
             })
     }
 
+    /// Связка чата со встроенными инструментами проекта (задача 21):
+    /// провайдер держит исполнитель для текущего projectRepoPath и
+    /// пересоздаёт его при смене пути. Однократно, лениво.
+    private func wireProjectTools() {
+        let chatViewModel = model.chatViewModel
+        guard chatViewModel.projectToolsBridge == nil else { return }
+        let provider = model.projectToolsProvider
+        chatViewModel.projectToolsBridge = ChatViewModel.ProjectToolsBridge(
+            available: { provider.current() != nil },
+            tools: { provider.current()?.registry.definitions() ?? [] },
+            execute: { name, args in
+                guard let current = provider.current() else {
+                    return "ERROR: репозиторий проекта не выбран (Настройки → Общие → Инструменты проекта)"
+                }
+                return await current.executor.execute(name: name, argumentsJSON: args)
+            })
+    }
+
     /// Расширения файлов, которые открываются в markdown-редакторе.
     private static let editableExtensions: Set<String> = ["md", "markdown", "txt"]
 
@@ -165,6 +183,7 @@ struct ContentView: View {
                 .onAppear {
                     wireRagProvider()
                     wireMCPBridge()
+                    wireProjectTools()
                 }
         } else if selection == .notes {
             if let url = vaultManager.selection,

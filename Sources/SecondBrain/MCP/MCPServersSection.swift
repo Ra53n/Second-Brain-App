@@ -73,6 +73,8 @@ final class MCPServersViewModel: ObservableObject {
 
 struct MCPServersSection: View {
     @ObservedObject var viewModel: MCPServersViewModel
+    /// Путь репозитория проекта (задача 21) — предзаполнение шаблона git.
+    var projectRepoPath: String = ""
 
     var body: some View {
         Section("MCP-серверы (инструменты для чата)") {
@@ -90,6 +92,10 @@ struct MCPServersSection: View {
                 }
                 Button("Atlassian (шаблон)") {
                     viewModel.editingServer = MCPServer.atlassianTemplate()
+                }
+                Button("Git (шаблон)") {
+                    viewModel.editingServer = MCPServer.gitTemplate(
+                        repositoryPath: projectRepoPath)
                 }
                 Button("Импорт из Claude…") {
                     viewModel.showsImport = true

@@ -60,6 +60,19 @@ struct MCPServer: Identifiable, Codable, Equatable {
         return s
     }
 
+    /// Шаблон официального git MCP-сервера (mcp-server-git, Python) через uvx —
+    /// внешняя альтернатива встроенным инструментам задачи 21: полный набор
+    /// git-операций, ВКЛЮЧАЯ изменяющие (add/commit и т.п.) — включать осознанно.
+    static func gitTemplate(repositoryPath: String = "") -> MCPServer {
+        var s = MCPServer()
+        s.name = "git"
+        s.command = "uvx"
+        s.args = ["mcp-server-git"]
+            + (repositoryPath.isEmpty ? [] : ["--repository", repositoryPath])
+        s.enabled = false
+        return s
+    }
+
     /// Разбор JSON-блока в стиле Claude Desktop:
     /// `{ "mcpServers": { "<имя>": { command, args, env } } }` (или сразу карта).
     static func parseClaudeConfig(_ text: String) -> [MCPServer] {

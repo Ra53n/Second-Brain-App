@@ -26,6 +26,8 @@ final class AppModel: ObservableObject {
     let ragIndexManager: RagIndexManager
     let mcpServersViewModel: MCPServersViewModel
     let syncViewModel: SyncViewModel
+    /// Инструменты проекта для чата (задача 21): исполнитель по projectRepoPath.
+    let projectToolsProvider: ProjectToolsProvider
 
     private var cancellables: Set<AnyCancellable> = []
 
@@ -57,6 +59,7 @@ final class AppModel: ObservableObject {
         ragIndexManager = RagIndexManager(vaultManager: manager, router: router)
         mcpServersViewModel = MCPServersViewModel()
         syncViewModel = SyncViewModel()
+        projectToolsProvider = ProjectToolsProvider(settingsStore: settingsStore)
 
         wire()
     }

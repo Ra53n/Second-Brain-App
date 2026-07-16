@@ -111,6 +111,10 @@ struct ChatConfiguration: Equatable, Codable {
     /// Включённые для этого чата MCP-серверы (как enabledMCPServerIDs в MA).
     var enabledMCPServerIDs: Set<UUID> = []
 
+    // --- Инструменты проекта (задача 21) ---
+    /// Встроенные git-инструменты проекта в этом чате (репозиторий — в настройках).
+    var projectToolsEnabled: Bool = false
+
     static let historyWindowRange = 4...50
     static let temperatureRange = 0.0...2.0
     static let ragTopKRange = 1...12
@@ -121,6 +125,7 @@ struct ChatConfiguration: Equatable, Codable {
         case providerID, model, temperature, historyWindow
         case ragEnabled, ragTopK, ragMinScore, ragRerankEnabled, ragQueryRewrite
         case enabledMCPServerIDs
+        case projectToolsEnabled
     }
 
     init(from decoder: Decoder) throws {
@@ -139,6 +144,8 @@ struct ChatConfiguration: Equatable, Codable {
             ?? d.ragQueryRewrite
         enabledMCPServerIDs = try c.decodeIfPresent(Set<UUID>.self, forKey: .enabledMCPServerIDs)
             ?? d.enabledMCPServerIDs
+        projectToolsEnabled = try c.decodeIfPresent(Bool.self, forKey: .projectToolsEnabled)
+            ?? d.projectToolsEnabled
     }
 }
 

@@ -27,9 +27,14 @@ struct AppSettings: Codable, Equatable {
     /// Idle-таймаут локальных рантаймов (Ollama-процесс, WhisperKit-модель
     /// в памяти), минуты. Дефолт 10 — как в ARCHITECTURE.md.
     var localIdleMinutes = 10
+    /// Корень репозитория для встроенных инструментов проекта в чате
+    /// (задача 21). Пусто — инструменты недоступны. Хранится строкой:
+    /// приложение не в sandbox, security-scoped bookmark не нужен.
+    var projectRepoPath = ""
 
     enum CodingKeys: String, CodingKey {
         case showsDotItems, restoreLastVault, autoBackupMinutes, localIdleMinutes
+        case projectRepoPath
     }
 
     init() {}
@@ -41,6 +46,7 @@ struct AppSettings: Codable, Equatable {
         restoreLastVault = try c.decodeIfPresent(Bool.self, forKey: .restoreLastVault) ?? d.restoreLastVault
         autoBackupMinutes = try c.decodeIfPresent(Int.self, forKey: .autoBackupMinutes) ?? d.autoBackupMinutes
         localIdleMinutes = try c.decodeIfPresent(Int.self, forKey: .localIdleMinutes) ?? d.localIdleMinutes
+        projectRepoPath = try c.decodeIfPresent(String.self, forKey: .projectRepoPath) ?? d.projectRepoPath
     }
 }
 

@@ -23,6 +23,7 @@ final class AppSettingsCodableTests: XCTestCase {
         settings.restoreLastVault = false
         settings.autoBackupMinutes = 15
         settings.localIdleMinutes = 30
+        settings.projectRepoPath = "/tmp/repo"
         let data = try JSONEncoder().encode(settings)
         let decoded = try JSONDecoder().decode(AppSettings.self, from: data)
         XCTAssertEqual(decoded, settings)
@@ -36,6 +37,7 @@ final class AppSettingsCodableTests: XCTestCase {
         XCTAssertFalse(decoded.showsDotItems)
         XCTAssertTrue(decoded.restoreLastVault)
         XCTAssertEqual(decoded.localIdleMinutes, 10)
+        XCTAssertEqual(decoded.projectRepoPath, "", "поле задачи 21 получает дефолт")
     }
 }
 

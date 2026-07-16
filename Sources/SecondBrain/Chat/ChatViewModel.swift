@@ -33,6 +33,22 @@ final class ChatViewModel: ObservableObject {
     }
     var mcpBridge: MCPBridge?
 
+    /// Мост встроенных инструментов проекта (задача 21). Маршрутизация в
+    /// send(): вызовы с именами из tools() идут сюда, остальные — в MCP
+    /// (имена не пересекаются: MCP-имена всегда содержат «__»).
+    struct ProjectToolsBridge {
+        /// Репозиторий выбран в настройках (для видимости пункта меню).
+        var available: () -> Bool
+        var tools: () -> [ToolDefinition]
+        var execute: (String, String) async -> String
+    }
+    var projectToolsBridge: ProjectToolsBridge?
+
+    /// Доступны ли инструменты проекта прямо сейчас (для UI меню).
+    var projectToolsAvailable: Bool {
+        projectToolsBridge?.available() ?? false
+    }
+
     private let fileURL: URL
     private var saveCancellable: AnyCancellable?
     private var terminateObserver: NSObjectProtocol?
@@ -184,23 +200,42 @@ final class ChatViewModel: ObservableObject {
                 var settings = ChatSettings(model: resolved.model)
                 settings.temperature = configuration.temperature
 
-                // MCP-инструменты (задача 15): включённые серверы чата → tool-use
-                // цикл БЕЗ стриминга (ответ приходит целиком после вызовов).
+                // Инструменты (задачи 15, 21): MCP-серверы чата + встроенные
+                // инструменты проекта → tool-use цикл БЕЗ стриминга (ответ
+                // приходит целиком после вызовов).
                 var tools: [ToolDefinition] = []
                 if !chatSnapshot.configuration.enabledMCPServerIDs.isEmpty, let bridge = self.mcpBridge {
                     tools = await bridge.tools(chatSnapshot.configuration.enabledMCPServerIDs)
+                }
+                // Имена project-инструментов вычисляются на этот ход: по ним
+                // executor-замыкание маршрутизирует вызовы между мостами.
+                var projectNames: Set<String> = []
+                if chatSnapshot.configuration.projectToolsEnabled,
+                   let project = self.projectToolsBridge {
+                    let projectTools = project.tools()
+                    projectNames = Set(projectTools.map(\.name))
+                    tools += projectTools
                 }
                 if !tools.isEmpty {
                     guard let toolProvider = resolved.provider as? ToolCapableChatProvider else {
                         throw MCPError.toolsUnsupportedByProvider
                     }
-                    let bridge = self.mcpBridge!
+                    let mcpBridge = self.mcpBridge
+                    let projectBridge = self.projectToolsBridge
                     let outcome = try await ToolUseLoop.run(
                         provider: toolProvider,
                         settings: settings,
                         messages: messages.map(ToolAwareMessage.init),
                         tools: tools,
-                        execute: { name, args in await bridge.execute(name, args) })
+                        execute: { name, args in
+                            if projectNames.contains(name), let projectBridge {
+                                return await projectBridge.execute(name, args)
+                            }
+                            guard let mcpBridge else {
+                                return "ERROR: исполнитель инструмента «\(name)» недоступен"
+                            }
+                            return await mcpBridge.execute(name, args)
+                        })
                     self.appendToMessage(chatID: chatID, messageID: placeholderID,
                                          chunk: outcome.text)
                     self.attachToolCalls(chatID: chatID, messageID: placeholderID,
@@ -265,6 +300,12 @@ final class ChatViewModel: ObservableObject {
               let messageIndex = chats[chatIndex].messages.firstIndex(where: { $0.id == messageID })
         else { return }
         chats[chatIndex].messages[messageIndex].toolCalls = calls
+    }
+
+    /// Тумблер встроенных инструментов проекта для текущего чата (задача 21).
+    func toggleProjectTools() {
+        guard let index = selectedIndex else { return }
+        chats[index].configuration.projectToolsEnabled.toggle()
     }
 
     /// Тумблер MCP-сервера для текущего чата.
