@@ -27,3 +27,12 @@ README и docs/ (VISION, ARCHITECTURE, CONVENTIONS) существуют, но �
 - Документация фактически точна: каждое утверждение о файлах/схемах сверено с кодом (SettingsStore, ChatStore, MCPServerStore, RagIndex, VaultManager).
 - После задачи 22 `/help` отвечает на «где хранятся чаты?» и «какая схема rag.sqlite?» только по этим докам.
 - Тестов нет (нет новой core-логики) — допустимое исключение из общего правила.
+
+## Результат
+
+Сделано (2026-07-16):
+- **docs/DATA-MODEL.md** (новый) — полная схема данных: раскладка Application Support (settings.json / chats.json / mcp-servers.json / routing.json / meetings.json / meeting_settings.json / `<vault-id>`/search.sqlite и rag.sqlite / WhisperKit), общие конвенции персистентности (атомарная запись, decodeIfPresent, карантин `.corrupt.json`, пересоздаваемость индексов), детальные схемы AppSettings/Chat/ChatConfiguration/MCPServer/routing, SQL-схемы обеих SQLite-БД, раскладка vault (что пишем / что не трогаем), Keychain-сервис, остаточные UserDefaults-ключи, внутренний API инструментов (ToolDefinition, ToolUseLoop, qualified-имена `slug__tool`).
+- **README.md** — переписан: секция «Возможности» по модулям, статус со ссылкой на BACKLOG.md, карта документации (+DATA-MODEL.md), команды сборки и тестов (включая DEVELOPER_DIR).
+- **docs/ARCHITECTURE.md** — добавлена секция «Схема данных» со ссылкой на DATA-MODEL.md.
+
+Все факты сверены с кодом (SettingsStore, ChatModels, MCPServer, FunctionRouting, RagIndex, SearchIndex, VaultTree/VaultID, RecordingMetadata, KeyStore). Отклонений от плана нет. Для агентов задачи 22: DATA-MODEL.md — главный источник для проверки /help.
