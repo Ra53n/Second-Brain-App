@@ -144,6 +144,41 @@ final class ChatViewModel: ObservableObject {
         }
     }
 
+    // Настройки RAG текущего чата (задача 23): биндинги по образцу
+    // ragEnabledBinding — get с дефолтом, set в конфигурацию выбранного чата.
+
+    var ragTopKBinding: Int {
+        get { selectedChat?.configuration.ragTopK ?? ChatConfiguration().ragTopK }
+        set {
+            guard let index = selectedIndex else { return }
+            chats[index].configuration.ragTopK = newValue
+        }
+    }
+
+    var ragMinScoreBinding: Double {
+        get { selectedChat?.configuration.ragMinScore ?? 0 }
+        set {
+            guard let index = selectedIndex else { return }
+            chats[index].configuration.ragMinScore = newValue
+        }
+    }
+
+    var ragRerankBinding: Bool {
+        get { selectedChat?.configuration.ragRerankEnabled ?? false }
+        set {
+            guard let index = selectedIndex else { return }
+            chats[index].configuration.ragRerankEnabled = newValue
+        }
+    }
+
+    var ragQueryRewriteBinding: Bool {
+        get { selectedChat?.configuration.ragQueryRewrite ?? false }
+        set {
+            guard let index = selectedIndex else { return }
+            chats[index].configuration.ragQueryRewrite = newValue
+        }
+    }
+
     var canSend: Bool {
         guard let chat = selectedChat else { return false }
         return !chat.isLoading
@@ -169,6 +204,9 @@ final class ChatViewModel: ObservableObject {
         guard let index = selectedIndex else { return }
         let text = input.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty, !chats[index].isLoading else { return }
+        // Поле очищается здесь, а не в startGeneration: регенерация (задача 23)
+        // переиспользует генерацию и не должна стирать черновик пользователя.
+        input = ""
 
         // Слэш-команды (задача 22): перехват до обычного пути отправки.
         if let command = SlashCommand.parse(text) {
@@ -176,6 +214,31 @@ final class ChatViewModel: ObservableObject {
             return
         }
         startGeneration(chatIndex: index, userText: text, overrides: TurnOverrides())
+    }
+
+    // MARK: - Регенерация (задача 23)
+
+    /// Можно ли перегенерировать: последний — ответ ассистента, перед ним
+    /// вопрос пользователя, генерация не идёт.
+    var canRegenerate: Bool {
+        guard let chat = selectedChat, !chat.isLoading,
+              chat.messages.last?.role == .assistant,
+              chat.messages.dropLast().last?.role == .user else { return false }
+        return true
+    }
+
+    /// Удаляет последний ответ ассистента и генерирует заново по тому же
+    /// вопросу. Слэш-команды повторяются своим путём (в т.ч. /help с доками).
+    func regenerateLastAnswer() {
+        guard canRegenerate, let index = selectedIndex,
+              let userText = chats[index].messages.dropLast().last?.content else { return }
+        // Убираем пару «вопрос + ответ»: путь генерации добавит вопрос заново.
+        chats[index].messages.removeLast(2)
+        if let command = SlashCommand.parse(userText) {
+            handleSlashCommand(command, rawText: userText, chatIndex: index)
+        } else {
+            startGeneration(chatIndex: index, userText: userText, overrides: TurnOverrides())
+        }
     }
 
     /// Обработка слэш-команды: /help с вопросом идёт обычным генерационным
@@ -207,7 +270,6 @@ final class ChatViewModel: ObservableObject {
         chats[chatIndex].errorText = nil
         chats[chatIndex].messages.append(ChatMessage(role: .user, content: userText))
         chats[chatIndex].messages.append(ChatMessage(role: .assistant, content: assistantText))
-        input = ""
         ChatPersistence.save(chats, to: fileURL)
     }
 
@@ -233,7 +295,6 @@ final class ChatViewModel: ObservableObject {
         }
         chats[index].errorText = nil
         chats[index].messages.append(ChatMessage(role: .user, content: text))
-        input = ""
 
         guard let resolved = resolveProvider(for: chats[index]) else {
             chats[index].errorText = LLMError.providerUnavailable(

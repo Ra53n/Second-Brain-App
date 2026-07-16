@@ -2,6 +2,7 @@
 // колонке, диалог в detail (лента с markdown-рендером, стриминг, поле ввода,
 // пикер модели в тулбаре, отмена генерации, баннер ошибки).
 
+import AppKit
 import MarkdownUI
 import SwiftUI
 
@@ -47,6 +48,7 @@ struct ChatListPane: View {
                 } label: {
                     Label("Новый чат", systemImage: "square.and.pencil")
                 }
+                .help("Новый чат")
             }
         }
     }
@@ -56,6 +58,8 @@ struct ChatListPane: View {
 
 struct ChatDetailView: View {
     @ObservedObject var viewModel: ChatViewModel
+    /// Показ попапа настроек RAG (задача 23).
+    @State private var showsRagTuning = false
     /// Резолвер [[wikilink]] → URL заметки (LinkIndex задачи 04); nil — vault закрыт.
     var resolveWikilink: (String) -> URL? = { _ in nil }
     /// Список MCP-серверов для меню инструментов (задача 15).
@@ -74,6 +78,7 @@ struct ChatDetailView: View {
         .toolbar {
             ToolbarItem(placement: .primaryAction) { mcpMenu }
             ToolbarItem(placement: .primaryAction) { ragToggle }
+            ToolbarItem(placement: .primaryAction) { ragTuningButton }
             ToolbarItem(placement: .primaryAction) { modelPicker }
         }
         // Клик по wikilink в ответе → открыть заметку в разделе «Заметки».
@@ -147,6 +152,20 @@ struct ChatDetailView: View {
         }
         .toggleStyle(.button)
         .help("Отвечать по содержимому vault (RAG)")
+    }
+
+    /// Кнопка тонких настроек RAG (задача 23): topK/minScore/rerank/rewrite,
+    /// которые с задачи 14 жили только в JSON-конфиге.
+    private var ragTuningButton: some View {
+        Button {
+            showsRagTuning.toggle()
+        } label: {
+            Label("Параметры RAG", systemImage: "slider.horizontal.3")
+        }
+        .help("Параметры поиска по базе (topK, порог, переранжирование)")
+        .popover(isPresented: $showsRagTuning) {
+            RagTuningPopover(viewModel: viewModel)
+        }
     }
 
     private func openNote(target: String) {
@@ -237,6 +256,16 @@ struct ChatDetailView: View {
                 .buttonStyle(.plain)
                 .help("Остановить генерацию")
             } else {
+                if viewModel.canRegenerate {
+                    Button {
+                        viewModel.regenerateLastAnswer()
+                    } label: {
+                        Image(systemName: "arrow.clockwise")
+                            .font(.title3)
+                    }
+                    .buttonStyle(.plain)
+                    .help("Перегенерировать последний ответ")
+                }
                 Button {
                     viewModel.send()
                 } label: {
@@ -246,6 +275,7 @@ struct ChatDetailView: View {
                 .buttonStyle(.plain)
                 .disabled(!viewModel.canSend)
                 .keyboardShortcut(.return, modifiers: .command)
+                .help("Отправить (⌘⏎)")
             }
         }
     }
@@ -297,12 +327,60 @@ struct ChatDetailView: View {
     }
 }
 
+/// Попап тонких настроек RAG текущего чата (задача 23): topK, порог
+/// близости, LLM-переранжирование и переписывание запроса.
+struct RagTuningPopover: View {
+    @ObservedObject var viewModel: ChatViewModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Поиск по базе (RAG)")
+                .font(.headline)
+            Stepper("Фрагментов в контекст: \(viewModel.ragTopKBinding)",
+                    value: Binding(get: { viewModel.ragTopKBinding },
+                                   set: { viewModel.ragTopKBinding = $0 }),
+                    in: ChatConfiguration.ragTopKRange)
+                .help("Сколько найденных фрагментов vault уходит модели (topK)")
+            VStack(alignment: .leading, spacing: 2) {
+                Slider(value: Binding(get: { viewModel.ragMinScoreBinding },
+                                      set: { viewModel.ragMinScoreBinding = ($0 * 20).rounded() / 20 }),
+                       in: 0...1) {
+                    Text("Мин. близость")
+                }
+                .help("Порог косинусной близости: фрагменты ниже порога отбрасываются")
+                Text(viewModel.ragMinScoreBinding == 0
+                     ? "Порог: выключен"
+                     : String(format: "Порог: %.2f", viewModel.ragMinScoreBinding))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Toggle("LLM-переранжирование", isOn: Binding(
+                get: { viewModel.ragRerankBinding },
+                set: { viewModel.ragRerankBinding = $0 }))
+                .help("Модель повторно сортирует кандидатов — точнее, но дополнительный вызов LLM")
+            Toggle("Переписывать запрос", isOn: Binding(
+                get: { viewModel.ragQueryRewriteBinding },
+                set: { viewModel.ragQueryRewriteBinding = $0 }))
+                .help("Вопрос переписывается в поисковый запрос — дополнительный вызов LLM")
+            Text("Настройки сохраняются для этого чата.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+        .padding(14)
+        .frame(width: 320)
+    }
+}
+
 /// Пузырь одного сообщения: markdown-рендер с кликабельными [[wikilinks]],
-/// блок «Источники» и метрики под ответом.
+/// блок «Источники», метрики под ответом и hover-кнопка копирования.
 struct MessageBubble: View {
     let message: ChatMessage
     var resolveWikilink: (String) -> URL? = { _ in nil }
     var openNote: (String) -> Void = { _ in }
+
+    @State private var isHovering = false
+    /// Кратковременный фидбек «скопировано» (галочка ~1 с).
+    @State private var justCopied = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -328,6 +406,30 @@ struct MessageBubble: View {
                       ? Color.accentColor.opacity(0.08)
                       : Color.secondary.opacity(0.06))
         )
+        .overlay(alignment: .topTrailing) { copyButton }
+        .onHover { isHovering = $0 }
+    }
+
+    /// Копирование сообщения (задача 23): сырой markdown в буфер обмена.
+    @ViewBuilder
+    private var copyButton: some View {
+        if (isHovering || justCopied) && !message.content.isEmpty {
+            Button {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(message.content, forType: .string)
+                justCopied = true
+                Task {
+                    try? await Task.sleep(nanoseconds: 1_000_000_000)
+                    justCopied = false
+                }
+            } label: {
+                Image(systemName: justCopied ? "checkmark" : "doc.on.doc")
+                    .foregroundStyle(justCopied ? Color.green : Color.secondary)
+            }
+            .buttonStyle(.plain)
+            .padding(6)
+            .help("Скопировать сообщение")
+        }
     }
 
     /// [[wikilinks]] в ответах ассистента → ссылки/пометки галлюцинаций.
