@@ -49,6 +49,10 @@ final class ChatViewModel: ObservableObject {
         projectToolsBridge?.available() ?? false
     }
 
+    /// /help (задача 22): блок [PROJECT_DOCS] выбранного репозитория.
+    /// nil — репозиторий не настроен; пустая строка — доков в нём нет.
+    var projectDocsProvider: (() async -> String?)?
+
     private let fileURL: URL
     private var saveCancellable: AnyCancellable?
     private var terminateObserver: NSObjectProtocol?
@@ -148,10 +152,79 @@ final class ChatViewModel: ObservableObject {
 
     // MARK: - Отправка со стримингом
 
+    /// Переопределения одного хода (задача 22): /help добавляет докблок,
+    /// принудительно включает инструменты проекта и пропускает RAG.
+    private struct TurnOverrides {
+        /// Загрузить [PROJECT_DOCS] через projectDocsProvider.
+        var wantsProjectDocs = false
+        /// Инструменты проекта включаются независимо от настройки чата.
+        var forceProjectTools = false
+        /// RAG-ретрив пропускается (докблок заменяет его на этом ходу).
+        var skipsRag = false
+        /// Провайдер без function calling → ответ без инструментов, не ошибка.
+        var allowsToolFallback = false
+    }
+
     func send() {
         guard let index = selectedIndex else { return }
         let text = input.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty, !chats[index].isLoading else { return }
+
+        // Слэш-команды (задача 22): перехват до обычного пути отправки.
+        if let command = SlashCommand.parse(text) {
+            handleSlashCommand(command, rawText: text, chatIndex: index)
+            return
+        }
+        startGeneration(chatIndex: index, userText: text, overrides: TurnOverrides())
+    }
+
+    /// Обработка слэш-команды: /help с вопросом идёт обычным генерационным
+    /// путём с переопределениями хода; usage и незнакомая команда отвечаются
+    /// локально, без вызова LLM.
+    private func handleSlashCommand(_ command: SlashCommand, rawText: String, chatIndex: Int) {
+        switch command {
+        case .help:
+            startGeneration(chatIndex: chatIndex, userText: rawText,
+                            overrides: TurnOverrides(wantsProjectDocs: true,
+                                                     forceProjectTools: true,
+                                                     skipsRag: true,
+                                                     allowsToolFallback: true))
+        case .helpUsage:
+            appendLocalExchange(chatIndex: chatIndex, userText: rawText,
+                                assistantText: SlashCommand.usageText())
+        case .unknown(let name):
+            appendLocalExchange(chatIndex: chatIndex, userText: rawText,
+                                assistantText: SlashCommand.usageText(unknownCommand: name))
+        }
+    }
+
+    /// Локальный обмен без LLM: вопрос пользователя + мгновенный ответ
+    /// ассистента (подсказки слэш-команд). isLoading не включается.
+    private func appendLocalExchange(chatIndex: Int, userText: String, assistantText: String) {
+        if !chats[chatIndex].messages.contains(where: { $0.role == .user }) {
+            chats[chatIndex].title = Chat.makeTitle(from: userText)
+        }
+        chats[chatIndex].errorText = nil
+        chats[chatIndex].messages.append(ChatMessage(role: .user, content: userText))
+        chats[chatIndex].messages.append(ChatMessage(role: .assistant, content: assistantText))
+        input = ""
+        ChatPersistence.save(chats, to: fileURL)
+    }
+
+    /// Ошибки /help-хода (задача 22).
+    enum SlashHelpError: LocalizedError {
+        case repositoryNotConfigured
+
+        var errorDescription: String? {
+            "Репозиторий проекта не выбран: Настройки → Общие → «Инструменты проекта»."
+        }
+    }
+
+    /// Ядро генерации (бывшее тело send): добавляет сообщение пользователя и
+    /// заглушку ассистента, строит запрос (RAG/доки/инструменты по overrides)
+    /// и стримит либо гоняет tool-цикл. Семантика истории неизменна с задачи 12.
+    private func startGeneration(chatIndex index: Int, userText text: String,
+                                 overrides: TurnOverrides) {
         let chatID = chats[index].id
 
         // Автоназвание — из первого сообщения пользователя.
@@ -184,19 +257,34 @@ final class ChatViewModel: ObservableObject {
             guard let self else { return }
             let start = Date()
             do {
-                // Ретрив (задача 14): только при включённом тумблере.
+                // Ретрив (задача 14): только при включённом тумблере;
+                // /help-ход пропускает RAG — его контекст заменяют доки.
                 var retrieval: RagRetrievalOutcome?
-                if chatSnapshot.configuration.ragEnabled {
+                if chatSnapshot.configuration.ragEnabled && !overrides.skipsRag {
                     retrieval = await self.ragProvider?(chatSnapshot, text)
                     if let sources = retrieval?.sources, !sources.isEmpty {
                         self.attachSources(chatID: chatID, messageID: placeholderID,
                                            sources: sources)
                     }
                 }
+
+                // Документация проекта (задача 22): только для /help-хода.
+                var projectDocs: String?
+                if overrides.wantsProjectDocs {
+                    guard let docs = await self.projectDocsProvider?() else {
+                        throw SlashHelpError.repositoryNotConfigured
+                    }
+                    // Репозиторий без README/docs — честно говорим модели.
+                    projectDocs = docs.isEmpty
+                        ? "(в репозитории нет README и docs/ — изучай проект инструментами list_files/read_file)"
+                        : docs
+                }
+
                 let messages = ChatPromptBuilder.requestMessages(
                     history: history,
                     historyWindow: configuration.historyWindow,
-                    ragContext: retrieval?.block)
+                    ragContext: retrieval?.block,
+                    projectDocs: projectDocs)
                 var settings = ChatSettings(model: resolved.model)
                 settings.temperature = configuration.temperature
 
@@ -210,16 +298,13 @@ final class ChatViewModel: ObservableObject {
                 // Имена project-инструментов вычисляются на этот ход: по ним
                 // executor-замыкание маршрутизирует вызовы между мостами.
                 var projectNames: Set<String> = []
-                if chatSnapshot.configuration.projectToolsEnabled,
+                if chatSnapshot.configuration.projectToolsEnabled || overrides.forceProjectTools,
                    let project = self.projectToolsBridge {
                     let projectTools = project.tools()
                     projectNames = Set(projectTools.map(\.name))
                     tools += projectTools
                 }
-                if !tools.isEmpty {
-                    guard let toolProvider = resolved.provider as? ToolCapableChatProvider else {
-                        throw MCPError.toolsUnsupportedByProvider
-                    }
+                if !tools.isEmpty, let toolProvider = resolved.provider as? ToolCapableChatProvider {
                     let mcpBridge = self.mcpBridge
                     let projectBridge = self.projectToolsBridge
                     let outcome = try await ToolUseLoop.run(
@@ -241,6 +326,12 @@ final class ChatViewModel: ObservableObject {
                     self.attachToolCalls(chatID: chatID, messageID: placeholderID,
                                          calls: outcome.transcript)
                 } else {
+                    // Провайдер без function calling при запрошенных инструментах:
+                    // обычный чат — ошибка (задача 15), /help деградирует до
+                    // ответа по докам без инструментов.
+                    if !tools.isEmpty && !overrides.allowsToolFallback {
+                        throw MCPError.toolsUnsupportedByProvider
+                    }
                     for try await chunk in resolved.provider.stream(messages, settings: settings) {
                         self.appendToMessage(chatID: chatID, messageID: placeholderID, chunk: chunk)
                     }

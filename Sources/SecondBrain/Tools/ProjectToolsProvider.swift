@@ -17,6 +17,13 @@ final class ProjectToolsProvider {
         self.settingsStore = settingsStore
     }
 
+    /// Корень выбранного репозитория; nil — путь не задан (для /help, задача 22).
+    func currentRepoRoot() -> URL? {
+        let path = settingsStore.settings.projectRepoPath
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return path.isEmpty ? nil : URL(fileURLWithPath: path)
+    }
+
     /// Регистратор+исполнитель для текущего пути настроек; nil — путь не задан.
     func current() -> (registry: ToolRegistry, executor: ToolExecutor)? {
         let path = settingsStore.settings.projectRepoPath

@@ -198,6 +198,28 @@ struct ChatDetailView: View {
     }
 
     private var inputBar: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            slashCommandHint
+            inputRow
+        }
+        .padding(10)
+    }
+
+    /// Подсказка слэш-команд (задача 22): пока пользователь набирает «/имя»
+    /// без пробела — список доступных команд. Полноценный autocomplete — бэклог.
+    @ViewBuilder
+    private var slashCommandHint: some View {
+        let trimmed = viewModel.input.trimmingCharacters(in: .whitespaces)
+        if trimmed.hasPrefix("/"), !trimmed.contains(where: \.isWhitespace) {
+            Text(SlashCommand.catalog.map { "\($0.name) — \($0.summary)" }
+                .joined(separator: "\n"))
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 2)
+        }
+    }
+
+    private var inputRow: some View {
         HStack(alignment: .bottom, spacing: 10) {
             TextField("Сообщение… (⌘⏎ — отправить)",
                       text: $viewModel.input, axis: .vertical)
@@ -226,7 +248,6 @@ struct ChatDetailView: View {
                 .keyboardShortcut(.return, modifiers: .command)
             }
         }
-        .padding(10)
     }
 
     /// Пикер модели: провайдеры с capability .chat (локальные помечены);
