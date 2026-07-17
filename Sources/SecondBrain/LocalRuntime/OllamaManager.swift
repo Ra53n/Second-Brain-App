@@ -117,6 +117,11 @@ final class OllamaManager: ObservableObject {
         self.binaryLocator = binaryLocator
         self.healthRetryDelay = healthRetryDelay
         startIdleTimer()
+        // Задача 30: внешний сервер (запущенный руками, в т.ч. из нестандартной
+        // папки) должен быть виден сразу, а не после открытия вкладки
+        // «Локальные модели» — иначе Ollama выглядит недоступным при живом
+        // сервере («плохо коннектится»).
+        Task { await self.refreshStatus() }
     }
 
     /// Установлен ли Ollama (для isAvailable в реестре провайдеров и UI).
@@ -237,10 +242,16 @@ final class OllamaManager: ObservableObject {
                 URL(fileURLWithPath: String($0)).appendingPathComponent("ollama")
             }
         }
+        let home = FileManager.default.homeDirectoryForCurrentUser
         candidates += [
             URL(fileURLWithPath: "/Applications/Ollama.app/Contents/Resources/ollama"),
             URL(fileURLWithPath: "/opt/homebrew/bin/ollama"),
             URL(fileURLWithPath: "/usr/local/bin/ollama"),
+            // Задача 30: ручные установки в домашней папке (дистрибутив
+            // распакован без инсталлятора — реальный кейс пользователя).
+            home.appendingPathComponent("ollama-dist/ollama"),
+            home.appendingPathComponent("bin/ollama"),
+            home.appendingPathComponent(".local/bin/ollama"),
         ]
         return candidates.first { FileManager.default.isExecutableFile(atPath: $0.path) }
     }
@@ -268,7 +279,13 @@ final class OllamaManager: ObservableObject {
     /// ссылку — деинициализация менеджера его отпускает.
     private func startIdleTimer() {
         idleTimer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
-            Task { @MainActor in self?.shutdownIfIdle() }
+            Task { @MainActor in
+                self?.shutdownIfIdle()
+                // Задача 30: периодическая актуализация статуса — внешний
+                // сервер могли запустить/погасить после старта приложения.
+                // Дёшево: локальный HTTP-пинг раз в 30 с.
+                await self?.refreshStatus()
+            }
         }
     }
 }

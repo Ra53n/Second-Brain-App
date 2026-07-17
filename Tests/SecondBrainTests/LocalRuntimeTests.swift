@@ -144,6 +144,18 @@ final class OllamaManagerTests: XCTestCase {
         return (manager, spawned, registry)
     }
 
+    /// Задача 30: живой внешний сервер виден сразу после создания менеджера
+    /// (без ensureRunning/открытия вкладки) — иначе Ollama, запущенный руками
+    /// из нестандартной папки, выглядел недоступным.
+    func testExternalServerDetectedAtInit() async throws {
+        let (manager, _, _) = makeManager(healthy: { true })
+        // init запускает refreshStatus асинхронно — дренируем MainActor.
+        for _ in 0..<50 where manager.status == .stopped {
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        XCTAssertEqual(manager.status, .runningExternal)
+    }
+
     func testExternalServerIsUsedAndNeverStopped() async throws {
         // Сервер уже отвечает (запущен пользователем) — подключаемся, не спавним.
         let (manager, process, _) = makeManager(healthy: { true })
