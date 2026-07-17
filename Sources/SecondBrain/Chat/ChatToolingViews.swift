@@ -103,6 +103,97 @@ private struct ToolSourceChip: View {
     }
 }
 
+// MARK: - Чип базы знаний (RAG)
+
+/// Чип «База» (задача 28): состояние RAG видно без единого клика, поповер —
+/// объяснение и действие (индексировать/переиндексировать/открыть настройки).
+struct RagStatusChip: View {
+    let summary: RagChipSummary
+    /// Запустить индексацию (true — полная переиндексация).
+    let onReindex: (Bool) -> Void
+    let onOpenSettings: (SettingsTab) -> Void
+
+    @State private var showsPopover = false
+
+    var body: some View {
+        Button {
+            showsPopover.toggle()
+        } label: {
+            HStack(spacing: 5) {
+                if case .indexing(let fraction) = summary.state {
+                    ProgressView(value: fraction)
+                        .progressViewStyle(.circular)
+                        .controlSize(.mini)
+                } else {
+                    Circle()
+                        .fill(stateColor)
+                        .frame(width: 7, height: 7)
+                }
+                Image(systemName: "books.vertical")
+                    .font(.caption2)
+                Text(summary.title)
+                    .font(.caption)
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 3)
+            .background(Capsule().fill(Color.secondary.opacity(0.12)))
+        }
+        .buttonStyle(.plain)
+        .help(summary.detail)
+        .popover(isPresented: $showsPopover, arrowEdge: .top) {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("База знаний (RAG)")
+                    .font(.headline)
+                Text(summary.detail)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                Divider()
+                popoverActions
+            }
+            .padding(12)
+            .frame(width: 300, alignment: .leading)
+        }
+    }
+
+    @ViewBuilder
+    private var popoverActions: some View {
+        switch summary.state {
+        case .ready:
+            Button("Настройки индекса…") {
+                showsPopover = false
+                onOpenSettings(.general)
+            }
+        case .indexing:
+            Text("Индексация идёт — можно продолжать работу.")
+                .font(.caption)
+        case .noEmbedder:
+            Button("Открыть настройки") {
+                showsPopover = false
+                onOpenSettings(.localModels)
+            }
+        case .empty:
+            Button("Индексировать") {
+                showsPopover = false
+                onReindex(false)
+            }
+        case .needsReindex:
+            Button("Переиндексировать заново") {
+                showsPopover = false
+                onReindex(true)
+            }
+        }
+    }
+
+    private var stateColor: Color {
+        switch summary.health {
+        case .ok: return .green
+        case .unknown: return .gray
+        case .warning: return .orange
+        }
+    }
+}
+
 // MARK: - Мастер «Ассистент проекта»
 
 /// Карточка в пустом чате: три шага до работающего ассистента проекта.

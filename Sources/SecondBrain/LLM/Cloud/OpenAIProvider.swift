@@ -188,10 +188,13 @@ struct OpenAIProvider: ChatProvider, TranscriptionProvider, EmbeddingProvider {
 
     // MARK: - EmbeddingProvider
 
-    func embed(_ texts: [String]) async throws -> [[Float]] {
+    /// Модель эмбеддинга по умолчанию (роутер может переопределить, задача 28).
+    static let defaultEmbeddingModel = "text-embedding-3-small"
+
+    func embed(_ texts: [String], model: String?) async throws -> [[Float]] {
         guard !texts.isEmpty else { return [] }
         let key = try apiKey()
-        let body = EmbeddingRequestBody(model: "text-embedding-3-small", input: texts)
+        let body = EmbeddingRequestBody(model: model ?? Self.defaultEmbeddingModel, input: texts)
         let data = try await post(path: "embeddings", body: body, apiKey: key)
         let decoded = try JSONDecoder().decode(EmbeddingResponse.self, from: data)
         return decoded.data

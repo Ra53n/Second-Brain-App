@@ -39,15 +39,26 @@ struct ProviderDescriptor: Identifiable, Equatable {
     /// пользователя (см. FunctionRouter). nil — провайдер не участвует в
     /// автовыборе (например, ключа ещё нет и назначать по умолчанию нечего).
     let defaultModel: String?
+    /// Модель эмбеддингов по умолчанию (задача 28): у Ollama чат- и
+    /// эмбеддинг-модели разные (qwen3 vs nomic-embed-text) — общий defaultModel
+    /// подставлял чат-модель в embed-вызовы. nil — совпадает с defaultModel.
+    let defaultEmbeddingModel: String?
 
     var requiresKey: Bool { !isLocal }
 
-    init(id: ProviderID, displayName: String, capabilities: Set<ProviderCapability>, isLocal: Bool, defaultModel: String? = nil) {
+    init(id: ProviderID, displayName: String, capabilities: Set<ProviderCapability>,
+         isLocal: Bool, defaultModel: String? = nil, defaultEmbeddingModel: String? = nil) {
         self.id = id
         self.displayName = displayName
         self.capabilities = capabilities
         self.isLocal = isLocal
         self.defaultModel = defaultModel
+        self.defaultEmbeddingModel = defaultEmbeddingModel
+    }
+
+    /// Модель по умолчанию для конкретной способности.
+    func defaultModel(for capability: ProviderCapability) -> String? {
+        capability == .embedding ? (defaultEmbeddingModel ?? defaultModel) : defaultModel
     }
 }
 

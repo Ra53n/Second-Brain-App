@@ -31,6 +31,7 @@ final class ProjectToolsProvider {
             let tag = "\(resolved.model)|\(resolved.provider.dimension)"
             if let block = await docsIndex.helpBlock(repoRoot: root,
                                                     embedder: resolved.provider,
+                                                    model: resolved.model,
                                                     tag: tag,
                                                     question: question) {
                 return block
@@ -39,6 +40,19 @@ final class ProjectToolsProvider {
         return await Task.detached(priority: .userInitiated) {
             ProjectDocsContext.build(files: ProjectDocsLoader.loadFiles(repoRoot: root))
         }.value
+    }
+
+    /// Статистика индекса доков для вкладки «Инструменты» (задача 28);
+    /// nil — репозиторий не выбран или индекс ещё не строился.
+    func docsIndexStats() async -> ProjectDocsIndexService.DocsIndexStats? {
+        guard let root = currentRepoRoot() else { return nil }
+        return await docsIndex.stats(repoRoot: root)
+    }
+
+    /// Сброс индекса доков (перестроится при следующем /help).
+    func resetDocsIndex() async {
+        guard let root = currentRepoRoot() else { return }
+        await docsIndex.reset(repoRoot: root)
     }
 
     /// Корень выбранного репозитория; nil — путь не задан (для /help, задача 22).

@@ -201,14 +201,15 @@ struct GeminiProvider: ChatProvider, TranscriptionProvider, EmbeddingProvider {
 
     // MARK: - EmbeddingProvider
 
-    func embed(_ texts: [String]) async throws -> [[Float]] {
+    func embed(_ texts: [String], model: String?) async throws -> [[Float]] {
         guard !texts.isEmpty else { return [] }
         let key = try apiKey()
+        let effectiveModel = model ?? embeddingModel
         let body = BatchEmbedRequest(requests: texts.map {
-            BatchEmbedRequest.Request(model: "models/\(embeddingModel)", content: Content(role: nil, parts: [.text($0)]))
+            BatchEmbedRequest.Request(model: "models/\(effectiveModel)", content: Content(role: nil, parts: [.text($0)]))
         })
         let url = baseURL
-            .appendingPathComponent("models/\(embeddingModel):batchEmbedContents")
+            .appendingPathComponent("models/\(effectiveModel):batchEmbedContents")
             .appending(queryItems: [URLQueryItem(name: "key", value: key)])
 
         var request = URLRequest(url: url)

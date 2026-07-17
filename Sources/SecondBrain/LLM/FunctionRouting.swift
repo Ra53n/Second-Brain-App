@@ -29,13 +29,16 @@ enum AppFunction: String, Codable, CaseIterable {
     case chat
     case embedding
     case noteFiling
+    /// Переранжирование и переписывание запроса RAG (задача 28): раньше
+    /// молча использовалась модель функции «чат» — теперь настраивается явно.
+    case ragRerank
 
     /// Протокол провайдера, обязательный для этой функции — им валидируется
     /// назначение (нельзя поставить embedding-провайдер на транскрипцию).
     var requiredCapability: ProviderCapability {
         switch self {
         case .transcription: return .transcription
-        case .meetingSummary, .chat, .noteFiling: return .chat
+        case .meetingSummary, .chat, .noteFiling, .ragRerank: return .chat
         case .embedding: return .embedding
         }
     }
@@ -47,6 +50,7 @@ enum AppFunction: String, Codable, CaseIterable {
         case .chat: return "Чат"
         case .embedding: return "Эмбеддинги"
         case .noteFiling: return "Раскладка заметок"
+        case .ragRerank: return "RAG: переранжирование и переписывание запроса"
         }
     }
 }
@@ -203,9 +207,10 @@ final class FunctionRouter: ObservableObject {
 
     /// Первый доступный провайдер способности с известной моделью по умолчанию
     /// (провайдеры без defaultModel не участвуют в автодефолте — их нечем вызвать).
+    /// Модель берётся per-capability (задача 28): у Ollama эмбеддинги — не qwen3.
     private func defaultAssignment(for capability: ProviderCapability) -> (ProviderID, String)? {
         for descriptor in registry.descriptors(supporting: capability) where registry.isAvailable(descriptor.id) {
-            if let model = descriptor.defaultModel {
+            if let model = descriptor.defaultModel(for: capability) {
                 return (descriptor.id, model)
             }
         }

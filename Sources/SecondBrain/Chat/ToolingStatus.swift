@@ -115,6 +115,73 @@ struct ToolSourceSummary: Identifiable, Equatable {
     }
 }
 
+// MARK: - Чип состояния базы знаний (RAG)
+
+/// Сводка состояния RAG для чипа «База» (задача 28). Отвечает на «почему
+/// агент не использует базу»: раньше ретрив молча возвращал nil.
+struct RagChipSummary: Equatable {
+    enum State: Equatable {
+        /// Индекс построен, эмбеддер доступен, теги совпадают.
+        case ready(chunks: Int)
+        /// Идёт индексация (fraction 0…1; nil — доля неизвестна).
+        case indexing(fraction: Double?)
+        /// Нет провайдера эмбеддингов — RAG невозможен.
+        case noEmbedder
+        /// Индекс пуст — нужно проиндексировать vault.
+        case empty
+        /// Индекс построен другой моделью — нужна полная переиндексация.
+        case needsReindex
+    }
+
+    let state: State
+    let title: String
+    let detail: String
+    let health: ToolSourceSummary.Health
+
+    /// nil — тумблер «По базе» выключен, чипа нет.
+    /// Приоритет состояний: индексация → нет эмбеддера → смена модели → пусто → готов.
+    static func make(ragEnabled: Bool,
+                     embedderAvailable: Bool,
+                     chunkCount: Int,
+                     indexTag: String?,
+                     currentTag: String?,
+                     needsFullReindex: Bool,
+                     isIndexing: Bool,
+                     progressFraction: Double?) -> RagChipSummary? {
+        guard ragEnabled else { return nil }
+
+        if isIndexing {
+            return RagChipSummary(state: .indexing(fraction: progressFraction),
+                                  title: "База",
+                                  detail: "Идёт индексация vault…",
+                                  health: .unknown)
+        }
+        guard embedderAvailable else {
+            return RagChipSummary(
+                state: .noEmbedder, title: "База",
+                detail: "Нет модели эмбеддингов — установите nomic-embed-text во вкладке «Локальные модели» или добавьте ключ OpenAI/Gemini.",
+                health: .warning)
+        }
+        let tagMismatch = indexTag != nil && currentTag != nil && indexTag != currentTag
+        if needsFullReindex || tagMismatch {
+            return RagChipSummary(
+                state: .needsReindex, title: "База",
+                detail: "Модель эмбеддинга изменилась — векторы несовместимы, нужна полная переиндексация.",
+                health: .warning)
+        }
+        guard chunkCount > 0 else {
+            return RagChipSummary(
+                state: .empty, title: "База",
+                detail: "Индекс пуст — проиндексируйте vault, чтобы отвечать по заметкам.",
+                health: .warning)
+        }
+        return RagChipSummary(state: .ready(chunks: chunkCount),
+                              title: "База · \(chunkCount)",
+                              detail: "Поиск по vault готов · чанков: \(chunkCount)",
+                              health: .ok)
+    }
+}
+
 // MARK: - Мастер «Ассистент проекта»
 
 /// Шаги мастера в пустом чате; все done — конфигурация готова к /help.

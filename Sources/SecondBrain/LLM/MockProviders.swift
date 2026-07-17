@@ -90,7 +90,8 @@ struct HashingEmbedder: EmbeddingProvider {
         self.dimension = max(8, dimension)
     }
 
-    func embed(_ texts: [String]) async throws -> [[Float]] {
+    func embed(_ texts: [String], model: String?) async throws -> [[Float]] {
+        // Модель не влияет: детерминированные хеш-векторы.
         texts.map(vector(for:))
     }
 

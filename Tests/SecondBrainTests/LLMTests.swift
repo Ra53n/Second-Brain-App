@@ -302,6 +302,45 @@ final class FunctionRouterTests: XCTestCase {
 
 // MARK: - KeyStore (тестовый Keychain-сервис)
 
+// MARK: - Роутинг RAG (задача 28)
+
+final class RagRoutingTests: XCTestCase {
+
+    @MainActor
+    func testRagRerankFunctionRequiresChatAndResolves() {
+        XCTAssertEqual(AppFunction.ragRerank.requiredCapability, .chat)
+        XCTAssertFalse(AppFunction.ragRerank.displayName.isEmpty)
+
+        let registry = ProviderRegistry()
+        let router = FunctionRouter(registry: registry, config: FunctionRoutingConfig())
+        let mock = MockChatProvider()
+        registry.register(
+            ProviderDescriptor(id: "chatty", displayName: "Chatty",
+                               capabilities: [.chat], isLocal: true, defaultModel: "m"),
+            chat: mock)
+        // Автодефолт: без явного назначения реранк получает первый chat-провайдер.
+        XCTAssertEqual(router.resolveChatProvider(for: .ragRerank)?.model, "m")
+    }
+
+    /// Задача 28: автодефолт эмбеддингов берёт defaultEmbeddingModel —
+    /// у Ollama чат-модель qwen3 не должна попадать в embed-вызовы.
+    @MainActor
+    func testEmbeddingAutoDefaultUsesEmbeddingModel() {
+        let registry = ProviderRegistry()
+        let router = FunctionRouter(registry: registry, config: FunctionRoutingConfig())
+        registry.register(
+            ProviderDescriptor(id: "local", displayName: "Local",
+                               capabilities: [.chat, .embedding], isLocal: true,
+                               defaultModel: "qwen3:8b",
+                               defaultEmbeddingModel: "nomic-embed-text"),
+            chat: MockChatProvider(),
+            embedding: HashingEmbedder())
+        XCTAssertEqual(router.resolveEmbeddingProvider(for: .embedding)?.model,
+                       "nomic-embed-text")
+        XCTAssertEqual(router.resolveChatProvider(for: .chat)?.model, "qwen3:8b")
+    }
+}
+
 final class KeyStoreTests: XCTestCase {
     private let originalService = KeyStore.service
 

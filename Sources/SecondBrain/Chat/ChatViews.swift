@@ -65,6 +65,10 @@ struct ChatDetailView: View {
     /// MCP-вью-модель целиком (задача 27): servers для меню + statuses для
     /// чипов (зеленеют после «Тест» и первого tool-вызова).
     @ObservedObject var mcpViewModel: MCPServersViewModel
+    /// Менеджер RAG-индекса (задача 28): чип «База» показывает состояние
+    /// (нет эмбеддера / пусто / устарел / готов / индексация) и запускает
+    /// индексацию прямо из чата.
+    @ObservedObject var ragIndexManager: RagIndexManager
     /// Показ попапа настроек RAG (задача 23).
     @State private var showsRagTuning = false
     /// Открытие окна настроек из пикера модели (задача 24).
@@ -87,6 +91,21 @@ struct ChatDetailView: View {
             projectToolCount: ToolRegistry.projectToolCatalog().count,
             servers: mcpViewModel.servers,
             statuses: mcpViewModel.statuses)
+    }
+
+    /// Сводка чипа «База» (задача 28); availabilityTick — доступность
+    /// эмбеддера перечитывается после возврата из настроек.
+    private var ragChipSummary: RagChipSummary? {
+        _ = availabilityTick
+        return RagChipSummary.make(
+            ragEnabled: chat?.configuration.ragEnabled ?? false,
+            embedderAvailable: ragIndexManager.currentEmbeddingTag() != nil,
+            chunkCount: ragIndexManager.chunkCount,
+            indexTag: ragIndexManager.embeddingTag,
+            currentTag: ragIndexManager.currentEmbeddingTag()?.tag,
+            needsFullReindex: ragIndexManager.needsFullReindex,
+            isIndexing: ragIndexManager.progress != nil,
+            progressFraction: ragIndexManager.progress?.fraction)
     }
 
     /// Состояние мастера; читает availabilityTick, чтобы перечитываться
@@ -277,22 +296,32 @@ struct ChatDetailView: View {
         .padding(10)
     }
 
-    /// Чипы включённых источников инструментов (задача 27): видно без
-    /// единого клика, поповер чипа — статус и быстрые действия.
+    /// Чипы источников контекста (задачи 27, 28): «База» (RAG) первым, затем
+    /// инструменты. Видно без единого клика; поповеры — статус и действия.
     @ViewBuilder
     private var toolChipsRow: some View {
-        if !toolSourceSummaries.isEmpty {
-            ToolChipsRow(
-                summaries: toolSourceSummaries,
-                onDisable: { summary in
-                    switch summary.kind {
-                    case .project: viewModel.toggleProjectTools()
-                    case .mcp(let serverID): viewModel.toggleMCPServer(serverID)
-                    }
-                },
-                onConfigure: {
-                    SettingsTabRouter.open(.tools, openSettings: { openSettings() })
-                })
+        if ragChipSummary != nil || !toolSourceSummaries.isEmpty {
+            HStack(spacing: 6) {
+                if let ragSummary = ragChipSummary {
+                    RagStatusChip(
+                        summary: ragSummary,
+                        onReindex: { full in ragIndexManager.reindex(fullRebuild: full) },
+                        onOpenSettings: { tab in
+                            SettingsTabRouter.open(tab, openSettings: { openSettings() })
+                        })
+                }
+                ToolChipsRow(
+                    summaries: toolSourceSummaries,
+                    onDisable: { summary in
+                        switch summary.kind {
+                        case .project: viewModel.toggleProjectTools()
+                        case .mcp(let serverID): viewModel.toggleMCPServer(serverID)
+                        }
+                    },
+                    onConfigure: {
+                        SettingsTabRouter.open(.tools, openSettings: { openSettings() })
+                    })
+            }
         }
     }
 

@@ -147,6 +147,64 @@ final class ToolSourceSummaryTests: XCTestCase {
     }
 }
 
+// MARK: - Чип базы знаний (задача 28)
+
+final class RagChipSummaryTests: XCTestCase {
+
+    private func make(ragEnabled: Bool = true,
+                      embedderAvailable: Bool = true,
+                      chunkCount: Int = 100,
+                      indexTag: String? = "m|8",
+                      currentTag: String? = "m|8",
+                      needsFullReindex: Bool = false,
+                      isIndexing: Bool = false,
+                      progressFraction: Double? = nil) -> RagChipSummary? {
+        RagChipSummary.make(ragEnabled: ragEnabled,
+                            embedderAvailable: embedderAvailable,
+                            chunkCount: chunkCount,
+                            indexTag: indexTag,
+                            currentTag: currentTag,
+                            needsFullReindex: needsFullReindex,
+                            isIndexing: isIndexing,
+                            progressFraction: progressFraction)
+    }
+
+    func testDisabledGivesNil() {
+        XCTAssertNil(make(ragEnabled: false))
+    }
+
+    func testReadyState() {
+        let chip = make()
+        XCTAssertEqual(chip?.state, .ready(chunks: 100))
+        XCTAssertEqual(chip?.health, .ok)
+        XCTAssertEqual(chip?.title, "База · 100")
+    }
+
+    func testNoEmbedderState() {
+        let chip = make(embedderAvailable: false)
+        XCTAssertEqual(chip?.state, .noEmbedder)
+        XCTAssertEqual(chip?.health, .warning)
+        XCTAssertTrue(chip?.detail.contains("nomic-embed-text") == true)
+    }
+
+    func testEmptyIndexState() {
+        XCTAssertEqual(make(chunkCount: 0, indexTag: nil)?.state, .empty)
+    }
+
+    func testTagMismatchNeedsReindex() {
+        XCTAssertEqual(make(currentTag: "other|8")?.state, .needsReindex)
+        XCTAssertEqual(make(needsFullReindex: true)?.state, .needsReindex)
+    }
+
+    /// Приоритеты: индексация поверх всего; нет эмбеддера поверх пустоты.
+    func testStatePriorities() {
+        XCTAssertEqual(make(embedderAvailable: false, chunkCount: 0,
+                            isIndexing: true, progressFraction: 0.5)?.state,
+                       .indexing(fraction: 0.5))
+        XCTAssertEqual(make(embedderAvailable: false, chunkCount: 0)?.state, .noEmbedder)
+    }
+}
+
 // MARK: - Мастер
 
 final class ProjectWizardStateTests: XCTestCase {

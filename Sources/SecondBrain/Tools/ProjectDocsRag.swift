@@ -30,18 +30,45 @@ actor ProjectDocsIndexService {
     /// или произошла ошибка (вызывающий уходит в фолбэк полного контекста).
     func helpBlock(repoRoot: URL,
                    embedder: EmbeddingProvider,
+                   model: String?,
                    tag: String,
                    question: String,
                    topK: Int = ProjectDocsIndexService.topK) async -> String? {
         do {
             let index = try openIndex(repoRoot: repoRoot)
-            try await sync(index: index, repoRoot: repoRoot, embedder: embedder, tag: tag)
-            return try await retrieve(index: index, embedder: embedder,
+            try await sync(index: index, repoRoot: repoRoot,
+                           embedder: embedder, model: model, tag: tag)
+            return try await retrieve(index: index, embedder: embedder, model: model,
                                       question: question, topK: topK)
         } catch {
             // Ошибки индекса/эмбеддинга не роняют /help — фолбэк снаружи.
             return nil
         }
+    }
+
+    /// Статистика индекса доков для вкладки «Инструменты» (задача 28).
+    struct DocsIndexStats: Equatable {
+        let files: Int
+        let chunks: Int
+        let updatedAt: Date?
+    }
+
+    /// nil — индекс ещё не строился (файла БД нет). Пустую БД НЕ создаёт.
+    func stats(repoRoot: URL) -> DocsIndexStats? {
+        let url = Self.indexFileURL(repoRoot: repoRoot)
+        guard FileManager.default.fileExists(atPath: url.path) else { return nil }
+        guard let index = try? openIndex(repoRoot: repoRoot),
+              let stats = try? index.stats() else { return nil }
+        return DocsIndexStats(files: stats.files, chunks: stats.chunks,
+                              updatedAt: index.updatedAt)
+    }
+
+    /// Полный сброс индекса доков (кнопка «Сбросить индекс» в настройках).
+    func reset(repoRoot: URL) {
+        guard let index = try? openIndex(repoRoot: repoRoot) else { return }
+        try? index.clearAll()
+        index.embeddingTag = nil
+        index.updatedAt = nil
     }
 
     // MARK: - Внутренности
@@ -57,7 +84,7 @@ actor ProjectDocsIndexService {
     /// Инкрементальная синхронизация по mtime; смена модели эмбеддинга
     /// (тег «model|dim») → полная переиндексация: векторы несовместимы.
     private func sync(index: RagIndex, repoRoot: URL,
-                      embedder: EmbeddingProvider, tag: String) async throws {
+                      embedder: EmbeddingProvider, model: String?, tag: String) async throws {
         if index.embeddingTag != tag {
             try index.clearAll()
             index.embeddingTag = tag
@@ -77,7 +104,7 @@ actor ProjectDocsIndexService {
                 try index.replaceFile(path: name, mtime: mtime, chunks: [])
                 continue
             }
-            let vectors = try await embedder.embed(chunks.map(\.text))
+            let vectors = try await embedder.embed(chunks.map(\.text), model: model)
                 .map(Vector.normalize)
             try index.replaceFile(path: name, mtime: mtime,
                                   chunks: Array(zip(chunks, vectors)))
@@ -91,11 +118,11 @@ actor ProjectDocsIndexService {
     }
 
     /// Top-K чанков по вопросу → текст блока с источниками.
-    private func retrieve(index: RagIndex, embedder: EmbeddingProvider,
+    private func retrieve(index: RagIndex, embedder: EmbeddingProvider, model: String?,
                           question: String, topK: Int) async throws -> String? {
         let (chunks, vectors) = try index.loadAll()
         guard !chunks.isEmpty,
-              let query = try await embedder.embed([question]).first else { return nil }
+              let query = try await embedder.embed([question], model: model).first else { return nil }
         let hits = Vector.topK(query: Vector.normalize(query), matrix: vectors, k: topK)
         guard !hits.isEmpty else { return nil }
         return Self.buildBlock(hits: hits.map { hit in

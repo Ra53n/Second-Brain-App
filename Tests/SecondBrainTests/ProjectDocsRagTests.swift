@@ -11,10 +11,13 @@ private final class MockEmbedder: EmbeddingProvider {
     let dimension = 8
     private(set) var embedCallCount = 0
     private(set) var embeddedTexts: [String] = []
+    /// Модели, с которыми звали embed (проверка проброса, задача 28).
+    private(set) var receivedModels: [String?] = []
 
-    func embed(_ texts: [String]) async throws -> [[Float]] {
+    func embed(_ texts: [String], model: String?) async throws -> [[Float]] {
         embedCallCount += 1
         embeddedTexts += texts
+        receivedModels.append(model)
         return texts.map { text in
             var vector = [Float](repeating: 0, count: dimension)
             for word in text.lowercased().split(whereSeparator: { !$0.isLetter }) {
@@ -58,6 +61,7 @@ final class ProjectDocsRagTests: XCTestCase {
 
     func testRetrieveReturnsRelevantChunkWithSource() async {
         let block = await service.helpBlock(repoRoot: repoRoot, embedder: embedder,
+                                            model: nil,
                                             tag: "mock|8",
                                             question: "где хранятся чаты chats.json",
                                             topK: 1)
@@ -69,10 +73,12 @@ final class ProjectDocsRagTests: XCTestCase {
     /// Повторный вызов без изменений файлов не переэмбеддит (инкрементальность).
     func testIncrementalSyncSkipsUnchangedFiles() async {
         _ = await service.helpBlock(repoRoot: repoRoot, embedder: embedder,
+                                    model: nil,
                                     tag: "mock|8", question: "вопрос")
         let callsAfterFirst = embedder.embedCallCount
 
         _ = await service.helpBlock(repoRoot: repoRoot, embedder: embedder,
+                                    model: nil,
                                     tag: "mock|8", question: "другой вопрос")
         // +1 вызов — только эмбеддинг вопроса, файлы не пересчитываются.
         XCTAssertEqual(embedder.embedCallCount, callsAfterFirst + 1)
@@ -81,10 +87,12 @@ final class ProjectDocsRagTests: XCTestCase {
     /// Смена тега модели → полная переиндексация (векторы несовместимы).
     func testTagChangeForcesFullReindex() async {
         _ = await service.helpBlock(repoRoot: repoRoot, embedder: embedder,
+                                    model: nil,
                                     tag: "old|8", question: "вопрос")
         let before = embedder.embeddedTexts.count
 
         _ = await service.helpBlock(repoRoot: repoRoot, embedder: embedder,
+                                    model: nil,
                                     tag: "new|8", question: "вопрос")
         // Все чанки эмбеддятся заново (+ вопрос).
         XCTAssertGreaterThan(embedder.embeddedTexts.count, before + 1)
@@ -93,6 +101,7 @@ final class ProjectDocsRagTests: XCTestCase {
     /// Изменение файла переиндексирует только его; удалённый файл уходит из индекса.
     func testChangedFileReindexedAndDeletedRemoved() async throws {
         _ = await service.helpBlock(repoRoot: repoRoot, embedder: embedder,
+                                    model: nil,
                                     tag: "mock|8", question: "вопрос")
 
         // Меняем README (mtime в прошлое не выставляем — контент+mtime новые).
@@ -103,12 +112,41 @@ final class ProjectDocsRagTests: XCTestCase {
         try FileManager.default.removeItem(at: repoRoot.appendingPathComponent("docs/DATA.md"))
 
         let block = await service.helpBlock(repoRoot: repoRoot, embedder: embedder,
+                                            model: nil,
                                             tag: "mock|8",
                                             question: "где хранятся чаты chats.json",
                                             topK: 3)
         XCTAssertTrue(block?.contains("chats.json") != true,
                       "удалённый файл не должен находиться: \(block ?? "nil")")
         XCTAssertTrue(block?.contains("синхронизацию") == true, block ?? "nil")
+    }
+
+    /// Задача 28: модель эмбеддинга доходит до эмбеддера доков.
+    func testHelpBlockPassesModelToEmbedder() async {
+        _ = await service.helpBlock(repoRoot: repoRoot, embedder: embedder,
+                                    model: "custom-embed",
+                                    tag: "custom-embed|8", question: "вопрос")
+        XCTAssertFalse(embedder.receivedModels.isEmpty)
+        XCTAssertTrue(embedder.receivedModels.allSatisfy { $0 == "custom-embed" },
+                      "\(embedder.receivedModels)")
+    }
+
+    /// Задача 28: stats nil до первой индексации, заполнен после; reset обнуляет.
+    func testStatsAndReset() async {
+        let statsBefore = await service.stats(repoRoot: repoRoot)
+        XCTAssertNil(statsBefore, "индекс ещё не строился")
+
+        _ = await service.helpBlock(repoRoot: repoRoot, embedder: embedder,
+                                    model: nil,
+                                    tag: "mock|8", question: "вопрос")
+        let stats = await service.stats(repoRoot: repoRoot)
+        XCTAssertEqual(stats?.files, 2)
+        XCTAssertGreaterThan(stats?.chunks ?? 0, 0)
+        XCTAssertNotNil(stats?.updatedAt)
+
+        await service.reset(repoRoot: repoRoot)
+        let statsAfter = await service.stats(repoRoot: repoRoot)
+        XCTAssertEqual(statsAfter?.chunks, 0)
     }
 
     /// helpContext без роутера (нет эмбеддера) — фолбэк на полный контекст.

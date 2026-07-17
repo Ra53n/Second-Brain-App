@@ -25,7 +25,8 @@ enum CloudProviders {
                 displayName: "OpenAI",
                 capabilities: [.chat, .transcription, .embedding],
                 isLocal: false,
-                defaultModel: "gpt-4o-mini"
+                defaultModel: "gpt-4o-mini",
+                defaultEmbeddingModel: OpenAIProvider.defaultEmbeddingModel
             ),
             chat: openAI,
             transcription: openAI,
@@ -39,7 +40,8 @@ enum CloudProviders {
                 displayName: "Google Gemini",
                 capabilities: [.chat, .transcription, .embedding],
                 isLocal: false,
-                defaultModel: "gemini-2.0-flash"
+                defaultModel: "gemini-2.0-flash",
+                defaultEmbeddingModel: "text-embedding-004"
             ),
             chat: gemini,
             transcription: gemini,

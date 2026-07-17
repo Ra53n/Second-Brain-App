@@ -74,12 +74,13 @@ enum RagRetriever {
     /// top-K чанков, ближайших к запросу. Пустой массив при любой проблеме.
     static func search(index: RagIndex,
                        embedder: EmbeddingProvider,
+                       model: String? = nil,
                        query: String,
                        topK: Int) async -> [RagHit] {
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return [] }
         do {
-            guard let queryVector = try await embedder.embed([trimmed]).first,
+            guard let queryVector = try await embedder.embed([trimmed], model: model).first,
                   !queryVector.isEmpty else { return [] }
             let (chunks, vectors) = try index.loadAll()
             guard !chunks.isEmpty else { return [] }
@@ -103,6 +104,7 @@ enum RagRetriever {
     /// Пустой итог → notFoundDirective (модель честно скажет «не нашлось»).
     static func retrieve(index: RagIndex,
                          embedder: EmbeddingProvider,
+                         model: String? = nil,
                          query: String,
                          history: [ChatMessage],
                          options: Options,
@@ -125,7 +127,7 @@ enum RagRetriever {
 
         // 2. Кандидаты шире финального top-K (порогу и реранку нужно из чего резать).
         let candidateK = max(options.topK * 4, options.topK)
-        var hits = await search(index: index, embedder: embedder,
+        var hits = await search(index: index, embedder: embedder, model: model,
                                 query: searchQuery, topK: candidateK)
 
         // 3. Порог релевантности.

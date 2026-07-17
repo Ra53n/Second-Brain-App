@@ -178,10 +178,13 @@ private final class CountingEmbedder: EmbeddingProvider {
     private(set) var embeddedTexts: [String] = []
 
     var dimension: Int { inner.dimension }
+    /// Модели, с которыми звали embed (проверка проброса, задача 28).
+    private(set) var receivedModels: [String?] = []
 
-    func embed(_ texts: [String]) async throws -> [[Float]] {
+    func embed(_ texts: [String], model: String?) async throws -> [[Float]] {
         embedCallCount += 1
         embeddedTexts.append(contentsOf: texts)
+        receivedModels.append(model)
         return try await inner.embed(texts)
     }
 }
@@ -222,6 +225,26 @@ final class RagIndexerTests: XCTestCase {
 
         let files = RagIndexer.scanVault(vaultDir, ignore: ["Черновики"])
         XCTAssertEqual(Set(files.keys), ["Заметка.md", "Проекты/Идея.md"])
+    }
+
+    /// Задача 28: выбранная в роутинге модель эмбеддинга доходит до провайдера.
+    func testSyncPassesEmbeddingModelToEmbedder() async throws {
+        try write("а.md", "# Тест\nтекст")
+        let index = try RagIndex(path: ":memory:")
+        let embedder = CountingEmbedder()
+
+        try await RagIndexer.sync(vaultURL: vaultDir, index: index,
+                                  embedder: embedder,
+                                  embeddingModel: "custom-embed",
+                                  embeddingTag: "custom-embed|64")
+        XCTAssertEqual(embedder.receivedModels, ["custom-embed"])
+
+        try write("б.md", "# Ещё\nтекст")
+        try await RagIndexer.sync(vaultURL: vaultDir, index: index,
+                                  embedder: embedder,
+                                  embeddingTag: "custom-embed|64")
+        // Без модели — nil (дефолт провайдера).
+        XCTAssertEqual(embedder.receivedModels.last ?? "x", nil)
     }
 
     func testFullThenIncrementalSync() async throws {

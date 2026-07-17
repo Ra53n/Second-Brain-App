@@ -140,7 +140,8 @@ struct ContentView: View {
                                        weak functionRouter = model.functionRouter] chat, query in
             guard let manager = ragIndexManager else { return nil }
             let needsLLM = chat.configuration.ragQueryRewrite || chat.configuration.ragRerankEnabled
-            let chatProvider = needsLLM ? functionRouter?.resolveChatProvider(for: .chat) : nil
+            // Задача 28: у реранка/переписывания своя функция роутинга.
+            let chatProvider = needsLLM ? functionRouter?.resolveChatProvider(for: .ragRerank) : nil
             return await manager.retrieveForChat(query: query,
                                                  history: chat.messages,
                                                  configuration: chat.configuration,
@@ -196,6 +197,7 @@ struct ContentView: View {
             ChatDetailView(viewModel: model.chatViewModel,
                            settingsStore: model.settingsStore,
                            mcpViewModel: model.mcpServersViewModel,
+                           ragIndexManager: model.ragIndexManager,
                            resolveWikilink: { vaultManager.linkIndex?.resolve($0) })
                 .onAppear {
                     wireRagProvider()

@@ -96,13 +96,20 @@ protocol TranscriptionProvider {
 /// конкретного экземпляра (проверяется при инвалидации RAG-индекса, задача 13).
 protocol EmbeddingProvider {
     var dimension: Int { get }
-    func embed(_ texts: [String]) async throws -> [[Float]]
+    /// model — конкретная модель эмбеддинга из роутера (задача 28: выбор в
+    /// «Моделях» должен реально действовать); nil — дефолт провайдера.
+    func embed(_ texts: [String], model: String?) async throws -> [[Float]]
 }
 
 extension EmbeddingProvider {
+    /// Старая форма без модели — дефолт провайдера (вызовы, где выбор не важен).
+    func embed(_ texts: [String]) async throws -> [[Float]] {
+        try await embed(texts, model: nil)
+    }
+
     /// Удобный вызов для одного текста.
-    func embedOne(_ text: String) async throws -> [Float] {
-        let vectors = try await embed([text])
+    func embedOne(_ text: String, model: String? = nil) async throws -> [Float] {
+        let vectors = try await embed([text], model: model)
         guard let first = vectors.first else { throw LLMError.emptyResponse }
         return first
     }
