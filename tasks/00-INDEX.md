@@ -31,6 +31,7 @@
 | 23 | [Полировка чата](23-chat-polish.md) | 12, 14, 15 | [x] |
 | 24 | [Доступность моделей и синк-кнопка](24-chat-usability-fixes.md) | 12, 16, 17 | [x] |
 | 25 | [RAG-индексация доков проекта + git_diff](25-project-docs-rag.md) | 13, 21, 22 | [x] |
+| 26 | [Провайдеры OpenRouter и DeepSeek](26-openrouter-deepseek.md) | 08, 17 | [x] |
 
 ## Рекомендуемый порядок
 
