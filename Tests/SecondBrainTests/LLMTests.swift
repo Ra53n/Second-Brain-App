@@ -198,6 +198,24 @@ final class FunctionRouterTests: XCTestCase {
         XCTAssertEqual(resolved?.model, "model-a")
     }
 
+    /// Задача 29: резолв несёт providerID/displayName для метрик и «Авто → …».
+    func testResolvedProviderCarriesIDAndDisplayName() {
+        let (router, registry) = makeRouter()
+        registry.register(
+            ProviderDescriptor(id: "named", displayName: "Красивое имя",
+                               capabilities: [.chat], isLocal: true, defaultModel: "m"),
+            chat: MockChatProvider())
+        let auto = router.resolveChatProvider(for: .chat)
+        XCTAssertEqual(auto?.providerID, "named")
+        XCTAssertEqual(auto?.displayName, "Красивое имя")
+
+        router.assign(FunctionAssignment(providerID: "named", model: "custom"), to: .chat)
+        let assigned = router.resolveChatProvider(for: .chat)
+        XCTAssertEqual(assigned?.providerID, "named")
+        XCTAssertEqual(assigned?.displayName, "Красивое имя")
+        XCTAssertEqual(assigned?.model, "custom")
+    }
+
     func testFallsBackToDefaultWhenNoAssignment() {
         let (router, registry) = makeRouter()
         let mock = MockChatProvider()
@@ -451,11 +469,17 @@ final class MockChatProviderTests: XCTestCase {
 
     func testStreamYieldsChunksThenFinishes() async throws {
         let provider = MockChatProvider(responses: ["раз два три"])
+        provider.streamUsage = ChatUsage(promptTokens: 3, completionTokens: 4, totalTokens: 7)
         var collected: [String] = []
-        for try await chunk in provider.stream([], settings: ChatSettings(model: "any")) {
-            collected.append(chunk)
+        var usage: ChatUsage?
+        for try await event in provider.stream([], settings: ChatSettings(model: "any")) {
+            switch event {
+            case .text(let chunk): collected.append(chunk)
+            case .usage(let u): usage = u
+            }
         }
         XCTAssertEqual(collected.joined(), "раз два три ")
+        XCTAssertEqual(usage?.totalTokens, 7)
     }
 
     func testStreamPropagatesConfiguredError() async {

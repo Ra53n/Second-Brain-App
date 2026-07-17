@@ -25,23 +25,35 @@ enum ChatRole: String, Codable {
 
 /// Метрики ответа модели (только у сообщений ассистента).
 struct MessageMetrics: Equatable, Codable {
-    var promptTokens: Int?      // nil — провайдер не вернул usage (стриминг)
+    var promptTokens: Int?      // nil — провайдер не вернул usage
     var completionTokens: Int?
     var totalTokens: Int?
     var duration: TimeInterval  // время ответа, сек (wall-clock)
+    // Кто фактически ответил (задача 29). providerName хранится намеренно:
+    // это исторический факт на момент ответа, а у MessageBubble нет реестра.
+    var providerID: String?
+    var providerName: String?
+    var model: String?
 
     init(promptTokens: Int? = nil,
          completionTokens: Int? = nil,
          totalTokens: Int? = nil,
-         duration: TimeInterval) {
+         duration: TimeInterval,
+         providerID: String? = nil,
+         providerName: String? = nil,
+         model: String? = nil) {
         self.promptTokens = promptTokens
         self.completionTokens = completionTokens
         self.totalTokens = totalTokens
         self.duration = duration
+        self.providerID = providerID
+        self.providerName = providerName
+        self.model = model
     }
 
     enum CodingKeys: String, CodingKey {
         case promptTokens, completionTokens, totalTokens, duration
+        case providerID, providerName, model
     }
 
     init(from decoder: Decoder) throws {
@@ -50,6 +62,9 @@ struct MessageMetrics: Equatable, Codable {
         completionTokens = try c.decodeIfPresent(Int.self, forKey: .completionTokens)
         totalTokens = try c.decodeIfPresent(Int.self, forKey: .totalTokens)
         duration = try c.decodeIfPresent(TimeInterval.self, forKey: .duration) ?? 0
+        providerID = try c.decodeIfPresent(String.self, forKey: .providerID)
+        providerName = try c.decodeIfPresent(String.self, forKey: .providerName)
+        model = try c.decodeIfPresent(String.self, forKey: .model)
     }
 }
 

@@ -155,13 +155,13 @@ final class SlashHelpViewModelTests: XCTestCase {
         }
 
         func stream(_ messages: [ChatMessageDTO],
-                    settings: ChatSettings) -> AsyncThrowingStream<String, Error> {
+                    settings: ChatSettings) -> AsyncThrowingStream<ChatStreamEvent, Error> {
             streamCalls += 1
             if let system = messages.first, system.role == .system {
                 receivedSystemPrompts.append(system.content)
             }
             return AsyncThrowingStream { continuation in
-                continuation.yield("ответ по докам")
+                continuation.yield(.text("ответ по докам"))
                 continuation.finish()
             }
         }
@@ -187,12 +187,12 @@ final class SlashHelpViewModelTests: XCTestCase {
         }
 
         func stream(_ messages: [ChatMessageDTO],
-                    settings: ChatSettings) -> AsyncThrowingStream<String, Error> {
+                    settings: ChatSettings) -> AsyncThrowingStream<ChatStreamEvent, Error> {
             if let system = messages.first, system.role == .system {
                 receivedSystemPrompts.append(system.content)
             }
             return AsyncThrowingStream { continuation in
-                continuation.yield("деградированный ответ")
+                continuation.yield(.text("деградированный ответ"))
                 continuation.finish()
             }
         }

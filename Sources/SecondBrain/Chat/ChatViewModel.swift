@@ -56,6 +56,15 @@ final class ChatViewModel: ObservableObject {
         return resolveProvider(for: chat) != nil
     }
 
+    /// «DisplayName · model», который роутер выберет в режиме «Авто» —
+    /// для тайтла пикера «Авто → …» (задача 29). nil — явный провайдер
+    /// в конфиге чата либо провайдеров нет.
+    var resolvedAutoDescription: String? {
+        guard let chat = selectedChat, chat.configuration.providerID == nil,
+              let resolved = resolveProvider(for: chat) else { return nil }
+        return "\(resolved.displayName) · \(resolved.model)"
+    }
+
     /// /help (задачи 22, 25): блок [PROJECT_DOCS] по вопросу пользователя —
     /// RAG-ретрив top-K чанков доков либо полный контекст (фолбэк).
     /// nil — репозиторий не настроен; пустая строка — доков в нём нет.
@@ -377,6 +386,9 @@ final class ChatViewModel: ObservableObject {
                     projectNames = Set(projectTools.map(\.name))
                     tools += projectTools
                 }
+                // Итоговый usage хода (задача 29): стрим отдаёт событием,
+                // tool-цикл суммирует по итерациям.
+                var turnUsage: ChatUsage?
                 if !tools.isEmpty, let toolProvider = resolved.provider as? ToolCapableChatProvider {
                     let mcpBridge = self.mcpBridge
                     let projectBridge = self.projectToolsBridge
@@ -398,6 +410,7 @@ final class ChatViewModel: ObservableObject {
                                          chunk: outcome.text)
                     self.attachToolCalls(chatID: chatID, messageID: placeholderID,
                                          calls: outcome.transcript)
+                    turnUsage = outcome.usage
                 } else {
                     // Провайдер без function calling при запрошенных инструментах:
                     // обычный чат — ошибка (задача 15), /help деградирует до
@@ -405,18 +418,26 @@ final class ChatViewModel: ObservableObject {
                     if !tools.isEmpty && !overrides.allowsToolFallback {
                         throw MCPError.toolsUnsupportedByProvider
                     }
-                    for try await chunk in resolved.provider.stream(messages, settings: settings) {
-                        self.appendToMessage(chatID: chatID, messageID: placeholderID, chunk: chunk)
+                    for try await event in resolved.provider.stream(messages, settings: settings) {
+                        switch event {
+                        case .text(let chunk):
+                            self.appendToMessage(chatID: chatID, messageID: placeholderID, chunk: chunk)
+                        case .usage(let usage):
+                            turnUsage = usage
+                        }
                     }
                 }
                 self.finishGeneration(chatID: chatID, messageID: placeholderID,
-                                      duration: Date().timeIntervalSince(start), error: nil)
+                                      duration: Date().timeIntervalSince(start),
+                                      usage: turnUsage, resolved: resolved, error: nil)
             } catch is CancellationError {
                 self.finishGeneration(chatID: chatID, messageID: placeholderID,
-                                      duration: Date().timeIntervalSince(start), error: nil)
+                                      duration: Date().timeIntervalSince(start),
+                                      usage: nil, resolved: resolved, error: nil)
             } catch {
                 self.finishGeneration(chatID: chatID, messageID: placeholderID,
-                                      duration: Date().timeIntervalSince(start), error: error)
+                                      duration: Date().timeIntervalSince(start),
+                                      usage: nil, resolved: resolved, error: error)
             }
             self.generationTasks[chatID] = nil
         }
@@ -435,10 +456,13 @@ final class ChatViewModel: ObservableObject {
         if let providerID = chat.configuration.providerID,
            registry.isAvailable(providerID),
            let provider = registry.chatProvider(for: providerID) {
-            let model = chat.configuration.model
-                ?? registry.descriptor(for: providerID)?.defaultModel
+            let descriptor = registry.descriptor(for: providerID)
+            let model = chat.configuration.model ?? descriptor?.defaultModel
             if let model {
-                return ResolvedChatProvider(provider: provider, model: model)
+                return ResolvedChatProvider(provider: provider, model: model,
+                                            providerID: providerID,
+                                            displayName: descriptor?.displayName
+                                                ?? providerID.rawValue)
             }
         }
         return router.resolveChatProvider(for: .chat)
@@ -483,7 +507,10 @@ final class ChatViewModel: ObservableObject {
     }
 
     private func finishGeneration(chatID: UUID, messageID: UUID,
-                                  duration: TimeInterval, error: Error?) {
+                                  duration: TimeInterval,
+                                  usage: ChatUsage?,
+                                  resolved: ResolvedChatProvider?,
+                                  error: Error?) {
         guard let chatIndex = chats.firstIndex(where: { $0.id == chatID }) else { return }
         chats[chatIndex].isLoading = false
         guard let messageIndex = chats[chatIndex].messages.firstIndex(where: { $0.id == messageID })
@@ -498,7 +525,15 @@ final class ChatViewModel: ObservableObject {
             // Пустая заглушка (ошибка до первого токена / мгновенная отмена) — убираем.
             chats[chatIndex].messages.remove(at: messageIndex)
         } else {
-            chats[chatIndex].messages[messageIndex].metrics = MessageMetrics(duration: duration)
+            // Метрики хода (задача 29): токены и фактическая модель ответа.
+            chats[chatIndex].messages[messageIndex].metrics = MessageMetrics(
+                promptTokens: usage?.promptTokens,
+                completionTokens: usage?.completionTokens,
+                totalTokens: usage?.totalTokens,
+                duration: duration,
+                providerID: resolved?.providerID.rawValue,
+                providerName: resolved?.displayName,
+                model: resolved?.model)
         }
         // Немедленная запись финального состояния (debounce мог не успеть).
         ChatPersistence.save(chats, to: fileURL)

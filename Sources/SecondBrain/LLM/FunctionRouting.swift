@@ -120,8 +120,14 @@ enum FunctionRoutingStore {
     }
 }
 
-/// Провайдер+модель, отданные роутером на конкретный вызов.
-struct ResolvedChatProvider { let provider: ChatProvider; let model: String }
+/// Провайдер+модель, отданные роутером на конкретный вызов. providerID и
+/// displayName — для метрик сообщения и «Авто → …» (задача 29).
+struct ResolvedChatProvider {
+    let provider: ChatProvider
+    let model: String
+    let providerID: ProviderID
+    let displayName: String
+}
 struct ResolvedTranscriptionProvider { let provider: TranscriptionProvider; let model: String }
 struct ResolvedEmbeddingProvider { let provider: EmbeddingProvider; let model: String }
 
@@ -162,11 +168,17 @@ final class FunctionRouter: ObservableObject {
         guard function.requiredCapability == .chat else { return nil }
         if let assignment = validAssignment(for: function),
            let provider = registry.chatProvider(for: assignment.providerID) {
-            return ResolvedChatProvider(provider: provider, model: assignment.model)
+            return ResolvedChatProvider(
+                provider: provider, model: assignment.model,
+                providerID: assignment.providerID,
+                displayName: registry.descriptor(for: assignment.providerID)?.displayName
+                    ?? assignment.providerID.rawValue)
         }
         guard let (id, model) = defaultAssignment(for: .chat),
               let provider = registry.chatProvider(for: id) else { return nil }
-        return ResolvedChatProvider(provider: provider, model: model)
+        return ResolvedChatProvider(
+            provider: provider, model: model, providerID: id,
+            displayName: registry.descriptor(for: id)?.displayName ?? id.rawValue)
     }
 
     func resolveTranscriptionProvider(for function: AppFunction) -> ResolvedTranscriptionProvider? {

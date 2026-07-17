@@ -77,6 +77,10 @@ struct ChatDetailView: View {
     /// по фокусу окна перечитывает её при возврате из настроек (задача 27;
     /// прецедент — keyChangeTick в ProvidersSettingsTab).
     @State private var availabilityTick = 0
+    /// Редактор «своя модель per-чат» (задача 29). Поповер якорится к корню
+    /// detail, НЕ к тулбар-кнопке: смена модели перерисовывает тайтл пикера
+    /// и убила бы якорь (урок панели синка, задача 24).
+    @State private var showsModelEditor = false
     /// Резолвер [[wikilink]] → URL заметки (LinkIndex задачи 04); nil — vault закрыт.
     var resolveWikilink: (String) -> URL? = { _ in nil }
 
@@ -145,6 +149,12 @@ struct ChatDetailView: View {
         .onReceive(NotificationCenter.default.publisher(
             for: NSWindow.didBecomeKeyNotification)) { _ in
             availabilityTick &+= 1
+        }
+        // Редактор модели чата (задача 29) — якорь на корне detail.
+        .popover(isPresented: $showsModelEditor,
+                 attachmentAnchor: .point(.topTrailing),
+                 arrowEdge: .bottom) {
+            ChatModelEditor(viewModel: viewModel)
         }
     }
 
@@ -409,6 +419,7 @@ struct ChatDetailView: View {
                 }
             }
             Divider()
+            Button("Своя модель…") { showsModelEditor = true }
             Button("Открыть настройки…") { openSettings() }
             Text("Ключи облачных провайдеров — вкладка «Провайдеры», запуск Ollama/WhisperKit — «Локальные модели».")
         } label: {
@@ -436,7 +447,64 @@ struct ChatDetailView: View {
                 ?? providerID.rawValue
             return chat.configuration.model.map { "\(name) · \($0)" } ?? name
         }
-        return "Авто"
+        // «Авто → реальный выбор роутера» (задача 29): видно, кто ответит.
+        _ = availabilityTick
+        return viewModel.resolvedAutoDescription.map { "Авто → \($0)" } ?? "Авто"
+    }
+}
+
+/// Редактор «своя модель per-чат» (задача 29): провайдер + произвольная
+/// строка модели (раньше можно было выбрать только дефолт провайдера).
+struct ChatModelEditor: View {
+    @ObservedObject var viewModel: ChatViewModel
+    @Environment(\.dismiss) private var dismiss
+
+    @State private var draftProviderID: ProviderID?
+    @State private var draftModel = ""
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Модель этого чата")
+                .font(.headline)
+            Picker("Провайдер", selection: $draftProviderID) {
+                Text("Авто (роутер)").tag(ProviderID?.none)
+                ForEach(viewModel.chatProviderOptions) { descriptor in
+                    Text(providerTitle(descriptor)).tag(Optional(descriptor.id))
+                }
+            }
+            TextField("Модель (например deepseek/deepseek-r1)", text: $draftModel)
+                .textFieldStyle(.roundedBorder)
+                .disabled(draftProviderID == nil)
+                .help("Точное имя модели у провайдера; пусто — модель по умолчанию")
+            HStack {
+                Button("Сбросить на дефолт") {
+                    viewModel.setModel(providerID: nil, model: nil)
+                    dismiss()
+                }
+                Spacer()
+                Button("Применить") {
+                    let model = draftModel.trimmingCharacters(in: .whitespaces)
+                    viewModel.setModel(providerID: draftProviderID,
+                                       model: model.isEmpty ? nil : model)
+                    dismiss()
+                }
+                .buttonStyle(.borderedProminent)
+            }
+        }
+        .padding(14)
+        .frame(width: 340)
+        .onAppear {
+            draftProviderID = viewModel.selectedChat?.configuration.providerID
+            draftModel = viewModel.selectedChat?.configuration.model ?? ""
+        }
+    }
+
+    private func providerTitle(_ descriptor: ProviderDescriptor) -> String {
+        var title = descriptor.displayName
+        if !viewModel.registry.isAvailable(descriptor.id) {
+            title += descriptor.isLocal ? " (не запущен)" : " (нет ключа)"
+        }
+        return title
     }
 }
 
@@ -509,6 +577,7 @@ struct MessageBubble: View {
                 Text(metricsLine(metrics))
                     .font(.caption2)
                     .foregroundStyle(.tertiary)
+                    .help(metricsTooltip(metrics) ?? "")
             }
         }
         .padding(10)
@@ -629,9 +698,20 @@ struct MessageBubble: View {
         return line
     }
 
+    /// «Провайдер · модель · 1.2 с · 850 ток.» — кто и почём ответил (задача 29).
     private func metricsLine(_ metrics: MessageMetrics) -> String {
-        var parts = [String(format: "%.1f c", metrics.duration)]
+        var parts: [String] = []
+        if let name = metrics.providerName { parts.append(name) }
+        if let model = metrics.model { parts.append(model) }
+        parts.append(String(format: "%.1f c", metrics.duration))
         if let total = metrics.totalTokens { parts.append("\(total) ток.") }
         return parts.joined(separator: " · ")
+    }
+
+    /// Разбивка токенов для тултипа метрик; nil — usage не пришёл.
+    private func metricsTooltip(_ metrics: MessageMetrics) -> String? {
+        guard let prompt = metrics.promptTokens,
+              let completion = metrics.completionTokens else { return nil }
+        return "промпт: \(prompt) ток. · ответ: \(completion) ток."
     }
 }

@@ -21,11 +21,11 @@ final class RegenerateTests: XCTestCase {
         }
 
         func stream(_ messages: [ChatMessageDTO],
-                    settings: ChatSettings) -> AsyncThrowingStream<String, Error> {
+                    settings: ChatSettings) -> AsyncThrowingStream<ChatStreamEvent, Error> {
             receivedMessages.append(messages)
             let answer = answers.isEmpty ? "пусто" : answers.removeFirst()
             return AsyncThrowingStream { continuation in
-                continuation.yield(answer)
+                continuation.yield(.text(answer))
                 continuation.finish()
             }
         }

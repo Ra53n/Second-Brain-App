@@ -76,13 +76,18 @@ final class SSEStreamTests: XCTestCase {
         let lines = AsyncLineArray(lines: raw.components(separatedBy: "\n"))
 
         var text = ""
+        var usage: ChatCompletionResponse.Usage?
         for try await payload in SSEStream.payloads(from: lines) {
             guard let data = payload.data(using: .utf8),
-                  let chunk = try? JSONDecoder().decode(ChatCompletionChunk.self, from: data),
-                  let delta = chunk.choices.first?.delta.content else { continue }
-            text += delta
+                  let chunk = try? JSONDecoder().decode(ChatCompletionChunk.self, from: data)
+            else { continue }
+            // usage-чанк приходит с choices: [] — как в проде (задача 29).
+            if let u = chunk.usage { usage = u }
+            if let delta = chunk.choices.first?.delta.content { text += delta }
         }
         XCTAssertEqual(text, "Привет, мир")
+        XCTAssertEqual(usage?.total_tokens, 14)
+        XCTAssertEqual(usage?.prompt_tokens, 10)
     }
 
     func testGeminiFixtureStreamAccumulatesText() async throws {
@@ -182,6 +187,20 @@ final class OpenAIProviderTests: XCTestCase {
         let messages = json?["messages"] as? [[String: Any]]
         XCTAssertEqual(messages?.first?["role"] as? String, "user")
         XCTAssertNil(json?["stop"]) // nil stop не должен попасть в JSON
+        XCTAssertNil(json?["stream_options"]) // без запроса usage ключа нет
+    }
+
+    /// Задача 29: stream_options.include_usage сериализуется при запросе.
+    func testEncodesStreamOptionsWhenRequested() throws {
+        let body = ChatRequestBody(
+            model: "m",
+            messages: [RequestMessage(ChatMessageDTO(role: .user, content: "hi"))],
+            temperature: 1, top_p: 1, max_tokens: 10, stop: nil, stream: true,
+            stream_options: ChatRequestBody.StreamOptions(include_usage: true)
+        )
+        let json = try JSONSerialization.jsonObject(with: JSONEncoder().encode(body)) as? [String: Any]
+        let options = json?["stream_options"] as? [String: Any]
+        XCTAssertEqual(options?["include_usage"] as? Bool, true)
     }
 
     func testDecodesWhisperVerboseFixtureWithSegments() throws {

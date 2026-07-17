@@ -315,6 +315,12 @@ final class OllamaParsingTests: XCTestCase {
         let final = OllamaParsing.parseChatStreamLine(
             #"{"message":{"content":""},"done":true,"eval_count":10}"#)
         XCTAssertEqual(final?.done, true)
+        // Только eval_count без prompt_eval_count → usage nil (задача 29).
+        XCTAssertNil(final?.usage)
+        let withUsage = OllamaParsing.parseChatStreamLine(
+            #"{"message":{"content":""},"done":true,"prompt_eval_count":12,"eval_count":10}"#)
+        XCTAssertEqual(withUsage?.usage,
+                       ChatUsage(promptTokens: 12, completionTokens: 10, totalTokens: 22))
         XCTAssertNil(OllamaParsing.parseChatStreamLine("мусор"))
     }
 }

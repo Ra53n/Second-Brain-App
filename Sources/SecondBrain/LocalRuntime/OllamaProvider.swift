@@ -38,14 +38,14 @@ final class OllamaProvider: ChatProvider, EmbeddingProvider {
     }
 
     func stream(_ messages: [ChatMessageDTO],
-                settings: ChatSettings) -> AsyncThrowingStream<String, Error> {
+                settings: ChatSettings) -> AsyncThrowingStream<ChatStreamEvent, Error> {
         AsyncThrowingStream { continuation in
             let task = Task {
                 do {
                     try await manager.ensureRunning()
-                    for try await delta in client.chatStream(messages: messages,
+                    for try await event in client.chatStream(messages: messages,
                                                              settings: settings) {
-                        continuation.yield(delta)
+                        continuation.yield(event)
                     }
                     await manager.markUsed()
                     continuation.finish()

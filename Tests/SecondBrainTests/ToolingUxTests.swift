@@ -278,7 +278,7 @@ final class ChatProviderAvailabilityTests: XCTestCase {
         }
 
         func stream(_ messages: [ChatMessageDTO],
-                    settings: ChatSettings) -> AsyncThrowingStream<String, Error> {
+                    settings: ChatSettings) -> AsyncThrowingStream<ChatStreamEvent, Error> {
             AsyncThrowingStream { $0.finish() }
         }
     }
@@ -295,6 +295,25 @@ final class ChatProviderAvailabilityTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: fileURL) }
         let viewModel = ChatViewModel(router: router, registry: registry, fileURL: fileURL)
         XCTAssertTrue(viewModel.chatProviderAvailable)
+    }
+
+    /// Задача 29: «Авто → DisplayName · model»; nil при явном провайдере.
+    func testResolvedAutoDescription() {
+        let registry = ProviderRegistry()
+        registry.register(ProviderDescriptor(id: "mock", displayName: "Mock",
+                                             capabilities: [.chat], isLocal: true,
+                                             defaultModel: "m"),
+                          chat: StubProvider())
+        let router = FunctionRouter(registry: registry, config: FunctionRoutingConfig())
+        let fileURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("auto-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: fileURL) }
+        let viewModel = ChatViewModel(router: router, registry: registry, fileURL: fileURL)
+
+        XCTAssertEqual(viewModel.resolvedAutoDescription, "Mock · m")
+
+        viewModel.setModel(providerID: "mock", model: "m")
+        XCTAssertNil(viewModel.resolvedAutoDescription, "явный провайдер — не «Авто»")
     }
 
     func testUnavailableWithEmptyRegistry() {

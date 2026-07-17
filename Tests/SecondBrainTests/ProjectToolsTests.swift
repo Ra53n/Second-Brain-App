@@ -333,7 +333,7 @@ final class ProjectToolsRoutingTests: XCTestCase {
         }
 
         func stream(_ messages: [ChatMessageDTO],
-                    settings: ChatSettings) -> AsyncThrowingStream<String, Error> {
+                    settings: ChatSettings) -> AsyncThrowingStream<ChatStreamEvent, Error> {
             AsyncThrowingStream { $0.finish() }
         }
 
@@ -347,9 +347,11 @@ final class ProjectToolsRoutingTests: XCTestCase {
                 return ToolLoopStep(text: nil, toolCalls: [
                     ToolCallRequest(id: "1", name: "git_status", argumentsJSON: "{}"),
                     ToolCallRequest(id: "2", name: "srv__tool", argumentsJSON: "{}")
-                ], usage: nil)
+                ], usage: ChatUsage(promptTokens: 10, completionTokens: 2, totalTokens: 12))
             }
-            return ToolLoopStep(text: "готово", toolCalls: [], usage: nil)
+            return ToolLoopStep(text: "готово", toolCalls: [],
+                                usage: ChatUsage(promptTokens: 20, completionTokens: 5,
+                                                 totalTokens: 25))
         }
     }
 
@@ -399,6 +401,8 @@ final class ProjectToolsRoutingTests: XCTestCase {
         XCTAssertEqual(Set(provider.receivedTools.map(\.name)), ["git_status", "srv__tool"])
         XCTAssertEqual(viewModel.selectedChat?.messages.last?.content, "готово")
         XCTAssertEqual(viewModel.selectedChat?.messages.last?.toolCalls?.count, 2)
+        // Задача 29: usage tool-цикла больше не выбрасывается (сумма итераций).
+        XCTAssertEqual(viewModel.selectedChat?.messages.last?.metrics?.totalTokens, 37)
     }
 
     /// Только project-инструменты (без MCP-серверов) тоже запускают tool-цикл.

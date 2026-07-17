@@ -125,18 +125,27 @@ enum OllamaParsing {
         return ChatResult(text: text, usage: usage)
     }
 
-    /// Одна строка NDJSON-стрима /api/chat → (дельта текста, конец потока).
-    /// Мусорная строка → nil (пропускаем).
-    static func parseChatStreamLine(_ line: String) -> (delta: String, done: Bool)? {
+    /// Одна строка NDJSON-стрима /api/chat → (дельта, конец, usage).
+    /// usage несёт финальная done-строка (prompt_eval_count/eval_count —
+    /// зеркально parseChatResponse, задача 29). Мусорная строка → nil.
+    static func parseChatStreamLine(_ line: String) -> (delta: String, done: Bool, usage: ChatUsage?)? {
         let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty, let data = trimmed.data(using: .utf8) else { return nil }
         struct Line: Decodable {
             struct Message: Decodable { let content: String? }
             let message: Message?
             let done: Bool?
+            let prompt_eval_count: Int?
+            let eval_count: Int?
         }
         guard let decoded = try? JSONDecoder().decode(Line.self, from: data) else { return nil }
-        return (decoded.message?.content ?? "", decoded.done ?? false)
+        var usage: ChatUsage?
+        if let prompt = decoded.prompt_eval_count, let completion = decoded.eval_count {
+            usage = ChatUsage(promptTokens: prompt,
+                              completionTokens: completion,
+                              totalTokens: prompt + completion)
+        }
+        return (decoded.message?.content ?? "", decoded.done ?? false, usage)
     }
 
     // /api/embed → {"embeddings":[[…],[…]]}
@@ -222,7 +231,7 @@ struct OllamaClient {
 
     /// Чат со стримом: NDJSON-строки с дельтами текста.
     func chatStream(messages: [ChatMessageDTO],
-                    settings: ChatSettings) -> AsyncThrowingStream<String, Error> {
+                    settings: ChatSettings) -> AsyncThrowingStream<ChatStreamEvent, Error> {
         AsyncThrowingStream { continuation in
             let task = Task {
                 do {
@@ -246,8 +255,11 @@ struct OllamaClient {
                     for try await line in bytes.lines {
                         try Task.checkCancellation()
                         guard let parsed = OllamaParsing.parseChatStreamLine(line) else { continue }
-                        if !parsed.delta.isEmpty { continuation.yield(parsed.delta) }
-                        if parsed.done { break }
+                        if !parsed.delta.isEmpty { continuation.yield(.text(parsed.delta)) }
+                        if parsed.done {
+                            if let usage = parsed.usage { continuation.yield(.usage(usage)) }
+                            break
+                        }
                     }
                     continuation.finish()
                 } catch {
