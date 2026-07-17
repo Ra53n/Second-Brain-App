@@ -35,6 +35,14 @@ final class ToolRegistry: Sendable {
         ordered.map(\.definition)
     }
 
+    /// Каталог встроенных инструментов для ОТОБРАЖЕНИЯ (вкладка «Инструменты»
+    /// и счётчик чипа, задача 27): имена/описания/схемы не зависят от корня,
+    /// поэтому корень — заглушка. GitClient при создании только ищет путь к
+    /// git-бинарю, команд не запускает.
+    static func projectToolCatalog() -> [ToolDefinition] {
+        projectTools(repoRoot: URL(fileURLWithPath: "/")).definitions()
+    }
+
     /// Штатный набор инструментов проекта: обзор git-репозитория и файлов.
     /// GitClient создаётся один на корень — его FIFO-очередь сериализует
     /// параллельные вызовы (второй GitClient на том же репо у SyncViewModel

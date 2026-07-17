@@ -175,7 +175,7 @@ struct ContentView: View {
             tools: { provider.current()?.registry.definitions() ?? [] },
             execute: { name, args in
                 guard let current = provider.current() else {
-                    return "ERROR: репозиторий проекта не выбран (Настройки → Общие → Инструменты проекта)"
+                    return "ERROR: репозиторий проекта не выбран (Настройки → Инструменты)"
                 }
                 return await current.executor.execute(name: name, argumentsJSON: args)
             })
@@ -194,8 +194,9 @@ struct ContentView: View {
     private var sectionDetail: some View {
         if selection == .chat {
             ChatDetailView(viewModel: model.chatViewModel,
-                           resolveWikilink: { vaultManager.linkIndex?.resolve($0) },
-                           mcpServers: model.mcpServersViewModel.servers)
+                           settingsStore: model.settingsStore,
+                           mcpViewModel: model.mcpServersViewModel,
+                           resolveWikilink: { vaultManager.linkIndex?.resolve($0) })
                 .onAppear {
                     wireRagProvider()
                     wireMCPBridge()

@@ -58,16 +58,47 @@ struct ChatListPane: View {
 
 struct ChatDetailView: View {
     @ObservedObject var viewModel: ChatViewModel
+    /// Наблюдаем настройки напрямую (задача 27): projectToolsAvailable читает
+    /// их через замыкание и не публикует изменения — без этого мастер и чип
+    /// «Проект» не обновлялись бы после выбора репозитория в настройках.
+    @ObservedObject var settingsStore: SettingsStore
+    /// MCP-вью-модель целиком (задача 27): servers для меню + statuses для
+    /// чипов (зеленеют после «Тест» и первого tool-вызова).
+    @ObservedObject var mcpViewModel: MCPServersViewModel
     /// Показ попапа настроек RAG (задача 23).
     @State private var showsRagTuning = false
     /// Открытие окна настроек из пикера модели (задача 24).
     @Environment(\.openSettings) private var openSettings
+    /// Доступность провайдера (KeyStore/рантайм) не Combine-наблюдаема — тик
+    /// по фокусу окна перечитывает её при возврате из настроек (задача 27;
+    /// прецедент — keyChangeTick в ProvidersSettingsTab).
+    @State private var availabilityTick = 0
     /// Резолвер [[wikilink]] → URL заметки (LinkIndex задачи 04); nil — vault закрыт.
     var resolveWikilink: (String) -> URL? = { _ in nil }
-    /// Список MCP-серверов для меню инструментов (задача 15).
-    var mcpServers: [MCPServer] = []
 
     private var chat: Chat? { viewModel.selectedChat }
+
+    /// Сводки чипов текущего чата (чистый билдер — покрыт тестами).
+    private var toolSourceSummaries: [ToolSourceSummary] {
+        guard let chat else { return [] }
+        return ToolSourceSummary.make(
+            configuration: chat.configuration,
+            projectRepo: ProjectRepoState.evaluate(path: settingsStore.settings.projectRepoPath),
+            projectToolCount: ToolRegistry.projectToolCatalog().count,
+            servers: mcpViewModel.servers,
+            statuses: mcpViewModel.statuses)
+    }
+
+    /// Состояние мастера; читает availabilityTick, чтобы перечитываться
+    /// после возврата из окна настроек.
+    private var wizardState: ProjectWizardState {
+        _ = availabilityTick
+        return ProjectWizardState.make(
+            repoConfigured: !settingsStore.settings.projectRepoPath
+                .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+            providerAvailable: viewModel.chatProviderAvailable,
+            toolsEnabledInChat: chat?.configuration.projectToolsEnabled ?? false)
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -91,57 +122,62 @@ struct ChatDetailView: View {
             openNote(target: target)
             return .handled
         })
-    }
-
-    /// Меню инструментов: встроенные инструменты проекта (задача 21) и
-    /// чекбоксы MCP-серверов per-чат (задача 15).
-    @ViewBuilder
-    private var mcpMenu: some View {
-        if !mcpServers.isEmpty || viewModel.projectToolsAvailable {
-            Menu {
-                if viewModel.projectToolsAvailable {
-                    Button {
-                        viewModel.toggleProjectTools()
-                    } label: {
-                        let enabled = chat?.configuration.projectToolsEnabled ?? false
-                        if enabled {
-                            Label("Инструменты проекта (git)", systemImage: "checkmark")
-                        } else {
-                            Text("Инструменты проекта (git)")
-                        }
-                    }
-                    if !mcpServers.filter(\.enabled).isEmpty { Divider() }
-                }
-                ForEach(mcpServers.filter(\.enabled)) { server in
-                    Button {
-                        viewModel.toggleMCPServer(server.id)
-                    } label: {
-                        let enabled = chat?.configuration.enabledMCPServerIDs
-                            .contains(server.id) ?? false
-                        if enabled {
-                            Label(server.name, systemImage: "checkmark")
-                        } else {
-                            Text(server.name)
-                        }
-                    }
-                }
-                Divider()
-                Text("Инструменты требуют модель с function calling: GPT-4o+, qwen3+.")
-            } label: {
-                Label(enabledToolSourcesCount > 0
-                      ? "Инструменты (\(enabledToolSourcesCount))" : "Инструменты",
-                      systemImage: enabledToolSourcesCount > 0 ? "wrench.and.screwdriver.fill"
-                                                               : "wrench.and.screwdriver")
-            }
-            .help("Инструменты, доступные модели в этом чате: git-обзор проекта и MCP-серверы")
+        // Перечитка доступности провайдера при возврате из окна настроек.
+        .onReceive(NotificationCenter.default.publisher(
+            for: NSWindow.didBecomeKeyNotification)) { _ in
+            availabilityTick &+= 1
         }
     }
 
-    /// Счётчик включённых источников инструментов (MCP-серверы + проект).
+    /// Меню инструментов: встроенные инструменты проекта (задача 21) и
+    /// чекбоксы MCP-серверов per-чат (задача 15). Видно всегда (задача 27):
+    /// пункт «Добавить инструменты…» — точка входа в настройку туллинга.
+    private var mcpMenu: some View {
+        Menu {
+            if viewModel.projectToolsAvailable {
+                Button {
+                    viewModel.toggleProjectTools()
+                } label: {
+                    let enabled = chat?.configuration.projectToolsEnabled ?? false
+                    if enabled {
+                        Label("Инструменты проекта (git)", systemImage: "checkmark")
+                    } else {
+                        Text("Инструменты проекта (git)")
+                    }
+                }
+                if !mcpViewModel.servers.filter(\.enabled).isEmpty { Divider() }
+            }
+            ForEach(mcpViewModel.servers.filter(\.enabled)) { server in
+                Button {
+                    viewModel.toggleMCPServer(server.id)
+                } label: {
+                    let enabled = chat?.configuration.enabledMCPServerIDs
+                        .contains(server.id) ?? false
+                    if enabled {
+                        Label(server.name, systemImage: "checkmark")
+                    } else {
+                        Text(server.name)
+                    }
+                }
+            }
+            Divider()
+            Button("Добавить инструменты…") {
+                SettingsTabRouter.open(.tools, openSettings: { openSettings() })
+            }
+            Text("Инструменты требуют модель с function calling: GPT-4o+, qwen3+.")
+        } label: {
+            Label(enabledToolSourcesCount > 0
+                  ? "Инструменты (\(enabledToolSourcesCount))" : "Инструменты",
+                  systemImage: enabledToolSourcesCount > 0 ? "wrench.and.screwdriver.fill"
+                                                           : "wrench.and.screwdriver")
+        }
+        .help("Инструменты, доступные модели в этом чате: git-обзор проекта и MCP-серверы")
+    }
+
+    /// Счётчик включённых источников инструментов — по тем же правилам, что
+    /// чипы («осиротевшие» serverID удалённых серверов не считаются).
     private var enabledToolSourcesCount: Int {
-        let mcp = chat?.configuration.enabledMCPServerIDs.count ?? 0
-        let project = (chat?.configuration.projectToolsEnabled ?? false) ? 1 : 0
-        return mcp + project
+        toolSourceSummaries.count
     }
 
     /// Тумблер «Отвечать по базе» (persisted per-чат).
@@ -183,6 +219,20 @@ struct ChatDetailView: View {
                         Text("Напишите сообщение, чтобы начать диалог.")
                             .foregroundStyle(.secondary)
                             .padding()
+                        // Мастер настройки ассистента проекта (задача 27):
+                        // живые ✓/○, исчезает с первым сообщением.
+                        ProjectWizardCard(
+                            state: wizardState,
+                            onPickRepo: { ProjectRepoPicker.pick(into: settingsStore) },
+                            onOpenSettings: { tab in
+                                SettingsTabRouter.open(tab, openSettings: { openSettings() })
+                            },
+                            onEnableTools: {
+                                if chat.configuration.projectToolsEnabled == false {
+                                    viewModel.toggleProjectTools()
+                                }
+                            })
+                            .padding(.horizontal)
                     }
                     ForEach(chat?.messages ?? []) { message in
                         MessageBubble(message: message,
@@ -220,10 +270,30 @@ struct ChatDetailView: View {
 
     private var inputBar: some View {
         VStack(alignment: .leading, spacing: 4) {
+            toolChipsRow
             slashCommandHint
             inputRow
         }
         .padding(10)
+    }
+
+    /// Чипы включённых источников инструментов (задача 27): видно без
+    /// единого клика, поповер чипа — статус и быстрые действия.
+    @ViewBuilder
+    private var toolChipsRow: some View {
+        if !toolSourceSummaries.isEmpty {
+            ToolChipsRow(
+                summaries: toolSourceSummaries,
+                onDisable: { summary in
+                    switch summary.kind {
+                    case .project: viewModel.toggleProjectTools()
+                    case .mcp(let serverID): viewModel.toggleMCPServer(serverID)
+                    }
+                },
+                onConfigure: {
+                    SettingsTabRouter.open(.tools, openSettings: { openSettings() })
+                })
+        }
     }
 
     /// Подсказка слэш-команд (задача 22): пока пользователь набирает «/имя»

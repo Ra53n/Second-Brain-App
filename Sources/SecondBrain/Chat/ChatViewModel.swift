@@ -49,6 +49,13 @@ final class ChatViewModel: ObservableObject {
         projectToolsBridge?.available() ?? false
     }
 
+    /// Доступен ли провайдер чата прямо сейчас (per-чат override либо роутер) —
+    /// шаг «Модель доступна» мастера настройки (задача 27).
+    var chatProviderAvailable: Bool {
+        guard let chat = selectedChat else { return false }
+        return resolveProvider(for: chat) != nil
+    }
+
     /// /help (задачи 22, 25): блок [PROJECT_DOCS] по вопросу пользователя —
     /// RAG-ретрив top-K чанков доков либо полный контекст (фолбэк).
     /// nil — репозиторий не настроен; пустая строка — доков в нём нет.
@@ -279,7 +286,7 @@ final class ChatViewModel: ObservableObject {
         case repositoryNotConfigured
 
         var errorDescription: String? {
-            "Репозиторий проекта не выбран: Настройки → Общие → «Инструменты проекта»."
+            "Репозиторий проекта не выбран: Настройки → «Инструменты»."
         }
     }
 

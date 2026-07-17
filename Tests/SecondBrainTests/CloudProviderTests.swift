@@ -402,14 +402,19 @@ final class CloudProvidersRegistrationTests: XCTestCase {
     }
 
     /// Ключ ищется под id провайдера, а не под «openai» (инстансный keyID).
-    func testMissingKeyErrorCarriesProviderID() {
-        let provider = OpenAIProvider(baseURL: URL(string: "https://api.deepseek.com/v1")!,
-                                      keyID: CloudProviders.deepSeekID)
-        // Тестовое окружение без ключа deepseek: apiKey обязан назвать его id.
-        XCTAssertThrowsError(try provider.apiKey()) { error in
-            XCTAssertEqual(error as? LLMError,
-                           .missingAPIKey(CloudProviders.deepSeekID))
-        }
+    /// НЕ дёргаем KeyStore: реальный Keychain пользователя может содержать
+    /// ключ (тест падал, когда пользователь сохранил ключ DeepSeek) —
+    /// проверяем сам keyID зарегистрированных экземпляров.
+    func testRegisteredInstancesCarryOwnKeyID() {
+        let registry = ProviderRegistry()
+        CloudProviders.registerAll(in: registry)
+
+        let openrouter = registry.chatProvider(for: CloudProviders.openRouterID) as? OpenAIProvider
+        XCTAssertEqual(openrouter?.keyID, CloudProviders.openRouterID)
+        let deepseek = registry.chatProvider(for: CloudProviders.deepSeekID) as? OpenAIProvider
+        XCTAssertEqual(deepseek?.keyID, CloudProviders.deepSeekID)
+        let openai = registry.chatProvider(for: OpenAIProvider.id) as? OpenAIProvider
+        XCTAssertEqual(openai?.keyID, OpenAIProvider.id)
     }
 
     /// KeyVerifier умеет проверять ключи новых провайдеров (Bearer + верный URL).
