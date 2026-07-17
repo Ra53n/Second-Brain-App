@@ -72,8 +72,14 @@ struct ChatDetailView: View {
     /// Провайдер инструментов проекта (задача 31): число чанков индекса доков
     /// для чипа «База: Проект».
     let projectToolsProvider: ProjectToolsProvider
+    /// Реестр баз знаний (задача 34): строки чипа «База» с мультивыбором.
+    @ObservedObject var knowledgeBaseStore: KnowledgeBaseStore
+    /// Фасад ретрива — статистика индексов папочных баз для чипа.
+    let knowledgeBaseManager: KnowledgeBaseManager
     /// Кэш числа чанков доков (async-источник; обновляется task'ом ниже).
     @State private var projectDocsChunks: Int?
+    /// Кэш числа чанков папочных баз по id (async-источник, задача 34).
+    @State private var folderChunks: [String: Int] = [:]
     /// Доступные провайдеры с реальными моделями для пикера (задача 32).
     @State private var modelChoices: [ChatViewModel.ProviderModelChoices] = []
     /// Показ попапа настроек RAG (задача 23).
@@ -104,22 +110,50 @@ struct ChatDetailView: View {
             statuses: mcpViewModel.statuses)
     }
 
-    /// Сводка чипа «База» (задачи 28, 31); availabilityTick — доступность
-    /// эмбеддера перечитывается после возврата из настроек.
+    /// Сводка чипа «База» (задачи 28, 31, 34): строки по глобально включённым
+    /// базам реестра; availabilityTick — доступность эмбеддера перечитывается
+    /// после возврата из настроек.
     private var ragChipSummary: RagChipSummary? {
         _ = availabilityTick
-        return RagChipSummary.make(
-            ragEnabled: chat?.configuration.ragEnabled ?? false,
-            source: chat?.configuration.knowledgeSource ?? .vault,
-            embedderAvailable: ragIndexManager.currentEmbeddingTag() != nil,
-            chunkCount: ragIndexManager.chunkCount,
-            indexTag: ragIndexManager.embeddingTag,
-            currentTag: ragIndexManager.currentEmbeddingTag()?.tag,
-            needsFullReindex: ragIndexManager.needsFullReindex,
-            isIndexing: ragIndexManager.progress != nil,
-            progressFraction: ragIndexManager.progress?.fraction,
-            projectRepo: ProjectRepoState.evaluate(path: settingsStore.settings.projectRepoPath),
-            docsChunks: projectDocsChunks)
+        let enabledIDs = chat?.configuration.enabledKnowledgeBaseIDs ?? []
+        let embedderAvailable = ragIndexManager.currentEmbeddingTag() != nil
+        let rows = knowledgeBaseStore.enabledBases.map { base -> KnowledgeBaseChipRow in
+            let enabledInChat = enabledIDs.contains(base.id)
+            switch base.kind {
+            case .vault:
+                return RagChipSummary.vaultRow(
+                    base: base,
+                    enabledInChat: enabledInChat,
+                    embedderAvailable: embedderAvailable,
+                    chunkCount: ragIndexManager.chunkCount,
+                    indexTag: ragIndexManager.embeddingTag,
+                    currentTag: ragIndexManager.currentEmbeddingTag()?.tag,
+                    needsFullReindex: ragIndexManager.needsFullReindex,
+                    isIndexing: ragIndexManager.progress != nil,
+                    progressFraction: ragIndexManager.progress?.fraction)
+            case .project:
+                return RagChipSummary.projectRow(
+                    base: base,
+                    enabledInChat: enabledInChat,
+                    projectRepo: ProjectRepoState.evaluate(
+                        path: settingsStore.settings.projectRepoPath),
+                    embedderAvailable: embedderAvailable,
+                    docsChunks: projectDocsChunks)
+            case .folder:
+                var isDirectory: ObjCBool = false
+                let exists = FileManager.default.fileExists(atPath: base.path,
+                                                            isDirectory: &isDirectory)
+                    && isDirectory.boolValue
+                return RagChipSummary.folderRow(
+                    base: base,
+                    enabledInChat: enabledInChat,
+                    folderExists: exists,
+                    embedderAvailable: embedderAvailable,
+                    chunks: folderChunks[base.id])
+            }
+        }
+        return RagChipSummary.make(ragEnabled: chat?.configuration.ragEnabled ?? false,
+                                   rows: rows)
     }
 
     /// Состояние мастера; читает availabilityTick, чтобы перечитываться
@@ -166,6 +200,14 @@ struct ChatDetailView: View {
         .task(id: "\(availabilityTick)|\(settingsStore.settings.projectRepoPath)|\(chat?.id.uuidString ?? "")") {
             projectDocsChunks = await projectToolsProvider.docsChunkCount()
             modelChoices = await viewModel.availableModelChoices()
+            // Чанки папочных баз для чипа (задача 34): ленивая статистика,
+            // пустую БД ради неё не создаём.
+            var chunks: [String: Int] = [:]
+            for base in knowledgeBaseStore.enabledBases where base.kind == .folder {
+                chunks[base.id] = await knowledgeBaseManager.folderService
+                    .chunkCount(root: URL(fileURLWithPath: base.path))
+            }
+            folderChunks = chunks
         }
         // Редактор модели чата (задача 29) — якорь на корне detail.
         .popover(isPresented: $showsModelEditor,
@@ -336,7 +378,7 @@ struct ChatDetailView: View {
                         onOpenSettings: { tab in
                             SettingsTabRouter.open(tab, openSettings: { openSettings() })
                         },
-                        onSelectSource: { viewModel.knowledgeSourceBinding = $0 })
+                        onToggleBase: { viewModel.toggleKnowledgeBase($0) })
                 }
                 ToolChipsRow(
                     summaries: toolSourceSummaries,
@@ -555,6 +597,10 @@ struct RagTuningPopover: View {
                 get: { viewModel.ragQueryRewriteBinding },
                 set: { viewModel.ragQueryRewriteBinding = $0 }))
                 .help("Вопрос переписывается в поисковый запрос — дополнительный вызов LLM")
+            Toggle("RAG как инструмент (rag_search)", isOn: Binding(
+                get: { viewModel.ragAsToolBinding },
+                set: { viewModel.ragAsToolBinding = $0 }))
+                .help("Модель сама вызывает поиск по включённым базам (нужен function calling; ответ приходит без стриминга). Выключено — контекст подставляется автоматически.")
             Text("Настройки сохраняются для этого чата.")
                 .font(.caption)
                 .foregroundStyle(.secondary)

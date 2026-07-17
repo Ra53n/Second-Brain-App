@@ -102,16 +102,23 @@ struct ChatMessage: Identifiable, Codable, Equatable {
     }
 }
 
-/// Источник знаний чата (задача 31): по какой базе отвечает RAG.
-/// Vault — заметки пользователя; project — README/docs выбранного репозитория.
-/// Один источник на чат — RAG, /help и инструменты согласованы, миры не
-/// смешиваются (раньше vault-ретрив и git-инструменты противоречили друг другу).
+/// Legacy-источник знаний (задача 31, до реестра задачи 34): бинарный выбор
+/// vault|project. Оставлен только ради миграции старых конфигов чатов —
+/// в init(from:) ChatConfiguration маппится в enabledKnowledgeBaseIDs.
 enum KnowledgeSource: String, Codable {
     case vault, project
 
     init(from decoder: Decoder) throws {
         let raw = try decoder.singleValueContainer().decode(String.self)
         self = KnowledgeSource(rawValue: raw) ?? .vault
+    }
+
+    /// Эквивалент в id реестра баз знаний (задача 34).
+    var knowledgeBaseIDs: Set<String> {
+        switch self {
+        case .vault: return [KnowledgeBase.vaultID]
+        case .project: return [KnowledgeBase.projectID]
+        }
     }
 }
 
@@ -127,8 +134,13 @@ struct ChatConfiguration: Equatable, Codable {
     // --- RAG (задача 14) ---
     /// Тумблер «Отвечать по базе» (persisted per-чат).
     var ragEnabled: Bool = false
-    /// Источник базы (задача 31): vault или репозиторий проекта.
-    var knowledgeSource: KnowledgeSource = .vault
+    /// Включённые базы знаний из реестра (задача 34): мультивыбор в чипе
+    /// «База». Пустое множество = искать негде (RAG честно молчит).
+    var enabledKnowledgeBaseIDs: Set<String> = [KnowledgeBase.vaultID]
+    /// RAG как инструмент (задача 34): tool-провайдер получает rag_search и
+    /// сам решает, когда искать. Выключено → статическая подстановка
+    /// [RAG_CONTEXT] (и стриминг ответа) как раньше.
+    var ragAsTool: Bool = true
     var ragTopK: Int = 4
     /// Порог косинусной близости; 0 — выключен.
     var ragMinScore: Double = 0
@@ -154,7 +166,8 @@ struct ChatConfiguration: Equatable, Codable {
     enum CodingKeys: String, CodingKey {
         case providerID, model, temperature, historyWindow
         case ragEnabled, ragTopK, ragMinScore, ragRerankEnabled, ragQueryRewrite
-        case knowledgeSource
+        case knowledgeSource // legacy (задача 31) — только чтение при миграции
+        case enabledKnowledgeBaseIDs, ragAsTool
         case enabledMCPServerIDs
         case projectToolsEnabled
     }
@@ -167,8 +180,17 @@ struct ChatConfiguration: Equatable, Codable {
         temperature = try c.decodeIfPresent(Double.self, forKey: .temperature) ?? d.temperature
         historyWindow = try c.decodeIfPresent(Int.self, forKey: .historyWindow) ?? d.historyWindow
         ragEnabled = try c.decodeIfPresent(Bool.self, forKey: .ragEnabled) ?? d.ragEnabled
-        knowledgeSource = try c.decodeIfPresent(KnowledgeSource.self, forKey: .knowledgeSource)
-            ?? d.knowledgeSource
+        // Миграция задачи 34: новый ключ в приоритете; старый конфиг с
+        // knowledgeSource маппится в id реестра; совсем старый — дефолт (vault).
+        if let ids = try c.decodeIfPresent(Set<String>.self, forKey: .enabledKnowledgeBaseIDs) {
+            enabledKnowledgeBaseIDs = ids
+        } else if let legacy = try c.decodeIfPresent(KnowledgeSource.self,
+                                                     forKey: .knowledgeSource) {
+            enabledKnowledgeBaseIDs = legacy.knowledgeBaseIDs
+        } else {
+            enabledKnowledgeBaseIDs = d.enabledKnowledgeBaseIDs
+        }
+        ragAsTool = try c.decodeIfPresent(Bool.self, forKey: .ragAsTool) ?? d.ragAsTool
         ragTopK = try c.decodeIfPresent(Int.self, forKey: .ragTopK) ?? d.ragTopK
         ragMinScore = try c.decodeIfPresent(Double.self, forKey: .ragMinScore) ?? d.ragMinScore
         ragRerankEnabled = try c.decodeIfPresent(Bool.self, forKey: .ragRerankEnabled)
@@ -179,6 +201,26 @@ struct ChatConfiguration: Equatable, Codable {
             ?? d.enabledMCPServerIDs
         projectToolsEnabled = try c.decodeIfPresent(Bool.self, forKey: .projectToolsEnabled)
             ?? d.projectToolsEnabled
+    }
+
+    /// Ручной encode: legacy-ключ knowledgeSource больше не пишем (в CodingKeys
+    /// он есть только ради чтения при миграции — синтез encode из-за него
+    /// невозможен).
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encodeIfPresent(providerID, forKey: .providerID)
+        try c.encodeIfPresent(model, forKey: .model)
+        try c.encode(temperature, forKey: .temperature)
+        try c.encode(historyWindow, forKey: .historyWindow)
+        try c.encode(ragEnabled, forKey: .ragEnabled)
+        try c.encode(enabledKnowledgeBaseIDs, forKey: .enabledKnowledgeBaseIDs)
+        try c.encode(ragAsTool, forKey: .ragAsTool)
+        try c.encode(ragTopK, forKey: .ragTopK)
+        try c.encode(ragMinScore, forKey: .ragMinScore)
+        try c.encode(ragRerankEnabled, forKey: .ragRerankEnabled)
+        try c.encode(ragQueryRewrite, forKey: .ragQueryRewrite)
+        try c.encode(enabledMCPServerIDs, forKey: .enabledMCPServerIDs)
+        try c.encode(projectToolsEnabled, forKey: .projectToolsEnabled)
     }
 }
 

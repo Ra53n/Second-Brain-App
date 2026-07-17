@@ -28,6 +28,9 @@ final class AppModel: ObservableObject {
     let syncViewModel: SyncViewModel
     /// Инструменты проекта для чата (задача 21): исполнитель по projectRepoPath.
     let projectToolsProvider: ProjectToolsProvider
+    /// Реестр баз знаний и фасад ретрива по ним (задача 34).
+    let knowledgeBaseStore: KnowledgeBaseStore
+    let knowledgeBaseManager: KnowledgeBaseManager
 
     private var cancellables: Set<AnyCancellable> = []
 
@@ -60,6 +63,12 @@ final class AppModel: ObservableObject {
         mcpServersViewModel = MCPServersViewModel()
         syncViewModel = SyncViewModel()
         projectToolsProvider = ProjectToolsProvider(settingsStore: settingsStore, router: router)
+        let knowledgeBaseStore = KnowledgeBaseStore()
+        self.knowledgeBaseStore = knowledgeBaseStore
+        knowledgeBaseManager = KnowledgeBaseManager(store: knowledgeBaseStore,
+                                                    ragIndexManager: ragIndexManager,
+                                                    projectToolsProvider: projectToolsProvider,
+                                                    router: router)
 
         wire()
     }

@@ -115,11 +115,25 @@ struct ToolSourceSummary: Identifiable, Equatable {
     }
 }
 
-// MARK: - Чип состояния базы знаний (RAG)
+// MARK: - Чип состояния баз знаний (RAG)
 
-/// Сводка состояния RAG для чипа «База» (задачи 28, 31). Отвечает на «почему
-/// агент не использует базу» и показывает ВЫБРАННЫЙ источник знаний чата —
-/// vault или репозиторий проекта (единое место, миры не смешиваются).
+/// Строка одной базы реестра в поповере чипа «База» (задача 34): состояние +
+/// per-чат тумблер. Строятся чистыми билдерами ниже — покрыты тестами.
+struct KnowledgeBaseChipRow: Identifiable, Equatable {
+    let baseID: String
+    let name: String
+    /// База включена в ЭТОМ чате (per-чат мультивыбор).
+    let enabledInChat: Bool
+    let state: RagChipSummary.State
+    let detail: String
+    let health: ToolSourceSummary.Health
+
+    var id: String { baseID }
+}
+
+/// Сводка состояния RAG для чипа «База» (задачи 28, 31, 34): агрегат по
+/// включённым в чате базам реестра + строки для поповера с мультивыбором.
+/// Отвечает на «почему агент не использует базу».
 struct RagChipSummary: Equatable {
     enum State: Equatable {
         /// Индекс построен, эмбеддер доступен, теги совпадают.
@@ -128,98 +142,187 @@ struct RagChipSummary: Equatable {
         case indexing(fraction: Double?)
         /// Нет провайдера эмбеддингов — RAG невозможен.
         case noEmbedder
-        /// Индекс пуст (vault: нужна индексация; проект: построится сам).
+        /// Индекс пуст (vault: нужна индексация; проект/папка: построится сам).
         case empty
         /// Индекс построен другой моделью — нужна полная переиндексация (vault).
         case needsReindex
-        /// Источник «Проект», но репозиторий не выбран.
-        case repoMissing
+        /// Путь базы не существует: репозиторий не выбран / папка удалена.
+        case pathMissing
     }
 
-    let source: KnowledgeSource
-    let state: State
+    /// Все строки реестра (и выключенные в чате — их можно включить из поповера).
+    let rows: [KnowledgeBaseChipRow]
     let title: String
     let detail: String
     let health: ToolSourceSummary.Health
+    /// Хоть одна включённая база индексируется (спиннер на чипе).
+    let isIndexing: Bool
 
-    /// nil — тумблер «По базе» выключен, чипа нет.
-    /// Vault-приоритет: индексация → нет эмбеддера → смена модели → пусто → готов.
-    /// Проект: нет репо → нет эмбеддера → пусто (построится сам) → готов.
-    static func make(ragEnabled: Bool,
-                     source: KnowledgeSource,
-                     embedderAvailable: Bool,
-                     chunkCount: Int,
-                     indexTag: String?,
-                     currentTag: String?,
-                     needsFullReindex: Bool,
-                     isIndexing: Bool,
-                     progressFraction: Double?,
-                     projectRepo: ProjectRepoState,
-                     docsChunks: Int?) -> RagChipSummary? {
+    /// nil — тумблер «По базе» выключен, чипа нет. Агрегат: заголовок по
+    /// включённым базам, светофор — худший из включённых.
+    static func make(ragEnabled: Bool, rows: [KnowledgeBaseChipRow]) -> RagChipSummary? {
         guard ragEnabled else { return nil }
+        let enabled = rows.filter(\.enabledInChat)
 
-        let noEmbedderChip = RagChipSummary(
-            source: source, state: .noEmbedder, title: chipTitle(source),
-            detail: "Нет модели эмбеддингов — установите nomic-embed-text во вкладке «Локальные модели» или добавьте ключ OpenAI/Gemini.",
-            health: .warning)
-
-        switch source {
-        case .project:
-            guard case .ready = projectRepo else {
-                return RagChipSummary(
-                    source: source, state: .repoMissing, title: chipTitle(source),
-                    detail: "Репозиторий проекта не выбран — Настройки → «Инструменты».",
-                    health: .warning)
-            }
-            guard embedderAvailable else { return noEmbedderChip }
-            guard let docsChunks, docsChunks > 0 else {
-                // Индекс доков строится лениво при первом вопросе — не ошибка.
-                return RagChipSummary(
-                    source: source, state: .empty, title: chipTitle(source),
-                    detail: "Индекс документации построится при первом вопросе (README + docs репозитория).",
-                    health: .unknown)
-            }
+        guard !enabled.isEmpty else {
             return RagChipSummary(
-                source: source, state: .ready(chunks: docsChunks),
-                title: "\(chipTitle(source)) · \(docsChunks)",
-                detail: "Поиск по документации репозитория готов · чанков: \(docsChunks)",
-                health: .ok)
-
-        case .vault:
-            if isIndexing {
-                return RagChipSummary(source: source,
-                                      state: .indexing(fraction: progressFraction),
-                                      title: chipTitle(source),
-                                      detail: "Идёт индексация vault…",
-                                      health: .unknown)
-            }
-            guard embedderAvailable else { return noEmbedderChip }
-            let tagMismatch = indexTag != nil && currentTag != nil && indexTag != currentTag
-            if needsFullReindex || tagMismatch {
-                return RagChipSummary(
-                    source: source, state: .needsReindex, title: chipTitle(source),
-                    detail: "Модель эмбеддинга изменилась — векторы несовместимы, нужна полная переиндексация.",
-                    health: .warning)
-            }
-            guard chunkCount > 0 else {
-                return RagChipSummary(
-                    source: source, state: .empty, title: chipTitle(source),
-                    detail: "Индекс пуст — проиндексируйте vault, чтобы отвечать по заметкам.",
-                    health: .warning)
-            }
-            return RagChipSummary(source: source,
-                                  state: .ready(chunks: chunkCount),
-                                  title: "\(chipTitle(source)) · \(chunkCount)",
-                                  detail: "Поиск по vault готов · чанков: \(chunkCount)",
-                                  health: .ok)
+                rows: rows,
+                title: "База: не выбрана",
+                detail: "Ни одна база знаний не включена в этом чате — отметьте нужные.",
+                health: .warning,
+                isIndexing: false)
         }
+
+        let title: String
+        if enabled.count == 1, let only = enabled.first {
+            if case .ready(let chunks) = only.state {
+                title = "База: \(only.name) · \(chunks)"
+            } else {
+                title = "База: \(only.name)"
+            }
+        } else {
+            title = "База: \(enabled[0].name) +\(enabled.count - 1)"
+        }
+
+        // Худшее состояние диктует светофор: warning > unknown > ok.
+        let health: ToolSourceSummary.Health
+        if enabled.contains(where: { $0.health == .warning }) {
+            health = .warning
+        } else if enabled.contains(where: { $0.health == .unknown }) {
+            health = .unknown
+        } else {
+            health = .ok
+        }
+
+        let detail = enabled.count == 1
+            ? enabled[0].detail
+            : enabled.map { "\($0.name): \($0.detail)" }.joined(separator: "\n")
+
+        return RagChipSummary(
+            rows: rows,
+            title: title,
+            detail: detail,
+            health: health,
+            isIndexing: enabled.contains { row in
+                if case .indexing = row.state { return true }
+                return false
+            })
     }
 
-    private static func chipTitle(_ source: KnowledgeSource) -> String {
-        switch source {
-        case .vault: return "База: Vault"
-        case .project: return "База: Проект"
+    // MARK: - Строки баз (чистые билдеры)
+
+    static let noEmbedderDetail = "Нет модели эмбеддингов — установите nomic-embed-text во вкладке «Локальные модели» или добавьте ключ OpenAI/Gemini."
+
+    /// Vault-приоритет: индексация → нет эмбеддера → смена модели → пусто → готов.
+    static func vaultRow(base: KnowledgeBase,
+                         enabledInChat: Bool,
+                         embedderAvailable: Bool,
+                         chunkCount: Int,
+                         indexTag: String?,
+                         currentTag: String?,
+                         needsFullReindex: Bool,
+                         isIndexing: Bool,
+                         progressFraction: Double?) -> KnowledgeBaseChipRow {
+        if isIndexing {
+            return KnowledgeBaseChipRow(baseID: base.id, name: base.name,
+                                        enabledInChat: enabledInChat,
+                                        state: .indexing(fraction: progressFraction),
+                                        detail: "Идёт индексация vault…",
+                                        health: .unknown)
         }
+        guard embedderAvailable else {
+            return KnowledgeBaseChipRow(baseID: base.id, name: base.name,
+                                        enabledInChat: enabledInChat,
+                                        state: .noEmbedder, detail: noEmbedderDetail,
+                                        health: .warning)
+        }
+        let tagMismatch = indexTag != nil && currentTag != nil && indexTag != currentTag
+        if needsFullReindex || tagMismatch {
+            return KnowledgeBaseChipRow(
+                baseID: base.id, name: base.name, enabledInChat: enabledInChat,
+                state: .needsReindex,
+                detail: "Модель эмбеддинга изменилась — векторы несовместимы, нужна полная переиндексация.",
+                health: .warning)
+        }
+        guard chunkCount > 0 else {
+            return KnowledgeBaseChipRow(
+                baseID: base.id, name: base.name, enabledInChat: enabledInChat,
+                state: .empty,
+                detail: "Индекс пуст — проиндексируйте vault, чтобы отвечать по заметкам.",
+                health: .warning)
+        }
+        return KnowledgeBaseChipRow(
+            baseID: base.id, name: base.name, enabledInChat: enabledInChat,
+            state: .ready(chunks: chunkCount),
+            detail: "Поиск по vault готов · чанков: \(chunkCount)",
+            health: .ok)
+    }
+
+    /// Проект: нет репо → нет эмбеддера → пусто (построится сам) → готов.
+    static func projectRow(base: KnowledgeBase,
+                           enabledInChat: Bool,
+                           projectRepo: ProjectRepoState,
+                           embedderAvailable: Bool,
+                           docsChunks: Int?) -> KnowledgeBaseChipRow {
+        guard case .ready = projectRepo else {
+            return KnowledgeBaseChipRow(
+                baseID: base.id, name: base.name, enabledInChat: enabledInChat,
+                state: .pathMissing,
+                detail: "Репозиторий проекта не выбран — Настройки → «Инструменты».",
+                health: .warning)
+        }
+        guard embedderAvailable else {
+            return KnowledgeBaseChipRow(baseID: base.id, name: base.name,
+                                        enabledInChat: enabledInChat,
+                                        state: .noEmbedder, detail: noEmbedderDetail,
+                                        health: .warning)
+        }
+        guard let docsChunks, docsChunks > 0 else {
+            // Индекс доков строится лениво при первом вопросе — не ошибка.
+            return KnowledgeBaseChipRow(
+                baseID: base.id, name: base.name, enabledInChat: enabledInChat,
+                state: .empty,
+                detail: "Индекс документации построится при первом вопросе (README + docs репозитория).",
+                health: .unknown)
+        }
+        return KnowledgeBaseChipRow(
+            baseID: base.id, name: base.name, enabledInChat: enabledInChat,
+            state: .ready(chunks: docsChunks),
+            detail: "Поиск по документации репозитория готов · чанков: \(docsChunks)",
+            health: .ok)
+    }
+
+    /// Папка: путь пропал → нет эмбеддера → пусто (построится сам) → готов.
+    static func folderRow(base: KnowledgeBase,
+                          enabledInChat: Bool,
+                          folderExists: Bool,
+                          embedderAvailable: Bool,
+                          chunks: Int?) -> KnowledgeBaseChipRow {
+        guard folderExists else {
+            return KnowledgeBaseChipRow(
+                baseID: base.id, name: base.name, enabledInChat: enabledInChat,
+                state: .pathMissing,
+                detail: "Папка не найдена: \(base.path)",
+                health: .warning)
+        }
+        guard embedderAvailable else {
+            return KnowledgeBaseChipRow(baseID: base.id, name: base.name,
+                                        enabledInChat: enabledInChat,
+                                        state: .noEmbedder, detail: noEmbedderDetail,
+                                        health: .warning)
+        }
+        guard let chunks, chunks > 0 else {
+            return KnowledgeBaseChipRow(
+                baseID: base.id, name: base.name, enabledInChat: enabledInChat,
+                state: .empty,
+                detail: "Индекс папки построится при первом вопросе (.md-файлы, рекурсивно).",
+                health: .unknown)
+        }
+        return KnowledgeBaseChipRow(
+            baseID: base.id, name: base.name, enabledInChat: enabledInChat,
+            state: .ready(chunks: chunks),
+            detail: "Поиск по папке готов · чанков: \(chunks)",
+            health: .ok)
     }
 }
 

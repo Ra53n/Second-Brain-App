@@ -56,6 +56,23 @@ final class ProjectToolsProvider {
                                                 question: question)
     }
 
+    /// Top-K хитов доков для реестра баз знаний (задача 34): сырые попадания
+    /// без блока — KnowledgeBaseManager собирает выдачу единообразно для всех
+    /// баз. Пустой массив — нет репозитория/эмбеддера или ошибка.
+    func projectHits(question: String,
+                     topK: Int) async -> [(path: String, heading: String,
+                                           text: String, score: Float)] {
+        guard let root = currentRepoRoot(),
+              let resolved = router?.resolveEmbeddingProvider(for: .embedding) else { return [] }
+        let tag = "\(resolved.model)|\(resolved.provider.dimension)"
+        return await docsIndex.hits(repoRoot: root,
+                                    embedder: resolved.provider,
+                                    model: resolved.model,
+                                    tag: tag,
+                                    question: question,
+                                    topK: topK)
+    }
+
     /// Число чанков в индексе доков; nil — репозиторий не выбран/не строился.
     func docsChunkCount() async -> Int? {
         guard let root = currentRepoRoot() else { return nil }

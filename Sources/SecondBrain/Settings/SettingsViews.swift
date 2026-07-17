@@ -76,7 +76,9 @@ struct SettingsRootView: View {
             ToolsSettingsTab(viewModel: model.mcpServersViewModel,
                              settingsStore: model.settingsStore,
                              vaultManager: model.vaultManager,
-                             projectToolsProvider: model.projectToolsProvider)
+                             projectToolsProvider: model.projectToolsProvider,
+                             knowledgeBaseStore: model.knowledgeBaseStore,
+                             knowledgeBaseManager: model.knowledgeBaseManager)
                 .tabItem { Label("Инструменты", systemImage: "wrench.and.screwdriver") }
                 .tag(SettingsTab.tools)
             SyncSettingsTab(store: model.settingsStore, syncViewModel: model.syncViewModel)
@@ -397,6 +399,9 @@ struct ToolsSettingsTab: View {
     @ObservedObject var vaultManager: VaultManager
     /// Статус RAG-индекса документации проекта (задача 28).
     let projectToolsProvider: ProjectToolsProvider
+    /// Реестр баз знаний (задача 34): секция управления папочными базами.
+    @ObservedObject var knowledgeBaseStore: KnowledgeBaseStore
+    let knowledgeBaseManager: KnowledgeBaseManager
 
     /// Предупреждение «выбранная папка — не git-репозиторий» (не блокирует:
     /// list_files/read_file работают и без git).
@@ -410,6 +415,8 @@ struct ToolsSettingsTab: View {
     var body: some View {
         Form {
             builtinToolsSection
+            KnowledgeBasesSection(store: knowledgeBaseStore,
+                                  folderService: knowledgeBaseManager.folderService)
             MCPServersSection(viewModel: viewModel,
                               projectRepoPath: settingsStore.settings.projectRepoPath)
         }
@@ -525,6 +532,113 @@ struct ToolsSettingsTab: View {
         let isRepo = await GitClient(repoURL: URL(fileURLWithPath: path)).isRepository()
         projectRepoWarning = isRepo ? nil
             : "Папка не является корнем git-репозитория: git-инструменты будут недоступны, останутся list_files и read_file."
+    }
+}
+
+// MARK: - Базы знаний (задача 34)
+
+/// Секция реестра баз знаний: глобальные тумблеры встроенных баз (vault,
+/// проект) и управление папочными базами — добавить/переименовать не даём
+/// (имя = имя папки), статистика индекса, сброс, удаление. Per-чат выбор —
+/// чип «База» в чате; здесь настраивается, что вообще доступно.
+struct KnowledgeBasesSection: View {
+    @ObservedObject var store: KnowledgeBaseStore
+    /// Индексы папочных баз: статистика и сброс.
+    let folderService: FolderIndexService
+
+    /// Статистика индексов папочных баз по id; nil в значении — не строился.
+    @State private var folderStats: [String: FolderIndexService.Stats] = [:]
+
+    var body: some View {
+        Section("Базы знаний (RAG)") {
+            ForEach(store.bases) { base in
+                baseRow(base)
+            }
+            Button("Добавить папку…") { pickFolder() }
+                .help("Добавить папку с .md-заметками как отдельную базу знаний (индексируется при первом вопросе)")
+            Text("Включённые базы доступны в чатах: чип «База» выбирает, где ищет конкретный чат; модель с function calling ищет сама через rag_search.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+        .task(id: store.bases.filter { $0.kind == .folder }.map(\.id)) {
+            await refreshStats()
+        }
+    }
+
+    @ViewBuilder
+    private func baseRow(_ base: KnowledgeBase) -> some View {
+        HStack(spacing: 8) {
+            Toggle("", isOn: Binding(
+                get: { base.enabled },
+                set: { store.setEnabled(id: base.id, $0) }
+            ))
+            .labelsHidden()
+            .toggleStyle(.switch)
+            .controlSize(.mini)
+            .help(base.enabled ? "Выключить базу во всех чатах" : "Включить базу")
+            VStack(alignment: .leading, spacing: 1) {
+                Text(base.name)
+                Text(baseDetail(base))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+            Spacer()
+            if base.kind == .folder {
+                Button("Сбросить индекс") {
+                    Task {
+                        await folderService.reset(root: URL(fileURLWithPath: base.path))
+                        await refreshStats()
+                    }
+                }
+                .controlSize(.small)
+                .help("Индекс перестроится при следующем вопросе")
+                Button(role: .destructive) {
+                    store.removeBase(id: base.id)
+                } label: {
+                    Image(systemName: "trash")
+                }
+                .buttonStyle(.plain)
+                .help("Удалить базу из реестра (файлы папки не трогаются)")
+            }
+        }
+    }
+
+    /// Подпись базы: у встроенных — откуда путь, у папок — путь + статистика.
+    private func baseDetail(_ base: KnowledgeBase) -> String {
+        switch base.kind {
+        case .vault:
+            return "Заметки открытого vault (индекс — в «Общих»)"
+        case .project:
+            return "README и docs/ репозитория проекта (выбирается выше)"
+        case .folder:
+            guard let stats = folderStats[base.id] else {
+                return "\(base.path) · индекс построится при первом вопросе"
+            }
+            return "\(base.path) · \(stats.files) файлов · \(stats.chunks) чанков"
+        }
+    }
+
+    private func pickFolder() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = false
+        panel.prompt = "Добавить"
+        panel.message = "Выберите папку с .md-заметками для базы знаний"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        store.addFolder(url: url)
+    }
+
+    private func refreshStats() async {
+        var stats: [String: FolderIndexService.Stats] = [:]
+        for base in store.bases where base.kind == .folder {
+            if let s = await folderService.stats(root: URL(fileURLWithPath: base.path)) {
+                stats[base.id] = s
+            }
+        }
+        folderStats = stats
     }
 }
 

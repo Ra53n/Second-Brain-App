@@ -105,16 +105,16 @@ private struct ToolSourceChip: View {
 
 // MARK: - Чип базы знаний (RAG)
 
-/// Чип «База» (задачи 28, 31): выбранный источник знаний и его состояние
-/// видны без единого клика; поповер — переключатель источника (vault/проект)
-/// и действие (индексировать/переиндексировать/открыть настройки).
+/// Чип «База» (задачи 28, 31, 34): включённые базы знаний и их состояние
+/// видны без единого клика; поповер — мультивыбор баз реестра (чекбокс на
+/// базу) с per-base действием (индексировать/переиндексировать/настройки).
 struct RagStatusChip: View {
     let summary: RagChipSummary
     /// Запустить индексацию vault (true — полная переиндексация).
     let onReindex: (Bool) -> Void
     let onOpenSettings: (SettingsTab) -> Void
-    /// Смена источника знаний чата (задача 31).
-    let onSelectSource: (KnowledgeSource) -> Void
+    /// Переключить базу для этого чата (задача 34, мультивыбор).
+    let onToggleBase: (String) -> Void
 
     @State private var showsPopover = false
 
@@ -123,13 +123,13 @@ struct RagStatusChip: View {
             showsPopover.toggle()
         } label: {
             HStack(spacing: 5) {
-                if case .indexing(let fraction) = summary.state {
-                    ProgressView(value: fraction)
+                if summary.isIndexing {
+                    ProgressView()
                         .progressViewStyle(.circular)
                         .controlSize(.mini)
                 } else {
                     Circle()
-                        .fill(stateColor)
+                        .fill(color(summary.health))
                         .frame(width: 7, height: 7)
                 }
                 Image(systemName: "books.vertical")
@@ -145,72 +145,101 @@ struct RagStatusChip: View {
         .help(summary.detail)
         .popover(isPresented: $showsPopover, arrowEdge: .top) {
             VStack(alignment: .leading, spacing: 8) {
-                Text("База знаний (RAG)")
+                Text("Базы знаний (RAG)")
                     .font(.headline)
-                // Единая точка выбора источника (задача 31): по чему отвечает
-                // этот чат — заметки vault или документация репозитория.
-                Picker("Источник", selection: Binding(
-                    get: { summary.source },
-                    set: { onSelectSource($0) }
-                )) {
-                    Text("Vault (заметки)").tag(KnowledgeSource.vault)
-                    Text("Проект (репозиторий)").tag(KnowledgeSource.project)
-                }
-                .pickerStyle(.segmented)
-                .labelsHidden()
-                Text(summary.detail)
+                Text("Модель ищет только во включённых базах этого чата.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
+                ForEach(summary.rows) { row in
+                    baseRow(row)
+                }
                 Divider()
-                popoverActions
+                Button("Управлять базами…") {
+                    showsPopover = false
+                    onOpenSettings(.tools)
+                }
+                .help("Добавить папки заметок и настроить базы — вкладка «Инструменты»")
             }
             .padding(12)
-            .frame(width: 320, alignment: .leading)
+            .frame(width: 340, alignment: .leading)
         }
     }
 
+    /// Строка базы: чекбокс per-чат + светофор + имя/статус + действие.
     @ViewBuilder
-    private var popoverActions: some View {
-        switch summary.state {
-        case .ready:
-            Button("Настройки индекса…") {
-                showsPopover = false
-                onOpenSettings(summary.source == .vault ? .general : .tools)
-            }
-        case .indexing:
-            Text("Индексация идёт — можно продолжать работу.")
-                .font(.caption)
-        case .noEmbedder:
-            Button("Открыть настройки") {
-                showsPopover = false
-                onOpenSettings(.localModels)
-            }
-        case .empty:
-            if summary.source == .vault {
-                Button("Индексировать") {
-                    showsPopover = false
-                    onReindex(false)
-                }
+    private func baseRow(_ row: KnowledgeBaseChipRow) -> some View {
+        HStack(spacing: 8) {
+            Toggle("", isOn: Binding(
+                get: { row.enabledInChat },
+                set: { _ in onToggleBase(row.baseID) }
+            ))
+            .labelsHidden()
+            .toggleStyle(.checkbox)
+            if case .indexing(let fraction) = row.state {
+                ProgressView(value: fraction)
+                    .progressViewStyle(.circular)
+                    .controlSize(.mini)
             } else {
-                Text("Задайте вопрос — индекс построится автоматически.")
-                    .font(.caption)
+                Circle()
+                    .fill(color(row.health))
+                    .frame(width: 7, height: 7)
             }
+            VStack(alignment: .leading, spacing: 1) {
+                Text(rowTitle(row))
+                    .font(.callout)
+                Text(row.detail)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer()
+            rowAction(row)
+        }
+    }
+
+    private func rowTitle(_ row: KnowledgeBaseChipRow) -> String {
+        if case .ready(let chunks) = row.state { return "\(row.name) · \(chunks)" }
+        return row.name
+    }
+
+    /// Действие строки по состоянию: vault индексируется кнопкой, остальные —
+    /// лениво; сломанные пути и отсутствие эмбеддера ведут в настройки.
+    @ViewBuilder
+    private func rowAction(_ row: KnowledgeBaseChipRow) -> some View {
+        switch row.state {
+        case .empty where row.baseID == KnowledgeBase.vaultID:
+            Button("Индексировать") {
+                showsPopover = false
+                onReindex(false)
+            }
+            .controlSize(.small)
         case .needsReindex:
-            Button("Переиндексировать заново") {
+            Button("Заново") {
                 showsPopover = false
                 onReindex(true)
             }
-        case .repoMissing:
-            Button("Выбрать репозиторий…") {
+            .controlSize(.small)
+            .help("Полная переиндексация под новую модель эмбеддинга")
+        case .noEmbedder:
+            Button("Настроить…") {
+                showsPopover = false
+                onOpenSettings(.localModels)
+            }
+            .controlSize(.small)
+        case .pathMissing:
+            Button("Выбрать…") {
                 showsPopover = false
                 onOpenSettings(.tools)
             }
+            .controlSize(.small)
+        case .ready, .indexing, .empty:
+            EmptyView()
         }
     }
 
-    private var stateColor: Color {
-        switch summary.health {
+    private func color(_ health: ToolSourceSummary.Health) -> Color {
+        switch health {
         case .ok: return .green
         case .unknown: return .gray
         case .warning: return .orange

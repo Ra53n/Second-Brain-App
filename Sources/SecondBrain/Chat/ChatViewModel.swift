@@ -44,6 +44,17 @@ final class ChatViewModel: ObservableObject {
     }
     var projectToolsBridge: ProjectToolsBridge?
 
+    /// Мост rag_search (задача 34): определение инструмента по включённым
+    /// базам чата и исполнитель поиска (KnowledgeBaseManager). Отдельно от
+    /// ragProvider: тот — статическая подстановка, этот — tool-режим.
+    struct RagToolBridge {
+        /// nil — включённых баз нет, инструмент не предлагается.
+        var definition: (Set<String>) -> ToolDefinition?
+        /// (аргументы вызова, включённые базы, topK, minScore) → текст + источники.
+        var execute: (String, Set<String>, Int, Double) async -> RagToolOutcome
+    }
+    var ragToolBridge: RagToolBridge?
+
     /// Доступны ли инструменты проекта прямо сейчас (для UI меню).
     var projectToolsAvailable: Bool {
         projectToolsBridge?.available() ?? false
@@ -204,12 +215,27 @@ final class ChatViewModel: ObservableObject {
         }
     }
 
-    /// Источник знаний текущего чата (задача 31): vault или репозиторий проекта.
-    var knowledgeSourceBinding: KnowledgeSource {
-        get { selectedChat?.configuration.knowledgeSource ?? .vault }
+    /// Включённые базы знаний текущего чата (задача 34).
+    var enabledKnowledgeBaseIDs: Set<String> {
+        selectedChat?.configuration.enabledKnowledgeBaseIDs ?? [KnowledgeBase.vaultID]
+    }
+
+    /// Тумблер базы в чипе «База» (мультивыбор per-чат).
+    func toggleKnowledgeBase(_ id: String) {
+        guard let index = selectedIndex else { return }
+        if chats[index].configuration.enabledKnowledgeBaseIDs.contains(id) {
+            chats[index].configuration.enabledKnowledgeBaseIDs.remove(id)
+        } else {
+            chats[index].configuration.enabledKnowledgeBaseIDs.insert(id)
+        }
+    }
+
+    /// Тумблер «RAG как инструмент» текущего чата (задача 34).
+    var ragAsToolBinding: Bool {
+        get { selectedChat?.configuration.ragAsTool ?? true }
         set {
             guard let index = selectedIndex else { return }
-            chats[index].configuration.knowledgeSource = newValue
+            chats[index].configuration.ragAsTool = newValue
         }
     }
 
@@ -387,14 +413,25 @@ final class ChatViewModel: ObservableObject {
             + [ChatMessage(role: .user, content: text)]
         let chatSnapshot = chats[index]
 
+        // RAG как инструмент (задача 34): tool-провайдер получает rag_search
+        // и сам решает, когда искать; статический ретрив на этом ходу не нужен.
+        let ragToolDefinition: ToolDefinition? = {
+            guard configuration.ragEnabled, configuration.ragAsTool, !overrides.skipsRag,
+                  resolveProvider(for: chatSnapshot)?.provider is ToolCapableChatProvider
+            else { return nil }
+            return ragToolBridge?.definition(configuration.enabledKnowledgeBaseIDs)
+        }()
+
         generationTasks[chatID] = Task { [weak self] in
             guard let self else { return }
             let start = Date()
             do {
                 // Ретрив (задача 14): только при включённом тумблере;
-                // /help-ход пропускает RAG — его контекст заменяют доки.
+                // /help-ход пропускает RAG — его контекст заменяют доки;
+                // tool-режим (задача 34) заменяет подстановку инструментом.
                 var retrieval: RagRetrievalOutcome?
-                if chatSnapshot.configuration.ragEnabled && !overrides.skipsRag {
+                if chatSnapshot.configuration.ragEnabled && !overrides.skipsRag
+                    && ragToolDefinition == nil {
                     retrieval = await self.ragProvider?(chatSnapshot, text)
                     if let sources = retrieval?.sources, !sources.isEmpty {
                         self.attachSources(chatID: chatID, messageID: placeholderID,
@@ -418,7 +455,9 @@ final class ChatViewModel: ObservableObject {
                     history: history,
                     historyWindow: configuration.historyWindow,
                     ragContext: retrieval?.block,
-                    projectDocs: projectDocs)
+                    projectDocs: projectDocs,
+                    tools: ragToolDefinition != nil
+                        ? ChatPromptBuilder.ragToolDirective : nil)
                 var settings = ChatSettings(model: resolved.model)
                 settings.temperature = configuration.temperature
 
@@ -438,18 +477,39 @@ final class ChatViewModel: ObservableObject {
                     projectNames = Set(projectTools.map(\.name))
                     tools += projectTools
                 }
+                // rag_search (задача 34) — последним: git/MCP-имена с ним не
+                // пересекаются (маршрутизация в execute проверяет его первым).
+                if let ragToolDefinition {
+                    tools.append(ragToolDefinition)
+                }
                 // Итоговый usage хода (задача 29): стрим отдаёт событием,
                 // tool-цикл суммирует по итерациям.
                 var turnUsage: ChatUsage?
                 if !tools.isEmpty, let toolProvider = resolved.provider as? ToolCapableChatProvider {
                     let mcpBridge = self.mcpBridge
                     let projectBridge = self.projectToolsBridge
+                    let ragBridge = self.ragToolBridge
+                    let ragConfiguration = chatSnapshot.configuration
                     let outcome = try await ToolUseLoop.run(
                         provider: toolProvider,
                         settings: settings,
                         messages: messages.map(ToolAwareMessage.init),
                         tools: tools,
                         execute: { name, args in
+                            // rag_search (задача 34): источники цепляются к
+                            // сообщению сразу — цитаты видны ещё в ходе цикла.
+                            if name == RagSearchTool.toolName,
+                               ragToolDefinition != nil, let ragBridge {
+                                let outcome = await ragBridge.execute(
+                                    args,
+                                    ragConfiguration.enabledKnowledgeBaseIDs,
+                                    ragConfiguration.ragTopK,
+                                    ragConfiguration.ragMinScore)
+                                self.appendSources(chatID: chatID,
+                                                   messageID: placeholderID,
+                                                   new: outcome.sources)
+                                return outcome.text
+                            }
                             if projectNames.contains(name), let projectBridge {
                                 return await projectBridge.execute(name, args)
                             }
@@ -532,6 +592,25 @@ final class ChatViewModel: ObservableObject {
               let messageIndex = chats[chatIndex].messages.firstIndex(where: { $0.id == messageID })
         else { return }
         chats[chatIndex].messages[messageIndex].sources = sources
+    }
+
+    /// Добавление источников из rag_search (задача 34): модель может звать
+    /// поиск несколько раз за цикл — источники накапливаются с дедупом по id
+    /// (повтор оставляет лучший score).
+    private func appendSources(chatID: UUID, messageID: UUID, new: [RagSource]) {
+        guard !new.isEmpty,
+              let chatIndex = chats.firstIndex(where: { $0.id == chatID }),
+              let messageIndex = chats[chatIndex].messages.firstIndex(where: { $0.id == messageID })
+        else { return }
+        var merged = chats[chatIndex].messages[messageIndex].sources ?? []
+        for source in new {
+            if let existing = merged.firstIndex(where: { $0.id == source.id }) {
+                merged[existing].score = max(merged[existing].score, source.score)
+            } else {
+                merged.append(source)
+            }
+        }
+        chats[chatIndex].messages[messageIndex].sources = merged
     }
 
     private func attachToolCalls(chatID: UUID, messageID: UUID, calls: [ToolCallDisplay]) {

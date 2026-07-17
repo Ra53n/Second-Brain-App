@@ -469,24 +469,40 @@ final class ProjectToolsConfigMigrationTests: XCTestCase {
         XCTAssertTrue(loaded.projectToolsEnabled)
     }
 
-    /// Задача 31: источник знаний — миграция старого JSON и round-trip.
+    /// Задачи 31→34: legacy-источник знаний мигрирует в множество id баз.
     func testKnowledgeSourceMigrationAndRoundTrip() throws {
         // Старый конфиг без поля → vault.
         let old = try JSONDecoder().decode(ChatConfiguration.self,
                                            from: Data(#"{"ragEnabled":true}"#.utf8))
-        XCTAssertEqual(old.knowledgeSource, .vault)
+        XCTAssertEqual(old.enabledKnowledgeBaseIDs, [KnowledgeBase.vaultID])
 
         // Незнакомое значение из будущего → vault, не падение.
         let future = try JSONDecoder().decode(
             ChatConfiguration.self,
             from: Data(#"{"knowledgeSource":"galaxy"}"#.utf8))
-        XCTAssertEqual(future.knowledgeSource, .vault)
+        XCTAssertEqual(future.enabledKnowledgeBaseIDs, [KnowledgeBase.vaultID])
 
+        // Legacy-конфиг задачи 31 с источником «Проект».
+        let legacyProject = try JSONDecoder().decode(
+            ChatConfiguration.self,
+            from: Data(#"{"knowledgeSource":"project"}"#.utf8))
+        XCTAssertEqual(legacyProject.enabledKnowledgeBaseIDs, [KnowledgeBase.projectID])
+
+        // Round-trip нового ключа; legacy-ключ больше не пишется.
         var config = ChatConfiguration()
-        config.knowledgeSource = .project
-        let loaded = try JSONDecoder().decode(ChatConfiguration.self,
-                                              from: JSONEncoder().encode(config))
-        XCTAssertEqual(loaded.knowledgeSource, .project)
+        config.enabledKnowledgeBaseIDs = [KnowledgeBase.projectID, "folder-1"]
+        config.ragAsTool = false
+        let data = try JSONEncoder().encode(config)
+        XCTAssertFalse(String(decoding: data, as: UTF8.self).contains("knowledgeSource"))
+        let loaded = try JSONDecoder().decode(ChatConfiguration.self, from: data)
+        XCTAssertEqual(loaded.enabledKnowledgeBaseIDs, [KnowledgeBase.projectID, "folder-1"])
+        XCTAssertFalse(loaded.ragAsTool)
+
+        // Новый ключ в приоритете над legacy, если встретились оба.
+        let both = try JSONDecoder().decode(
+            ChatConfiguration.self,
+            from: Data(#"{"knowledgeSource":"project","enabledKnowledgeBaseIDs":["vault"]}"#.utf8))
+        XCTAssertEqual(both.enabledKnowledgeBaseIDs, [KnowledgeBase.vaultID])
     }
 
     /// Шаблон git MCP-сервера: uvx mcp-server-git, выключен по умолчанию.

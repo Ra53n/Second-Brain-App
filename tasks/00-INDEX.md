@@ -39,6 +39,7 @@
 | 31 | [Единый источник знаний чата](31-unified-knowledge-source.md) | 14, 25, 28 | [x] |
 | 32 | [Пикер моделей: только доступные](32-real-model-picker.md) | 09, 24, 26, 29 | [x] |
 | 33 | [Изоляция тестов роутинга от routing.json](33-routing-tests-isolation.md) | 17 | [x] |
+| 34 | [Реестр баз знаний (multi-base RAG) + rag_search](34-knowledge-base-registry.md) | 27, 31 | [x] |
 
 ## Рекомендуемый порядок
 

@@ -147,95 +147,160 @@ final class ToolSourceSummaryTests: XCTestCase {
     }
 }
 
-// MARK: - Чип базы знаний (задача 28)
+// MARK: - Чип баз знаний (задачи 28, 34)
 
 final class RagChipSummaryTests: XCTestCase {
 
-    private func make(ragEnabled: Bool = true,
-                      source: KnowledgeSource = .vault,
-                      embedderAvailable: Bool = true,
-                      chunkCount: Int = 100,
-                      indexTag: String? = "m|8",
-                      currentTag: String? = "m|8",
-                      needsFullReindex: Bool = false,
-                      isIndexing: Bool = false,
-                      progressFraction: Double? = nil,
-                      projectRepo: ProjectRepoState = .notConfigured,
-                      docsChunks: Int? = nil) -> RagChipSummary? {
-        RagChipSummary.make(ragEnabled: ragEnabled,
-                            source: source,
-                            embedderAvailable: embedderAvailable,
-                            chunkCount: chunkCount,
-                            indexTag: indexTag,
-                            currentTag: currentTag,
-                            needsFullReindex: needsFullReindex,
-                            isIndexing: isIndexing,
-                            progressFraction: progressFraction,
-                            projectRepo: projectRepo,
-                            docsChunks: docsChunks)
+    private let vault = KnowledgeBase.builtinVault()
+    private let project = KnowledgeBase.builtinProject()
+
+    private func vaultRow(enabledInChat: Bool = true,
+                          embedderAvailable: Bool = true,
+                          chunkCount: Int = 100,
+                          indexTag: String? = "m|8",
+                          currentTag: String? = "m|8",
+                          needsFullReindex: Bool = false,
+                          isIndexing: Bool = false,
+                          progressFraction: Double? = nil) -> KnowledgeBaseChipRow {
+        RagChipSummary.vaultRow(base: vault,
+                                enabledInChat: enabledInChat,
+                                embedderAvailable: embedderAvailable,
+                                chunkCount: chunkCount,
+                                indexTag: indexTag,
+                                currentTag: currentTag,
+                                needsFullReindex: needsFullReindex,
+                                isIndexing: isIndexing,
+                                progressFraction: progressFraction)
     }
 
-    // MARK: Источник «Проект» (задача 31)
+    // MARK: Строка «Проект»
 
-    func testProjectSourceStates() {
+    func testProjectRowStates() {
         // Репозиторий не выбран.
-        let missing = make(source: .project)
-        XCTAssertEqual(missing?.state, .repoMissing)
-        XCTAssertEqual(missing?.health, .warning)
+        let missing = RagChipSummary.projectRow(base: project, enabledInChat: true,
+                                                projectRepo: .notConfigured,
+                                                embedderAvailable: true, docsChunks: nil)
+        XCTAssertEqual(missing.state, .pathMissing)
+        XCTAssertEqual(missing.health, .warning)
 
         // Репо есть, эмбеддера нет.
-        XCTAssertEqual(make(source: .project, embedderAvailable: false,
-                            projectRepo: .ready(path: "/tmp"))?.state, .noEmbedder)
+        XCTAssertEqual(RagChipSummary.projectRow(base: project, enabledInChat: true,
+                                                 projectRepo: .ready(path: "/tmp"),
+                                                 embedderAvailable: false,
+                                                 docsChunks: nil).state, .noEmbedder)
 
         // Индекс доков ещё не строился — не ошибка (ленивая сборка).
-        let lazyEmpty = make(source: .project, projectRepo: .ready(path: "/tmp"))
-        XCTAssertEqual(lazyEmpty?.state, .empty)
-        XCTAssertEqual(lazyEmpty?.health, .unknown)
+        let lazyEmpty = RagChipSummary.projectRow(base: project, enabledInChat: true,
+                                                  projectRepo: .ready(path: "/tmp"),
+                                                  embedderAvailable: true, docsChunks: nil)
+        XCTAssertEqual(lazyEmpty.state, .empty)
+        XCTAssertEqual(lazyEmpty.health, .unknown)
 
         // Готов.
-        let ready = make(source: .project, projectRepo: .ready(path: "/tmp"),
-                         docsChunks: 42)
-        XCTAssertEqual(ready?.state, .ready(chunks: 42))
-        XCTAssertEqual(ready?.title, "База: Проект · 42")
+        let ready = RagChipSummary.projectRow(base: project, enabledInChat: true,
+                                              projectRepo: .ready(path: "/tmp"),
+                                              embedderAvailable: true, docsChunks: 42)
+        XCTAssertEqual(ready.state, .ready(chunks: 42))
+        XCTAssertEqual(ready.health, .ok)
     }
 
-    func testVaultTitleCarriesSource() {
-        XCTAssertEqual(make()?.title, "База: Vault · 100")
-    }
+    // MARK: Строка «Vault»
 
-    func testDisabledGivesNil() {
-        XCTAssertNil(make(ragEnabled: false))
-    }
-
-    func testReadyState() {
-        let chip = make()
-        XCTAssertEqual(chip?.state, .ready(chunks: 100))
-        XCTAssertEqual(chip?.health, .ok)
-        XCTAssertEqual(chip?.title, "База: Vault · 100")
-    }
-
-    func testNoEmbedderState() {
-        let chip = make(embedderAvailable: false)
-        XCTAssertEqual(chip?.state, .noEmbedder)
-        XCTAssertEqual(chip?.health, .warning)
-        XCTAssertTrue(chip?.detail.contains("nomic-embed-text") == true)
-    }
-
-    func testEmptyIndexState() {
-        XCTAssertEqual(make(chunkCount: 0, indexTag: nil)?.state, .empty)
-    }
-
-    func testTagMismatchNeedsReindex() {
-        XCTAssertEqual(make(currentTag: "other|8")?.state, .needsReindex)
-        XCTAssertEqual(make(needsFullReindex: true)?.state, .needsReindex)
+    func testVaultRowStates() {
+        XCTAssertEqual(vaultRow().state, .ready(chunks: 100))
+        XCTAssertEqual(vaultRow().health, .ok)
+        XCTAssertTrue(vaultRow(embedderAvailable: false).detail
+            .contains("nomic-embed-text"))
+        XCTAssertEqual(vaultRow(chunkCount: 0, indexTag: nil).state, .empty)
+        XCTAssertEqual(vaultRow(currentTag: "other|8").state, .needsReindex)
+        XCTAssertEqual(vaultRow(needsFullReindex: true).state, .needsReindex)
     }
 
     /// Приоритеты: индексация поверх всего; нет эмбеддера поверх пустоты.
-    func testStatePriorities() {
-        XCTAssertEqual(make(embedderAvailable: false, chunkCount: 0,
-                            isIndexing: true, progressFraction: 0.5)?.state,
+    func testVaultRowPriorities() {
+        XCTAssertEqual(vaultRow(embedderAvailable: false, chunkCount: 0,
+                                isIndexing: true, progressFraction: 0.5).state,
                        .indexing(fraction: 0.5))
-        XCTAssertEqual(make(embedderAvailable: false, chunkCount: 0)?.state, .noEmbedder)
+        XCTAssertEqual(vaultRow(embedderAvailable: false, chunkCount: 0).state,
+                       .noEmbedder)
+    }
+
+    // MARK: Строка «Папка»
+
+    func testFolderRowStates() {
+        var base = KnowledgeBase(id: "f1", kind: .folder, name: "Заметки",
+                                 path: "/tmp/notes")
+        base.enabled = true
+        XCTAssertEqual(RagChipSummary.folderRow(base: base, enabledInChat: true,
+                                                folderExists: false,
+                                                embedderAvailable: true,
+                                                chunks: nil).state, .pathMissing)
+        XCTAssertEqual(RagChipSummary.folderRow(base: base, enabledInChat: true,
+                                                folderExists: true,
+                                                embedderAvailable: false,
+                                                chunks: nil).state, .noEmbedder)
+        let lazyEmpty = RagChipSummary.folderRow(base: base, enabledInChat: true,
+                                                 folderExists: true,
+                                                 embedderAvailable: true, chunks: nil)
+        XCTAssertEqual(lazyEmpty.state, .empty)
+        XCTAssertEqual(lazyEmpty.health, .unknown)
+        XCTAssertEqual(RagChipSummary.folderRow(base: base, enabledInChat: true,
+                                                folderExists: true,
+                                                embedderAvailable: true,
+                                                chunks: 7).state, .ready(chunks: 7))
+    }
+
+    // MARK: Агрегат чипа
+
+    func testDisabledGivesNil() {
+        XCTAssertNil(RagChipSummary.make(ragEnabled: false, rows: [vaultRow()]))
+    }
+
+    func testSingleEnabledBaseTitleAndHealth() {
+        let chip = RagChipSummary.make(ragEnabled: true, rows: [vaultRow()])
+        XCTAssertEqual(chip?.title, "База: Vault · 100")
+        XCTAssertEqual(chip?.health, .ok)
+        XCTAssertFalse(chip?.isIndexing ?? true)
+    }
+
+    func testMultipleEnabledBasesTitleAndWorstHealth() {
+        let projectRow = RagChipSummary.projectRow(base: project, enabledInChat: true,
+                                                   projectRepo: .notConfigured,
+                                                   embedderAvailable: true,
+                                                   docsChunks: nil)
+        let chip = RagChipSummary.make(ragEnabled: true,
+                                       rows: [vaultRow(), projectRow])
+        XCTAssertEqual(chip?.title, "База: Vault +1")
+        XCTAssertEqual(chip?.health, .warning, "худшее состояние диктует светофор")
+        XCTAssertTrue(chip?.detail.contains("Проект:") == true,
+                      "детали перечисляются по базам")
+    }
+
+    /// Выключенные в чате базы не влияют на агрегат, но остаются в rows.
+    func testDisabledInChatRowsIgnoredInAggregate() {
+        let disabledProject = RagChipSummary.projectRow(base: project,
+                                                        enabledInChat: false,
+                                                        projectRepo: .notConfigured,
+                                                        embedderAvailable: true,
+                                                        docsChunks: nil)
+        let chip = RagChipSummary.make(ragEnabled: true,
+                                       rows: [vaultRow(), disabledProject])
+        XCTAssertEqual(chip?.health, .ok)
+        XCTAssertEqual(chip?.title, "База: Vault · 100")
+        XCTAssertEqual(chip?.rows.count, 2)
+    }
+
+    func testNoEnabledBasesWarns() {
+        let chip = RagChipSummary.make(ragEnabled: true,
+                                       rows: [vaultRow(enabledInChat: false)])
+        XCTAssertEqual(chip?.title, "База: не выбрана")
+        XCTAssertEqual(chip?.health, .warning)
+    }
+
+    func testIndexingBubblesUp() {
+        let chip = RagChipSummary.make(ragEnabled: true,
+                                       rows: [vaultRow(isIndexing: true)])
+        XCTAssertTrue(chip?.isIndexing ?? false)
     }
 }
 

@@ -81,6 +81,28 @@ actor ProjectDocsIndexService {
         stats(repoRoot: repoRoot)?.chunks
     }
 
+    /// Top-K чанков доков для реестра баз знаний (задача 34): та же ленивая
+    /// синхронизация, что у retrievalOutcome, но сырые попадания — блок и
+    /// источники собирает KnowledgeBaseManager единообразно для всех баз.
+    /// Пустой массив при любой ошибке.
+    func hits(repoRoot: URL,
+              embedder: EmbeddingProvider,
+              model: String?,
+              tag: String,
+              question: String,
+              topK: Int) async -> [(path: String, heading: String,
+                                    text: String, score: Float)] {
+        do {
+            let index = try openIndex(repoRoot: repoRoot)
+            try await sync(index: index, repoRoot: repoRoot,
+                           embedder: embedder, model: model, tag: tag)
+            return try await topHits(index: index, embedder: embedder, model: model,
+                                     question: question, topK: topK)
+        } catch {
+            return []
+        }
+    }
+
     /// Статистика индекса доков для вкладки «Инструменты» (задача 28).
     struct DocsIndexStats: Equatable {
         let files: Int

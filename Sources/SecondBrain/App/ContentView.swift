@@ -131,30 +131,42 @@ struct ContentView: View {
         }
     }
 
-    /// Связка чата с RAG (задача 14): ретрив идёт через менеджер индекса;
-    /// rewrite/rerank используют тот же чат-роутер. Однократно, лениво.
+    /// Связка чата с RAG (задачи 14, 34): статический ретрив (фолбэк без
+    /// tool-calling) идёт через фасад реестра баз; rewrite/rerank используют
+    /// тот же чат-роутер (только чисто-vault путь). Однократно, лениво.
     private func wireRagProvider() {
         let chatViewModel = model.chatViewModel
         guard chatViewModel.ragProvider == nil else { return }
-        let projectProvider = model.projectToolsProvider
-        chatViewModel.ragProvider = { [weak ragIndexManager = model.ragIndexManager,
+        chatViewModel.ragProvider = { [weak knowledgeBaseManager = model.knowledgeBaseManager,
                                        weak functionRouter = model.functionRouter] chat, query in
-            // Задача 31: один источник знаний на чат — vault ИЛИ репозиторий
-            // проекта; RAG, /help и инструменты больше не смешивают миры.
-            switch chat.configuration.knowledgeSource {
-            case .project:
-                return await projectProvider.projectRetrieval(question: query)
-            case .vault:
-                guard let manager = ragIndexManager else { return nil }
-                let needsLLM = chat.configuration.ragQueryRewrite || chat.configuration.ragRerankEnabled
-                // Задача 28: у реранка/переписывания своя функция роутинга.
-                let chatProvider = needsLLM ? functionRouter?.resolveChatProvider(for: .ragRerank) : nil
-                return await manager.retrieveForChat(query: query,
-                                                     history: chat.messages,
-                                                     configuration: chat.configuration,
-                                                     chatProvider: chatProvider)
-            }
+            guard let manager = knowledgeBaseManager else { return nil }
+            let needsLLM = chat.configuration.ragQueryRewrite || chat.configuration.ragRerankEnabled
+            // Задача 28: у реранка/переписывания своя функция роутинга.
+            let chatProvider = needsLLM ? functionRouter?.resolveChatProvider(for: .ragRerank) : nil
+            return await manager.retrieve(enabledIDs: chat.configuration.enabledKnowledgeBaseIDs,
+                                          query: query,
+                                          history: chat.messages,
+                                          configuration: chat.configuration,
+                                          chatProvider: chatProvider)
         }
+    }
+
+    /// Связка чата с инструментом rag_search (задача 34): определение по
+    /// включённым базам чата и исполнитель поиска. Однократно, лениво.
+    private func wireRagTool() {
+        let chatViewModel = model.chatViewModel
+        guard chatViewModel.ragToolBridge == nil else { return }
+        let manager = model.knowledgeBaseManager
+        chatViewModel.ragToolBridge = ChatViewModel.RagToolBridge(
+            definition: { enabledIDs in
+                manager.toolDefinition(enabledIDs: enabledIDs)
+            },
+            execute: { args, enabledIDs, topK, minScore in
+                await manager.executeSearchTool(argumentsJSON: args,
+                                                enabledIDs: enabledIDs,
+                                                topK: topK,
+                                                minScore: minScore)
+            })
     }
 
     /// Связка чата с MCP (задача 15): инструменты включённых серверов и
@@ -207,9 +219,12 @@ struct ContentView: View {
                            mcpViewModel: model.mcpServersViewModel,
                            ragIndexManager: model.ragIndexManager,
                            projectToolsProvider: model.projectToolsProvider,
+                           knowledgeBaseStore: model.knowledgeBaseStore,
+                           knowledgeBaseManager: model.knowledgeBaseManager,
                            resolveWikilink: { vaultManager.linkIndex?.resolve($0) })
                 .onAppear {
                     wireRagProvider()
+                    wireRagTool()
                     wireMCPBridge()
                     wireProjectTools()
                 }
