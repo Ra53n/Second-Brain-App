@@ -117,8 +117,9 @@ struct ToolSourceSummary: Identifiable, Equatable {
 
 // MARK: - Чип состояния базы знаний (RAG)
 
-/// Сводка состояния RAG для чипа «База» (задача 28). Отвечает на «почему
-/// агент не использует базу»: раньше ретрив молча возвращал nil.
+/// Сводка состояния RAG для чипа «База» (задачи 28, 31). Отвечает на «почему
+/// агент не использует базу» и показывает ВЫБРАННЫЙ источник знаний чата —
+/// vault или репозиторий проекта (единое место, миры не смешиваются).
 struct RagChipSummary: Equatable {
     enum State: Equatable {
         /// Индекс построен, эмбеддер доступен, теги совпадают.
@@ -127,58 +128,98 @@ struct RagChipSummary: Equatable {
         case indexing(fraction: Double?)
         /// Нет провайдера эмбеддингов — RAG невозможен.
         case noEmbedder
-        /// Индекс пуст — нужно проиндексировать vault.
+        /// Индекс пуст (vault: нужна индексация; проект: построится сам).
         case empty
-        /// Индекс построен другой моделью — нужна полная переиндексация.
+        /// Индекс построен другой моделью — нужна полная переиндексация (vault).
         case needsReindex
+        /// Источник «Проект», но репозиторий не выбран.
+        case repoMissing
     }
 
+    let source: KnowledgeSource
     let state: State
     let title: String
     let detail: String
     let health: ToolSourceSummary.Health
 
     /// nil — тумблер «По базе» выключен, чипа нет.
-    /// Приоритет состояний: индексация → нет эмбеддера → смена модели → пусто → готов.
+    /// Vault-приоритет: индексация → нет эмбеддера → смена модели → пусто → готов.
+    /// Проект: нет репо → нет эмбеддера → пусто (построится сам) → готов.
     static func make(ragEnabled: Bool,
+                     source: KnowledgeSource,
                      embedderAvailable: Bool,
                      chunkCount: Int,
                      indexTag: String?,
                      currentTag: String?,
                      needsFullReindex: Bool,
                      isIndexing: Bool,
-                     progressFraction: Double?) -> RagChipSummary? {
+                     progressFraction: Double?,
+                     projectRepo: ProjectRepoState,
+                     docsChunks: Int?) -> RagChipSummary? {
         guard ragEnabled else { return nil }
 
-        if isIndexing {
-            return RagChipSummary(state: .indexing(fraction: progressFraction),
-                                  title: "База",
-                                  detail: "Идёт индексация vault…",
-                                  health: .unknown)
-        }
-        guard embedderAvailable else {
+        let noEmbedderChip = RagChipSummary(
+            source: source, state: .noEmbedder, title: chipTitle(source),
+            detail: "Нет модели эмбеддингов — установите nomic-embed-text во вкладке «Локальные модели» или добавьте ключ OpenAI/Gemini.",
+            health: .warning)
+
+        switch source {
+        case .project:
+            guard case .ready = projectRepo else {
+                return RagChipSummary(
+                    source: source, state: .repoMissing, title: chipTitle(source),
+                    detail: "Репозиторий проекта не выбран — Настройки → «Инструменты».",
+                    health: .warning)
+            }
+            guard embedderAvailable else { return noEmbedderChip }
+            guard let docsChunks, docsChunks > 0 else {
+                // Индекс доков строится лениво при первом вопросе — не ошибка.
+                return RagChipSummary(
+                    source: source, state: .empty, title: chipTitle(source),
+                    detail: "Индекс документации построится при первом вопросе (README + docs репозитория).",
+                    health: .unknown)
+            }
             return RagChipSummary(
-                state: .noEmbedder, title: "База",
-                detail: "Нет модели эмбеддингов — установите nomic-embed-text во вкладке «Локальные модели» или добавьте ключ OpenAI/Gemini.",
-                health: .warning)
+                source: source, state: .ready(chunks: docsChunks),
+                title: "\(chipTitle(source)) · \(docsChunks)",
+                detail: "Поиск по документации репозитория готов · чанков: \(docsChunks)",
+                health: .ok)
+
+        case .vault:
+            if isIndexing {
+                return RagChipSummary(source: source,
+                                      state: .indexing(fraction: progressFraction),
+                                      title: chipTitle(source),
+                                      detail: "Идёт индексация vault…",
+                                      health: .unknown)
+            }
+            guard embedderAvailable else { return noEmbedderChip }
+            let tagMismatch = indexTag != nil && currentTag != nil && indexTag != currentTag
+            if needsFullReindex || tagMismatch {
+                return RagChipSummary(
+                    source: source, state: .needsReindex, title: chipTitle(source),
+                    detail: "Модель эмбеддинга изменилась — векторы несовместимы, нужна полная переиндексация.",
+                    health: .warning)
+            }
+            guard chunkCount > 0 else {
+                return RagChipSummary(
+                    source: source, state: .empty, title: chipTitle(source),
+                    detail: "Индекс пуст — проиндексируйте vault, чтобы отвечать по заметкам.",
+                    health: .warning)
+            }
+            return RagChipSummary(source: source,
+                                  state: .ready(chunks: chunkCount),
+                                  title: "\(chipTitle(source)) · \(chunkCount)",
+                                  detail: "Поиск по vault готов · чанков: \(chunkCount)",
+                                  health: .ok)
         }
-        let tagMismatch = indexTag != nil && currentTag != nil && indexTag != currentTag
-        if needsFullReindex || tagMismatch {
-            return RagChipSummary(
-                state: .needsReindex, title: "База",
-                detail: "Модель эмбеддинга изменилась — векторы несовместимы, нужна полная переиндексация.",
-                health: .warning)
+    }
+
+    private static func chipTitle(_ source: KnowledgeSource) -> String {
+        switch source {
+        case .vault: return "База: Vault"
+        case .project: return "База: Проект"
         }
-        guard chunkCount > 0 else {
-            return RagChipSummary(
-                state: .empty, title: "База",
-                detail: "Индекс пуст — проиндексируйте vault, чтобы отвечать по заметкам.",
-                health: .warning)
-        }
-        return RagChipSummary(state: .ready(chunks: chunkCount),
-                              title: "База · \(chunkCount)",
-                              detail: "Поиск по vault готов · чанков: \(chunkCount)",
-                              health: .ok)
     }
 }
 

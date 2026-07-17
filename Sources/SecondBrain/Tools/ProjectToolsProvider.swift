@@ -42,6 +42,26 @@ final class ProjectToolsProvider {
         }.value
     }
 
+    /// RAG-ретрив по докам проекта для обычного хода чата с источником
+    /// «Проект» (задача 31). nil — нет репозитория/эмбеддера или пусто:
+    /// чат идёт без контекста, чип «База» объясняет причину.
+    func projectRetrieval(question: String) async -> RagRetrievalOutcome? {
+        guard let root = currentRepoRoot(),
+              let resolved = router?.resolveEmbeddingProvider(for: .embedding) else { return nil }
+        let tag = "\(resolved.model)|\(resolved.provider.dimension)"
+        return await docsIndex.retrievalOutcome(repoRoot: root,
+                                                embedder: resolved.provider,
+                                                model: resolved.model,
+                                                tag: tag,
+                                                question: question)
+    }
+
+    /// Число чанков в индексе доков; nil — репозиторий не выбран/не строился.
+    func docsChunkCount() async -> Int? {
+        guard let root = currentRepoRoot() else { return nil }
+        return await docsIndex.chunkCount(repoRoot: root)
+    }
+
     /// Статистика индекса доков для вкладки «Инструменты» (задача 28);
     /// nil — репозиторий не выбран или индекс ещё не строился.
     func docsIndexStats() async -> ProjectDocsIndexService.DocsIndexStats? {

@@ -69,6 +69,13 @@ struct ChatDetailView: View {
     /// (нет эмбеддера / пусто / устарел / готов / индексация) и запускает
     /// индексацию прямо из чата.
     @ObservedObject var ragIndexManager: RagIndexManager
+    /// Провайдер инструментов проекта (задача 31): число чанков индекса доков
+    /// для чипа «База: Проект».
+    let projectToolsProvider: ProjectToolsProvider
+    /// Кэш числа чанков доков (async-источник; обновляется task'ом ниже).
+    @State private var projectDocsChunks: Int?
+    /// Доступные провайдеры с реальными моделями для пикера (задача 32).
+    @State private var modelChoices: [ChatViewModel.ProviderModelChoices] = []
     /// Показ попапа настроек RAG (задача 23).
     @State private var showsRagTuning = false
     /// Открытие окна настроек из пикера модели (задача 24).
@@ -97,19 +104,22 @@ struct ChatDetailView: View {
             statuses: mcpViewModel.statuses)
     }
 
-    /// Сводка чипа «База» (задача 28); availabilityTick — доступность
+    /// Сводка чипа «База» (задачи 28, 31); availabilityTick — доступность
     /// эмбеддера перечитывается после возврата из настроек.
     private var ragChipSummary: RagChipSummary? {
         _ = availabilityTick
         return RagChipSummary.make(
             ragEnabled: chat?.configuration.ragEnabled ?? false,
+            source: chat?.configuration.knowledgeSource ?? .vault,
             embedderAvailable: ragIndexManager.currentEmbeddingTag() != nil,
             chunkCount: ragIndexManager.chunkCount,
             indexTag: ragIndexManager.embeddingTag,
             currentTag: ragIndexManager.currentEmbeddingTag()?.tag,
             needsFullReindex: ragIndexManager.needsFullReindex,
             isIndexing: ragIndexManager.progress != nil,
-            progressFraction: ragIndexManager.progress?.fraction)
+            progressFraction: ragIndexManager.progress?.fraction,
+            projectRepo: ProjectRepoState.evaluate(path: settingsStore.settings.projectRepoPath),
+            docsChunks: projectDocsChunks)
     }
 
     /// Состояние мастера; читает availabilityTick, чтобы перечитываться
@@ -149,6 +159,13 @@ struct ChatDetailView: View {
         .onReceive(NotificationCenter.default.publisher(
             for: NSWindow.didBecomeKeyNotification)) { _ in
             availabilityTick &+= 1
+        }
+        // Число чанков индекса доков для чипа «База: Проект» (задача 31)
+        // и список доступных моделей (задача 32); обновляется при смене
+        // репо/чата/фокуса окна (availabilityTick ловит новые ключи/рантайм).
+        .task(id: "\(availabilityTick)|\(settingsStore.settings.projectRepoPath)|\(chat?.id.uuidString ?? "")") {
+            projectDocsChunks = await projectToolsProvider.docsChunkCount()
+            modelChoices = await viewModel.availableModelChoices()
         }
         // Редактор модели чата (задача 29) — якорь на корне detail.
         .popover(isPresented: $showsModelEditor,
@@ -318,7 +335,8 @@ struct ChatDetailView: View {
                         onReindex: { full in ragIndexManager.reindex(fullRebuild: full) },
                         onOpenSettings: { tab in
                             SettingsTabRouter.open(tab, openSettings: { openSettings() })
-                        })
+                        },
+                        onSelectSource: { viewModel.knowledgeSourceBinding = $0 })
                 }
                 ToolChipsRow(
                     summaries: toolSourceSummaries,
@@ -391,10 +409,10 @@ struct ChatDetailView: View {
         }
     }
 
-    /// Пикер модели: провайдеры с capability .chat (локальные помечены);
-    /// «Авто» — вернуться к выбору роутера. Недоступные провайдеры выбираемы
-    /// (задача 24): причина видна в названии, путь решения — «Открыть
-    /// настройки…»; серые некликабельные пункты только запутывали.
+    /// Пикер модели (задача 32): ТОЛЬКО доступные провайдеры и их реальные
+    /// модели — Ollama показывает фактически установленные (из /api/tags),
+    /// облако — актуальный список при наличии ключа. Нет ключа — провайдера
+    /// в списке нет; «Добавить провайдера…» ведёт к ключам.
     private var modelPicker: some View {
         Menu {
             Button {
@@ -406,38 +424,37 @@ struct ChatDetailView: View {
                     Text("Авто (роутер)")
                 }
             }
-            Divider()
-            ForEach(viewModel.chatProviderOptions) { descriptor in
-                Button {
-                    viewModel.setModel(providerID: descriptor.id, model: descriptor.defaultModel)
-                } label: {
-                    if chat?.configuration.providerID == descriptor.id {
-                        Label(providerMenuTitle(descriptor), systemImage: "checkmark")
-                    } else {
-                        Text(providerMenuTitle(descriptor))
+            ForEach(modelChoices) { choice in
+                Section(choice.descriptor.isLocal
+                        ? "\(choice.descriptor.displayName)"
+                        : choice.descriptor.displayName) {
+                    ForEach(choice.models, id: \.self) { model in
+                        Button {
+                            viewModel.setModel(providerID: choice.descriptor.id, model: model)
+                        } label: {
+                            let isCurrent = chat?.configuration.providerID == choice.descriptor.id
+                                && chat?.configuration.model == model
+                            if isCurrent {
+                                Label(model, systemImage: "checkmark")
+                            } else {
+                                Text(model)
+                            }
+                        }
                     }
                 }
             }
             Divider()
             Button("Своя модель…") { showsModelEditor = true }
-            Button("Открыть настройки…") { openSettings() }
-            Text("Ключи облачных провайдеров — вкладка «Провайдеры», запуск Ollama/WhisperKit — «Локальные модели».")
+            Button("Добавить провайдера…") {
+                SettingsTabRouter.open(.providers, openSettings: { openSettings() })
+            }
+            if modelChoices.isEmpty {
+                Text("Нет доступных моделей: добавьте ключ («Провайдеры») или запустите Ollama.")
+            }
         } label: {
             Label(currentModelTitle, systemImage: "cpu")
         }
-        .help("Модель для этого чата: выбор провайдера и путь к настройкам ключей")
-    }
-
-    /// Название пункта меню модели с причиной недоступности.
-    private func providerMenuTitle(_ descriptor: ProviderDescriptor) -> String {
-        let name = descriptor.isLocal
-            ? "\(descriptor.displayName) — локально"
-            : descriptor.displayName
-        var title = descriptor.defaultModel.map { "\(name) · \($0)" } ?? name
-        if !viewModel.registry.isAvailable(descriptor.id) {
-            title += descriptor.isLocal ? " (не запущен)" : " (нет ключа)"
-        }
-        return title
+        .help("Модель для этого чата: показаны только реально доступные")
     }
 
     private var currentModelTitle: String {
@@ -468,8 +485,10 @@ struct ChatModelEditor: View {
                 .font(.headline)
             Picker("Провайдер", selection: $draftProviderID) {
                 Text("Авто (роутер)").tag(ProviderID?.none)
-                ForEach(viewModel.chatProviderOptions) { descriptor in
-                    Text(providerTitle(descriptor)).tag(Optional(descriptor.id))
+                // Только доступные провайдеры (задача 32): нет ключа — нет пункта.
+                ForEach(viewModel.chatProviderOptions
+                    .filter { viewModel.registry.isAvailable($0.id) }) { descriptor in
+                    Text(descriptor.displayName).tag(Optional(descriptor.id))
                 }
             }
             TextField("Модель (например deepseek/deepseek-r1)", text: $draftModel)
@@ -499,13 +518,6 @@ struct ChatModelEditor: View {
         }
     }
 
-    private func providerTitle(_ descriptor: ProviderDescriptor) -> String {
-        var title = descriptor.displayName
-        if !viewModel.registry.isAvailable(descriptor.id) {
-            title += descriptor.isLocal ? " (не запущен)" : " (нет ключа)"
-        }
-        return title
-    }
 }
 
 /// Попап тонких настроек RAG текущего чата (задача 23): topK, порог

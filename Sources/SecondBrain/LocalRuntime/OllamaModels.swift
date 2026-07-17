@@ -14,8 +14,17 @@ struct OllamaModel: Identifiable, Hashable {
     var sizeBytes: Int64?
     var quantization: String?   // "Q4_K_M"
     var parameterSize: String?  // "8.2B"
+    /// capabilities из /api/tags (новые Ollama): completion/tools/embedding.
+    /// nil — старый сервер без поля (считаем чат-пригодной).
+    var capabilities: [String]? = nil
 
     var id: String { name }
+
+    /// Пригодна для чата (задача 32): у эмбеддинг-моделей (bge-m3, nomic)
+    /// нет capability completion — в пикере моделей чата им не место.
+    var supportsChat: Bool {
+        capabilities.map { $0.contains("completion") } ?? true
+    }
 
     /// Компактная строка метаданных: «4,7 ГБ · Q4_K_M · 8B».
     var detailLine: String? {
@@ -70,6 +79,7 @@ enum OllamaParsing {
             let name: String
             let size: Int64?
             let details: Details?
+            let capabilities: [String]?
         }
         let models: [Model]?
     }
@@ -80,7 +90,8 @@ enum OllamaParsing {
             OllamaModel(name: $0.name,
                         sizeBytes: $0.size,
                         quantization: $0.details?.quantization_level,
-                        parameterSize: $0.details?.parameter_size)
+                        parameterSize: $0.details?.parameter_size,
+                        capabilities: $0.capabilities)
         }
     }
 

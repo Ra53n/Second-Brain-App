@@ -105,13 +105,16 @@ private struct ToolSourceChip: View {
 
 // MARK: - Чип базы знаний (RAG)
 
-/// Чип «База» (задача 28): состояние RAG видно без единого клика, поповер —
-/// объяснение и действие (индексировать/переиндексировать/открыть настройки).
+/// Чип «База» (задачи 28, 31): выбранный источник знаний и его состояние
+/// видны без единого клика; поповер — переключатель источника (vault/проект)
+/// и действие (индексировать/переиндексировать/открыть настройки).
 struct RagStatusChip: View {
     let summary: RagChipSummary
-    /// Запустить индексацию (true — полная переиндексация).
+    /// Запустить индексацию vault (true — полная переиндексация).
     let onReindex: (Bool) -> Void
     let onOpenSettings: (SettingsTab) -> Void
+    /// Смена источника знаний чата (задача 31).
+    let onSelectSource: (KnowledgeSource) -> Void
 
     @State private var showsPopover = false
 
@@ -144,6 +147,17 @@ struct RagStatusChip: View {
             VStack(alignment: .leading, spacing: 8) {
                 Text("База знаний (RAG)")
                     .font(.headline)
+                // Единая точка выбора источника (задача 31): по чему отвечает
+                // этот чат — заметки vault или документация репозитория.
+                Picker("Источник", selection: Binding(
+                    get: { summary.source },
+                    set: { onSelectSource($0) }
+                )) {
+                    Text("Vault (заметки)").tag(KnowledgeSource.vault)
+                    Text("Проект (репозиторий)").tag(KnowledgeSource.project)
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
                 Text(summary.detail)
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -152,7 +166,7 @@ struct RagStatusChip: View {
                 popoverActions
             }
             .padding(12)
-            .frame(width: 300, alignment: .leading)
+            .frame(width: 320, alignment: .leading)
         }
     }
 
@@ -162,7 +176,7 @@ struct RagStatusChip: View {
         case .ready:
             Button("Настройки индекса…") {
                 showsPopover = false
-                onOpenSettings(.general)
+                onOpenSettings(summary.source == .vault ? .general : .tools)
             }
         case .indexing:
             Text("Индексация идёт — можно продолжать работу.")
@@ -173,14 +187,24 @@ struct RagStatusChip: View {
                 onOpenSettings(.localModels)
             }
         case .empty:
-            Button("Индексировать") {
-                showsPopover = false
-                onReindex(false)
+            if summary.source == .vault {
+                Button("Индексировать") {
+                    showsPopover = false
+                    onReindex(false)
+                }
+            } else {
+                Text("Задайте вопрос — индекс построится автоматически.")
+                    .font(.caption)
             }
         case .needsReindex:
             Button("Переиндексировать заново") {
                 showsPopover = false
                 onReindex(true)
+            }
+        case .repoMissing:
+            Button("Выбрать репозиторий…") {
+                showsPopover = false
+                onOpenSettings(.tools)
             }
         }
     }

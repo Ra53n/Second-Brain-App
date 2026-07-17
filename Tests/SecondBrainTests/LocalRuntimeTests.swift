@@ -6,6 +6,21 @@
 import XCTest
 @testable import SecondBrain
 
+
+// MARK: - Возможности моделей из /api/tags (задача 32)
+
+final class OllamaTagsCapabilitiesTests: XCTestCase {
+
+    func testParseTagsReadsCapabilitiesAndChatFilter() throws {
+        let json = #"{"models":[{"name":"qwen2.5:7b","size":1,"details":{},"capabilities":["completion","tools"]},{"name":"bge-m3:latest","size":1,"details":{},"capabilities":["embedding"]},{"name":"old-model","size":1,"details":{}}]}"#
+        let models = try OllamaParsing.parseTags(Data(json.utf8))
+        XCTAssertEqual(models.count, 3)
+        XCTAssertTrue(models[0].supportsChat)
+        XCTAssertFalse(models[1].supportsChat, "эмбеддинг-модели не место в пикере чата")
+        XCTAssertTrue(models[2].supportsChat, "старый сервер без capabilities — считаем чатовой")
+    }
+}
+
 // MARK: - Мок процесса
 
 private final class MockProcess: ManagedProcess {

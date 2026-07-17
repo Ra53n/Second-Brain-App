@@ -46,6 +46,41 @@ actor ProjectDocsIndexService {
         }
     }
 
+    /// RAG-ретрив для обычного хода чата с источником «Проект» (задача 31):
+    /// тот же пайплайн, что helpBlock, но с источниками для UI цитат.
+    /// Имена файлов доков в vault не резолвятся — UI покажет их
+    /// некликабельными, это честно.
+    func retrievalOutcome(repoRoot: URL,
+                          embedder: EmbeddingProvider,
+                          model: String?,
+                          tag: String,
+                          question: String,
+                          topK: Int = ProjectDocsIndexService.topK) async -> RagRetrievalOutcome? {
+        do {
+            let index = try openIndex(repoRoot: repoRoot)
+            try await sync(index: index, repoRoot: repoRoot,
+                           embedder: embedder, model: model, tag: tag)
+            let hits = try await topHits(index: index, embedder: embedder, model: model,
+                                         question: question, topK: topK)
+            guard !hits.isEmpty else { return nil }
+            let block = Self.buildBlock(hits: hits.map {
+                (path: $0.path, heading: $0.heading, text: $0.text)
+            })
+            let sources = hits.map { hit in
+                RagSource(noteName: hit.path, filePath: hit.path,
+                          headingPath: hit.heading, score: Double(hit.score))
+            }
+            return RagRetrievalOutcome(block: block, sources: sources)
+        } catch {
+            return nil
+        }
+    }
+
+    /// Число чанков в индексе доков; nil — индекс не строился.
+    func chunkCount(repoRoot: URL) -> Int? {
+        stats(repoRoot: repoRoot)?.chunks
+    }
+
     /// Статистика индекса доков для вкладки «Инструменты» (задача 28).
     struct DocsIndexStats: Equatable {
         let files: Int
@@ -117,19 +152,33 @@ actor ProjectDocsIndexService {
         index.updatedAt = Date()
     }
 
+    /// Top-K чанков по вопросу с оценками (общее ядро retrieve/retrievalOutcome).
+    private func topHits(index: RagIndex, embedder: EmbeddingProvider, model: String?,
+                         question: String,
+                         topK: Int) async throws -> [(path: String, heading: String,
+                                                      text: String, score: Float)] {
+        let (chunks, vectors) = try index.loadAll()
+        guard !chunks.isEmpty,
+              let query = try await embedder.embed([question], model: model).first else { return [] }
+        return Vector.topK(query: Vector.normalize(query), matrix: vectors, k: topK)
+            .compactMap { hit in
+                guard hit.index >= 0, hit.index < chunks.count else { return nil }
+                let stored = chunks[hit.index]
+                return (path: stored.chunk.filePath,
+                        heading: stored.chunk.headingPath,
+                        text: stored.chunk.text,
+                        score: hit.score)
+            }
+    }
+
     /// Top-K чанков по вопросу → текст блока с источниками.
     private func retrieve(index: RagIndex, embedder: EmbeddingProvider, model: String?,
                           question: String, topK: Int) async throws -> String? {
-        let (chunks, vectors) = try index.loadAll()
-        guard !chunks.isEmpty,
-              let query = try await embedder.embed([question], model: model).first else { return nil }
-        let hits = Vector.topK(query: Vector.normalize(query), matrix: vectors, k: topK)
+        let hits = try await topHits(index: index, embedder: embedder, model: model,
+                                     question: question, topK: topK)
         guard !hits.isEmpty else { return nil }
-        return Self.buildBlock(hits: hits.map { hit in
-            let stored = chunks[hit.index]
-            return (path: stored.chunk.filePath,
-                    heading: stored.chunk.headingPath,
-                    text: stored.chunk.text)
+        return Self.buildBlock(hits: hits.map {
+            (path: $0.path, heading: $0.heading, text: $0.text)
         })
     }
 

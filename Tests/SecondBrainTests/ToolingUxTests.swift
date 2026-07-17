@@ -152,21 +152,55 @@ final class ToolSourceSummaryTests: XCTestCase {
 final class RagChipSummaryTests: XCTestCase {
 
     private func make(ragEnabled: Bool = true,
+                      source: KnowledgeSource = .vault,
                       embedderAvailable: Bool = true,
                       chunkCount: Int = 100,
                       indexTag: String? = "m|8",
                       currentTag: String? = "m|8",
                       needsFullReindex: Bool = false,
                       isIndexing: Bool = false,
-                      progressFraction: Double? = nil) -> RagChipSummary? {
+                      progressFraction: Double? = nil,
+                      projectRepo: ProjectRepoState = .notConfigured,
+                      docsChunks: Int? = nil) -> RagChipSummary? {
         RagChipSummary.make(ragEnabled: ragEnabled,
+                            source: source,
                             embedderAvailable: embedderAvailable,
                             chunkCount: chunkCount,
                             indexTag: indexTag,
                             currentTag: currentTag,
                             needsFullReindex: needsFullReindex,
                             isIndexing: isIndexing,
-                            progressFraction: progressFraction)
+                            progressFraction: progressFraction,
+                            projectRepo: projectRepo,
+                            docsChunks: docsChunks)
+    }
+
+    // MARK: Источник «Проект» (задача 31)
+
+    func testProjectSourceStates() {
+        // Репозиторий не выбран.
+        let missing = make(source: .project)
+        XCTAssertEqual(missing?.state, .repoMissing)
+        XCTAssertEqual(missing?.health, .warning)
+
+        // Репо есть, эмбеддера нет.
+        XCTAssertEqual(make(source: .project, embedderAvailable: false,
+                            projectRepo: .ready(path: "/tmp"))?.state, .noEmbedder)
+
+        // Индекс доков ещё не строился — не ошибка (ленивая сборка).
+        let lazyEmpty = make(source: .project, projectRepo: .ready(path: "/tmp"))
+        XCTAssertEqual(lazyEmpty?.state, .empty)
+        XCTAssertEqual(lazyEmpty?.health, .unknown)
+
+        // Готов.
+        let ready = make(source: .project, projectRepo: .ready(path: "/tmp"),
+                         docsChunks: 42)
+        XCTAssertEqual(ready?.state, .ready(chunks: 42))
+        XCTAssertEqual(ready?.title, "База: Проект · 42")
+    }
+
+    func testVaultTitleCarriesSource() {
+        XCTAssertEqual(make()?.title, "База: Vault · 100")
     }
 
     func testDisabledGivesNil() {
@@ -177,7 +211,7 @@ final class RagChipSummaryTests: XCTestCase {
         let chip = make()
         XCTAssertEqual(chip?.state, .ready(chunks: 100))
         XCTAssertEqual(chip?.health, .ok)
-        XCTAssertEqual(chip?.title, "База · 100")
+        XCTAssertEqual(chip?.title, "База: Vault · 100")
     }
 
     func testNoEmbedderState() {
@@ -324,6 +358,50 @@ final class ChatProviderAvailabilityTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: fileURL) }
         let viewModel = ChatViewModel(router: router, registry: registry, fileURL: fileURL)
         XCTAssertFalse(viewModel.chatProviderAvailable)
+    }
+}
+
+// MARK: - Пикер моделей (задача 32)
+
+@MainActor
+final class AvailableModelChoicesTests: XCTestCase {
+
+    private final class StubChat: ChatProvider {
+        func send(_ messages: [ChatMessageDTO], settings: ChatSettings) async throws -> ChatResult {
+            ChatResult(text: "ок", usage: nil)
+        }
+        func stream(_ messages: [ChatMessageDTO],
+                    settings: ChatSettings) -> AsyncThrowingStream<ChatStreamEvent, Error> {
+            AsyncThrowingStream { $0.finish() }
+        }
+    }
+
+    func testOnlyAvailableProvidersListedWithCuratedModels() async {
+        let registry = ProviderRegistry()
+        registry.register(ProviderDescriptor(id: "deepseek", displayName: "DeepSeek",
+                                             capabilities: [.chat], isLocal: false,
+                                             defaultModel: "deepseek-chat"),
+                          chat: StubChat(), isAvailable: { true })
+        registry.register(ProviderDescriptor(id: "openai", displayName: "OpenAI",
+                                             capabilities: [.chat], isLocal: false,
+                                             defaultModel: "gpt-4o-mini"),
+                          chat: StubChat(), isAvailable: { false })
+        let router = FunctionRouter(registry: registry, config: FunctionRoutingConfig())
+        let fileURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("choices-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: fileURL) }
+        let viewModel = ChatViewModel(router: router, registry: registry, fileURL: fileURL)
+
+        let choices = await viewModel.availableModelChoices()
+        XCTAssertEqual(choices.map(\.id), ["deepseek"], "недоступный OpenAI скрыт")
+        XCTAssertEqual(choices.first?.models, ["deepseek-chat", "deepseek-reasoner"],
+                       "кураторский список DeepSeek")
+    }
+
+    func testCuratedListsCoverRegisteredCloudProviders() {
+        for id: ProviderID in ["openai", "gemini", "deepseek", "openrouter"] {
+            XCTAssertFalse(ChatViewModel.curatedChatModels[id]?.isEmpty ?? true, id.rawValue)
+        }
     }
 }
 

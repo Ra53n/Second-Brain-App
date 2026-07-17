@@ -469,6 +469,26 @@ final class ProjectToolsConfigMigrationTests: XCTestCase {
         XCTAssertTrue(loaded.projectToolsEnabled)
     }
 
+    /// Задача 31: источник знаний — миграция старого JSON и round-trip.
+    func testKnowledgeSourceMigrationAndRoundTrip() throws {
+        // Старый конфиг без поля → vault.
+        let old = try JSONDecoder().decode(ChatConfiguration.self,
+                                           from: Data(#"{"ragEnabled":true}"#.utf8))
+        XCTAssertEqual(old.knowledgeSource, .vault)
+
+        // Незнакомое значение из будущего → vault, не падение.
+        let future = try JSONDecoder().decode(
+            ChatConfiguration.self,
+            from: Data(#"{"knowledgeSource":"galaxy"}"#.utf8))
+        XCTAssertEqual(future.knowledgeSource, .vault)
+
+        var config = ChatConfiguration()
+        config.knowledgeSource = .project
+        let loaded = try JSONDecoder().decode(ChatConfiguration.self,
+                                              from: JSONEncoder().encode(config))
+        XCTAssertEqual(loaded.knowledgeSource, .project)
+    }
+
     /// Шаблон git MCP-сервера: uvx mcp-server-git, выключен по умолчанию.
     func testGitTemplate() {
         let bare = MCPServer.gitTemplate()

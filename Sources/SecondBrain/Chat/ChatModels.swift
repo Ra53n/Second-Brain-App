@@ -102,6 +102,19 @@ struct ChatMessage: Identifiable, Codable, Equatable {
     }
 }
 
+/// Источник знаний чата (задача 31): по какой базе отвечает RAG.
+/// Vault — заметки пользователя; project — README/docs выбранного репозитория.
+/// Один источник на чат — RAG, /help и инструменты согласованы, миры не
+/// смешиваются (раньше vault-ретрив и git-инструменты противоречили друг другу).
+enum KnowledgeSource: String, Codable {
+    case vault, project
+
+    init(from decoder: Decoder) throws {
+        let raw = try decoder.singleValueContainer().decode(String.self)
+        self = KnowledgeSource(rawValue: raw) ?? .vault
+    }
+}
+
 /// Настройки генерации per-чат. providerID/model nil → роутер функции .chat
 /// решает сам (пользователь ничего не выбирал — работает дефолт).
 struct ChatConfiguration: Equatable, Codable {
@@ -114,6 +127,8 @@ struct ChatConfiguration: Equatable, Codable {
     // --- RAG (задача 14) ---
     /// Тумблер «Отвечать по базе» (persisted per-чат).
     var ragEnabled: Bool = false
+    /// Источник базы (задача 31): vault или репозиторий проекта.
+    var knowledgeSource: KnowledgeSource = .vault
     var ragTopK: Int = 4
     /// Порог косинусной близости; 0 — выключен.
     var ragMinScore: Double = 0
@@ -139,6 +154,7 @@ struct ChatConfiguration: Equatable, Codable {
     enum CodingKeys: String, CodingKey {
         case providerID, model, temperature, historyWindow
         case ragEnabled, ragTopK, ragMinScore, ragRerankEnabled, ragQueryRewrite
+        case knowledgeSource
         case enabledMCPServerIDs
         case projectToolsEnabled
     }
@@ -151,6 +167,8 @@ struct ChatConfiguration: Equatable, Codable {
         temperature = try c.decodeIfPresent(Double.self, forKey: .temperature) ?? d.temperature
         historyWindow = try c.decodeIfPresent(Int.self, forKey: .historyWindow) ?? d.historyWindow
         ragEnabled = try c.decodeIfPresent(Bool.self, forKey: .ragEnabled) ?? d.ragEnabled
+        knowledgeSource = try c.decodeIfPresent(KnowledgeSource.self, forKey: .knowledgeSource)
+            ?? d.knowledgeSource
         ragTopK = try c.decodeIfPresent(Int.self, forKey: .ragTopK) ?? d.ragTopK
         ragMinScore = try c.decodeIfPresent(Double.self, forKey: .ragMinScore) ?? d.ragMinScore
         ragRerankEnabled = try c.decodeIfPresent(Bool.self, forKey: .ragRerankEnabled)

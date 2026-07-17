@@ -145,6 +145,49 @@ final class ChatViewModel: ObservableObject {
         registry.descriptors(supporting: .chat)
     }
 
+    /// Реальные модели одного ДОСТУПНОГО провайдера — секция пикера (задача 32).
+    struct ProviderModelChoices: Identifiable {
+        let descriptor: ProviderDescriptor
+        let models: [String]
+        var id: ProviderID { descriptor.id }
+    }
+
+    /// Кураторские списки моделей облачных провайдеров (задача 32): актуальные
+    /// чат-модели на 2026-07; произвольная строка — через «Своя модель…».
+    static let curatedChatModels: [ProviderID: [String]] = [
+        "openai": ["gpt-4o-mini", "gpt-4o", "o3-mini"],
+        "gemini": ["gemini-2.0-flash", "gemini-2.5-flash", "gemini-2.5-pro"],
+        "deepseek": ["deepseek-chat", "deepseek-reasoner"],
+        "openrouter": ["deepseek/deepseek-chat", "deepseek/deepseek-r1",
+                       "openai/gpt-4o-mini", "anthropic/claude-sonnet-4"]
+    ]
+
+    /// Только ДОСТУПНЫЕ провайдеры с реальными списками моделей (задача 32):
+    /// нет ключа/рантайма — провайдера в пикере нет вообще; Ollama отдаёт
+    /// фактически установленные чат-модели из /api/tags.
+    func availableModelChoices() async -> [ProviderModelChoices] {
+        var result: [ProviderModelChoices] = []
+        for descriptor in registry.descriptors(supporting: .chat)
+        where registry.isAvailable(descriptor.id) {
+            if let ollama = registry.chatProvider(for: descriptor.id) as? OllamaProvider {
+                // Установленные модели; сервер лежит/пуст → секции нет (честно).
+                let installed = (try? await ollama.client.installedModels()) ?? []
+                let chatModels = installed.filter(\.supportsChat).map(\.name)
+                if !chatModels.isEmpty {
+                    result.append(ProviderModelChoices(descriptor: descriptor,
+                                                       models: chatModels))
+                }
+                continue
+            }
+            let curated = Self.curatedChatModels[descriptor.id]
+                ?? descriptor.defaultModel.map { [$0] } ?? []
+            if !curated.isEmpty {
+                result.append(ProviderModelChoices(descriptor: descriptor, models: curated))
+            }
+        }
+        return result
+    }
+
     /// Выбор провайдера/модели для текущего чата (nil id — вернуться к роутеру).
     func setModel(providerID: ProviderID?, model: String?) {
         guard let index = selectedIndex else { return }
@@ -158,6 +201,15 @@ final class ChatViewModel: ObservableObject {
         set {
             guard let index = selectedIndex else { return }
             chats[index].configuration.ragEnabled = newValue
+        }
+    }
+
+    /// Источник знаний текущего чата (задача 31): vault или репозиторий проекта.
+    var knowledgeSourceBinding: KnowledgeSource {
+        get { selectedChat?.configuration.knowledgeSource ?? .vault }
+        set {
+            guard let index = selectedIndex else { return }
+            chats[index].configuration.knowledgeSource = newValue
         }
     }
 

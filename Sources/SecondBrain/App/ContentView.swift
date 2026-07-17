@@ -136,16 +136,24 @@ struct ContentView: View {
     private func wireRagProvider() {
         let chatViewModel = model.chatViewModel
         guard chatViewModel.ragProvider == nil else { return }
+        let projectProvider = model.projectToolsProvider
         chatViewModel.ragProvider = { [weak ragIndexManager = model.ragIndexManager,
                                        weak functionRouter = model.functionRouter] chat, query in
-            guard let manager = ragIndexManager else { return nil }
-            let needsLLM = chat.configuration.ragQueryRewrite || chat.configuration.ragRerankEnabled
-            // Задача 28: у реранка/переписывания своя функция роутинга.
-            let chatProvider = needsLLM ? functionRouter?.resolveChatProvider(for: .ragRerank) : nil
-            return await manager.retrieveForChat(query: query,
-                                                 history: chat.messages,
-                                                 configuration: chat.configuration,
-                                                 chatProvider: chatProvider)
+            // Задача 31: один источник знаний на чат — vault ИЛИ репозиторий
+            // проекта; RAG, /help и инструменты больше не смешивают миры.
+            switch chat.configuration.knowledgeSource {
+            case .project:
+                return await projectProvider.projectRetrieval(question: query)
+            case .vault:
+                guard let manager = ragIndexManager else { return nil }
+                let needsLLM = chat.configuration.ragQueryRewrite || chat.configuration.ragRerankEnabled
+                // Задача 28: у реранка/переписывания своя функция роутинга.
+                let chatProvider = needsLLM ? functionRouter?.resolveChatProvider(for: .ragRerank) : nil
+                return await manager.retrieveForChat(query: query,
+                                                     history: chat.messages,
+                                                     configuration: chat.configuration,
+                                                     chatProvider: chatProvider)
+            }
         }
     }
 
@@ -198,6 +206,7 @@ struct ContentView: View {
                            settingsStore: model.settingsStore,
                            mcpViewModel: model.mcpServersViewModel,
                            ragIndexManager: model.ragIndexManager,
+                           projectToolsProvider: model.projectToolsProvider,
                            resolveWikilink: { vaultManager.linkIndex?.resolve($0) })
                 .onAppear {
                     wireRagProvider()

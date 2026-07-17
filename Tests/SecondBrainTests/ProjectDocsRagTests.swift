@@ -131,6 +131,21 @@ final class ProjectDocsRagTests: XCTestCase {
                       "\(embedder.receivedModels)")
     }
 
+    /// Задача 31: ретрив для источника «Проект» несёт источники с оценками.
+    func testRetrievalOutcomeCarriesSources() async {
+        let outcome = await service.retrievalOutcome(repoRoot: repoRoot,
+                                                     embedder: embedder,
+                                                     model: nil,
+                                                     tag: "mock|8",
+                                                     question: "где хранятся чаты chats.json",
+                                                     topK: 2)
+        XCTAssertNotNil(outcome)
+        XCTAssertTrue(outcome?.block.contains("chats.json") == true)
+        XCTAssertFalse(outcome?.sources.isEmpty ?? true)
+        XCTAssertTrue(outcome?.sources.contains { $0.filePath == "docs/DATA.md" } == true,
+                      "\(outcome?.sources.map(\.filePath) ?? [])")
+    }
+
     /// Задача 28: stats nil до первой индексации, заполнен после; reset обнуляет.
     func testStatsAndReset() async {
         let statsBefore = await service.stats(repoRoot: repoRoot)
