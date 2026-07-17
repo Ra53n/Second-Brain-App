@@ -190,6 +190,31 @@ final class RagBindingsTests: XCTestCase {
         XCTAssertTrue(viewModel.ragQueryRewriteBinding)
     }
 
+    /// Задача 24: выбор недоступного провайдера сохраняется как переопределение
+    /// (пункты меню больше не задизейблены), а ошибка отправки подсказывает путь.
+    func testUnavailableProviderSelectableAndErrorHintsSettings() {
+        let registry = ProviderRegistry()
+        // Провайдер без реализации chat → недоступен для отправки.
+        registry.register(ProviderDescriptor(id: "cloud", displayName: "Cloud",
+                                             capabilities: [.chat], isLocal: false,
+                                             defaultModel: "m-1"),
+                          isAvailable: { false })
+        let router = FunctionRouter(registry: registry, config: FunctionRoutingConfig())
+        let fileURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("unavail-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: fileURL) }
+        let viewModel = ChatViewModel(router: router, registry: registry, fileURL: fileURL)
+
+        viewModel.setModel(providerID: "cloud", model: "m-1")
+        XCTAssertEqual(viewModel.selectedChat?.configuration.providerID, "cloud",
+                       "выбор сохраняется даже для недоступного провайдера")
+
+        viewModel.input = "вопрос"
+        viewModel.send()
+        XCTAssertTrue(viewModel.selectedChat?.errorText?.contains("Настройки") == true,
+                      "баннер подсказывает, где настроить ключи: \(viewModel.selectedChat?.errorText ?? "nil")")
+    }
+
     func testBindingsWithoutSelectionAreNoOpWithDefaults() {
         let viewModel = makeViewModel()
         viewModel.selectedChatID = nil

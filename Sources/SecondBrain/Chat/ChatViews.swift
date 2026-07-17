@@ -60,6 +60,8 @@ struct ChatDetailView: View {
     @ObservedObject var viewModel: ChatViewModel
     /// Показ попапа настроек RAG (задача 23).
     @State private var showsRagTuning = false
+    /// Открытие окна настроек из пикера модели (задача 24).
+    @Environment(\.openSettings) private var openSettings
     /// Резолвер [[wikilink]] → URL заметки (LinkIndex задачи 04); nil — vault закрыт.
     var resolveWikilink: (String) -> URL? = { _ in nil }
     /// Список MCP-серверов для меню инструментов (задача 15).
@@ -281,7 +283,9 @@ struct ChatDetailView: View {
     }
 
     /// Пикер модели: провайдеры с capability .chat (локальные помечены);
-    /// «Авто» — вернуться к выбору роутера.
+    /// «Авто» — вернуться к выбору роутера. Недоступные провайдеры выбираемы
+    /// (задача 24): причина видна в названии, путь решения — «Открыть
+    /// настройки…»; серые некликабельные пункты только запутывали.
     private var modelPicker: some View {
         Menu {
             Button {
@@ -298,22 +302,32 @@ struct ChatDetailView: View {
                 Button {
                     viewModel.setModel(providerID: descriptor.id, model: descriptor.defaultModel)
                 } label: {
-                    let name = descriptor.isLocal
-                        ? "\(descriptor.displayName) — локально"
-                        : descriptor.displayName
-                    let title = descriptor.defaultModel.map { "\(name) · \($0)" } ?? name
                     if chat?.configuration.providerID == descriptor.id {
-                        Label(title, systemImage: "checkmark")
+                        Label(providerMenuTitle(descriptor), systemImage: "checkmark")
                     } else {
-                        Text(title)
+                        Text(providerMenuTitle(descriptor))
                     }
                 }
-                .disabled(!viewModel.registry.isAvailable(descriptor.id))
             }
+            Divider()
+            Button("Открыть настройки…") { openSettings() }
+            Text("Ключи облачных провайдеров — вкладка «Провайдеры», запуск Ollama/WhisperKit — «Локальные модели».")
         } label: {
             Label(currentModelTitle, systemImage: "cpu")
         }
-        .help("Модель для этого чата")
+        .help("Модель для этого чата: выбор провайдера и путь к настройкам ключей")
+    }
+
+    /// Название пункта меню модели с причиной недоступности.
+    private func providerMenuTitle(_ descriptor: ProviderDescriptor) -> String {
+        let name = descriptor.isLocal
+            ? "\(descriptor.displayName) — локально"
+            : descriptor.displayName
+        var title = descriptor.defaultModel.map { "\(name) · \($0)" } ?? name
+        if !viewModel.registry.isAvailable(descriptor.id) {
+            title += descriptor.isLocal ? " (не запущен)" : " (нет ключа)"
+        }
+        return title
     }
 
     private var currentModelTitle: String {

@@ -15,21 +15,22 @@ import SwiftUI
 /// popover с полной панелью.
 struct SyncStatusButton: View {
     @ObservedObject var viewModel: SyncViewModel
-    @State private var showsPanel = false
 
     var body: some View {
         Button {
-            showsPanel.toggle()
+            viewModel.showsPanel.toggle()
         } label: {
             Label("Синхронизация", systemImage: iconName)
                 .foregroundStyle(iconColor)
         }
         .help(helpText)
-        .popover(isPresented: $showsPanel, arrowEdge: .bottom) {
+        // Состояние показа — в SyncViewModel (задача 24): локальный @State
+        // сбрасывался при пересоздании ToolbarItem, и панель не открывалась.
+        .popover(isPresented: $viewModel.showsPanel, arrowEdge: .bottom) {
             GitSyncPanel(viewModel: viewModel)
         }
         // Обновляем статус при каждом открытии панели: дёшево и всегда свежо.
-        .onChange(of: showsPanel) { _, shown in
+        .onChange(of: viewModel.showsPanel) { _, shown in
             if shown { Task { await viewModel.refresh() } }
         }
     }

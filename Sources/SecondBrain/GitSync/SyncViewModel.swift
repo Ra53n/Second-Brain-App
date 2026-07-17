@@ -37,6 +37,11 @@ final class SyncViewModel: ObservableObject {
         let cleanURL: String
     }
 
+    /// Показ панели синка. Живёт здесь, а не в @State кнопки: view внутри
+    /// ToolbarItem пересоздаётся при перестройке тулбара (смена раздела,
+    /// detail-тулбар чата), и локальный state сбрасывался до показа поповера —
+    /// кнопка «не работала» (smoke-тест задачи 24).
+    @Published var showsPanel = false
     @Published private(set) var repoState: RepoState = .noVault
     @Published private(set) var status: GitStatus?
     @Published private(set) var history: [GitCommit] = []

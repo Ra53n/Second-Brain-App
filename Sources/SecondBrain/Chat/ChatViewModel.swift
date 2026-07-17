@@ -297,8 +297,12 @@ final class ChatViewModel: ObservableObject {
         chats[index].messages.append(ChatMessage(role: .user, content: text))
 
         guard let resolved = resolveProvider(for: chats[index]) else {
-            chats[index].errorText = LLMError.providerUnavailable(
-                chats[index].configuration.providerID ?? "chat").errorDescription
+            // Подсказка пути решения (задача 24): без неё пользователь не
+            // находит, куда прописать ключ или где запустить локальную модель.
+            let base = LLMError.providerUnavailable(
+                chats[index].configuration.providerID ?? "chat").errorDescription ?? ""
+            chats[index].errorText = base
+                + " Ключи облачных провайдеров — Настройки → «Провайдеры», запуск локальных моделей — Настройки → «Локальные модели»."
             return
         }
 
