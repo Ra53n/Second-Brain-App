@@ -358,11 +358,12 @@ final class AssemblyAIProviderTests: XCTestCase {
 @MainActor
 final class CloudProvidersRegistrationTests: XCTestCase {
 
-    func testRegisterAllPopulatesFourProviders() {
+    func testRegisterAllPopulatesAllCloudProviders() {
         let registry = ProviderRegistry()
         CloudProviders.registerAll(in: registry)
 
-        XCTAssertEqual(registry.descriptors.count, 4)
+        // 4 исходных (задача 08) + OpenRouter и DeepSeek (задача 26).
+        XCTAssertEqual(registry.descriptors.count, 6)
         XCTAssertEqual(registry.descriptor(for: OpenAIProvider.id)?.capabilities, [.chat, .transcription, .embedding])
         XCTAssertEqual(registry.descriptor(for: GeminiProvider.id)?.capabilities, [.chat, .transcription, .embedding])
         XCTAssertEqual(registry.descriptor(for: DeepgramProvider.id)?.capabilities, [.transcription])
@@ -380,5 +381,45 @@ final class CloudProvidersRegistrationTests: XCTestCase {
             XCTAssertTrue(descriptor.requiresKey, "\(descriptor.id) облачный — обязан требовать ключ")
             XCTAssertNotNil(descriptor.defaultModel, "\(descriptor.id) обязан иметь модель по умолчанию")
         }
+    }
+
+    /// Задача 26: OpenRouter и DeepSeek — чат-провайдеры на общем
+    /// OpenAI-совместимом клиенте с function calling.
+    func testOpenRouterAndDeepSeekRegistered() {
+        let registry = ProviderRegistry()
+        CloudProviders.registerAll(in: registry)
+
+        for (id, model) in [(CloudProviders.openRouterID, "deepseek/deepseek-chat"),
+                            (CloudProviders.deepSeekID, "deepseek-chat")] {
+            let descriptor = registry.descriptor(for: id)
+            XCTAssertEqual(descriptor?.capabilities, [.chat], "\(id): только чат")
+            XCTAssertEqual(descriptor?.defaultModel, model)
+            let provider = registry.chatProvider(for: id)
+            XCTAssertNotNil(provider, "\(id): чат-клиент зарегистрирован")
+            XCTAssertTrue(provider is ToolCapableChatProvider,
+                          "\(id): function calling обязателен для инструментов")
+        }
+    }
+
+    /// Ключ ищется под id провайдера, а не под «openai» (инстансный keyID).
+    func testMissingKeyErrorCarriesProviderID() {
+        let provider = OpenAIProvider(baseURL: URL(string: "https://api.deepseek.com/v1")!,
+                                      keyID: CloudProviders.deepSeekID)
+        // Тестовое окружение без ключа deepseek: apiKey обязан назвать его id.
+        XCTAssertThrowsError(try provider.apiKey()) { error in
+            XCTAssertEqual(error as? LLMError,
+                           .missingAPIKey(CloudProviders.deepSeekID))
+        }
+    }
+
+    /// KeyVerifier умеет проверять ключи новых провайдеров (Bearer + верный URL).
+    func testKeyVerifierRequestsForNewProviders() {
+        let openrouter = KeyVerifier.request(for: CloudProviders.openRouterID, key: "k1")
+        XCTAssertEqual(openrouter?.url?.absoluteString, "https://openrouter.ai/api/v1/key")
+        XCTAssertEqual(openrouter?.value(forHTTPHeaderField: "Authorization"), "Bearer k1")
+
+        let deepseek = KeyVerifier.request(for: CloudProviders.deepSeekID, key: "k2")
+        XCTAssertEqual(deepseek?.url?.absoluteString, "https://api.deepseek.com/v1/models")
+        XCTAssertEqual(deepseek?.value(forHTTPHeaderField: "Authorization"), "Bearer k2")
     }
 }

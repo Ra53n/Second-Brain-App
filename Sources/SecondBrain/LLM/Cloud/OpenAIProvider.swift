@@ -19,6 +19,9 @@ struct OpenAIProvider: ChatProvider, TranscriptionProvider, EmbeddingProvider {
     static let id: ProviderID = "openai"
 
     let baseURL: URL
+    /// Под каким id искать ключ в KeyStore и подписывать ошибки (задача 26):
+    /// тот же клиент обслуживает OpenRouter/DeepSeek со своими ключами.
+    let keyID: ProviderID
     /// Модель транскрипции «зашита» в экземпляр (протокол TranscriptionProvider
     /// не принимает модель параметром — см. LLM/ProviderProtocols.swift).
     let transcriptionModel: String
@@ -28,11 +31,13 @@ struct OpenAIProvider: ChatProvider, TranscriptionProvider, EmbeddingProvider {
 
     init(
         baseURL: URL = URL(string: "https://api.openai.com/v1")!,
+        keyID: ProviderID = OpenAIProvider.id,
         transcriptionModel: String = "whisper-1",
         dimension: Int = 1536, // text-embedding-3-small
         maxAudioBytes: Int = 25 * 1024 * 1024
     ) {
         self.baseURL = baseURL
+        self.keyID = keyID
         self.transcriptionModel = transcriptionModel
         self.dimension = dimension
         self.maxAudioBytes = maxAudioBytes
@@ -197,7 +202,7 @@ struct OpenAIProvider: ChatProvider, TranscriptionProvider, EmbeddingProvider {
     // MARK: - Внутреннее
 
     func apiKey() throws -> String {
-        guard let key = KeyStore.key(for: Self.id) else { throw LLMError.missingAPIKey(Self.id) }
+        guard let key = KeyStore.key(for: keyID) else { throw LLMError.missingAPIKey(keyID) }
         return key
     }
 

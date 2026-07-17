@@ -12,6 +12,11 @@ import Foundation
 
 @MainActor
 enum CloudProviders {
+    /// OpenAI-совместимые провайдеры без своих клиентов (задача 26):
+    /// id — ключ в KeyStore и env-fallback (SECONDBRAIN_<ID>_KEY).
+    static let openRouterID: ProviderID = "openrouter"
+    static let deepSeekID: ProviderID = "deepseek"
+
     static func registerAll(in registry: ProviderRegistry) {
         let openAI = OpenAIProvider()
         registry.register(
@@ -61,6 +66,33 @@ enum CloudProviders {
                 defaultModel: "best"
             ),
             transcription: AssemblyAIProvider()
+        )
+
+        // OpenRouter и DeepSeek (задача 26): OpenAI-совместимые чат-API —
+        // тот же клиент с другим baseURL и ключом; function calling работает
+        // через существующее расширение ToolCapableChatProvider.
+        registry.register(
+            ProviderDescriptor(
+                id: openRouterID,
+                displayName: "OpenRouter",
+                capabilities: [.chat],
+                isLocal: false,
+                defaultModel: "deepseek/deepseek-chat"
+            ),
+            chat: OpenAIProvider(baseURL: URL(string: "https://openrouter.ai/api/v1")!,
+                                 keyID: openRouterID)
+        )
+
+        registry.register(
+            ProviderDescriptor(
+                id: deepSeekID,
+                displayName: "DeepSeek",
+                capabilities: [.chat],
+                isLocal: false,
+                defaultModel: "deepseek-chat"
+            ),
+            chat: OpenAIProvider(baseURL: URL(string: "https://api.deepseek.com/v1")!,
+                                 keyID: deepSeekID)
         )
     }
 }
