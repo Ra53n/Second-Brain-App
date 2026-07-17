@@ -78,6 +78,12 @@ struct ChatMessage: Identifiable, Codable, Equatable {
     var sources: [RagSource]?
     /// Вызовы MCP-инструментов при генерации ответа (задача 15).
     var toolCalls: [ToolCallDisplay]?
+    /// Этап FSM-прогона, породивший сообщение (задача 35): бейдж в UI +
+    /// фильтр истории (промежуточные этапы не уходят в контекст следующих ходов).
+    var agentState: AgentTaskState?
+    /// Номер шага выполнения (0-based) и всего шагов — только для execution.
+    var agentStep: Int?
+    var agentTotal: Int?
     var createdAt: Date = Date()
 
     init(role: ChatRole, content: String, metrics: MessageMetrics? = nil) {
@@ -88,6 +94,7 @@ struct ChatMessage: Identifiable, Codable, Equatable {
 
     enum CodingKeys: String, CodingKey {
         case id, role, content, metrics, sources, toolCalls, createdAt
+        case agentState, agentStep, agentTotal
     }
 
     init(from decoder: Decoder) throws {
@@ -98,6 +105,9 @@ struct ChatMessage: Identifiable, Codable, Equatable {
         metrics = try c.decodeIfPresent(MessageMetrics.self, forKey: .metrics)
         sources = try c.decodeIfPresent([RagSource].self, forKey: .sources)
         toolCalls = try c.decodeIfPresent([ToolCallDisplay].self, forKey: .toolCalls)
+        agentState = try c.decodeIfPresent(AgentTaskState.self, forKey: .agentState)
+        agentStep = try c.decodeIfPresent(Int.self, forKey: .agentStep)
+        agentTotal = try c.decodeIfPresent(Int.self, forKey: .agentTotal)
         createdAt = try c.decodeIfPresent(Date.self, forKey: .createdAt) ?? Date()
     }
 }
@@ -157,6 +167,11 @@ struct ChatConfiguration: Equatable, Codable {
     /// Встроенные git-инструменты проекта в этом чате (репозиторий — в настройках).
     var projectToolsEnabled: Bool = false
 
+    // --- FSM-прогон (задача 35) ---
+    /// «Полный проход (FSM)»: planning → execution → validation → answer.
+    /// false (дефолт) — «Один запрос»: прежний путь (стриминг / tool-цикл).
+    var agentModeEnabled: Bool = false
+
     static let historyWindowRange = 4...50
     static let temperatureRange = 0.0...2.0
     static let ragTopKRange = 1...12
@@ -170,6 +185,7 @@ struct ChatConfiguration: Equatable, Codable {
         case enabledKnowledgeBaseIDs, ragAsTool
         case enabledMCPServerIDs
         case projectToolsEnabled
+        case agentModeEnabled
     }
 
     init(from decoder: Decoder) throws {
@@ -201,6 +217,8 @@ struct ChatConfiguration: Equatable, Codable {
             ?? d.enabledMCPServerIDs
         projectToolsEnabled = try c.decodeIfPresent(Bool.self, forKey: .projectToolsEnabled)
             ?? d.projectToolsEnabled
+        agentModeEnabled = try c.decodeIfPresent(Bool.self, forKey: .agentModeEnabled)
+            ?? d.agentModeEnabled
     }
 
     /// Ручной encode: legacy-ключ knowledgeSource больше не пишем (в CodingKeys
@@ -221,6 +239,7 @@ struct ChatConfiguration: Equatable, Codable {
         try c.encode(ragQueryRewrite, forKey: .ragQueryRewrite)
         try c.encode(enabledMCPServerIDs, forKey: .enabledMCPServerIDs)
         try c.encode(projectToolsEnabled, forKey: .projectToolsEnabled)
+        try c.encode(agentModeEnabled, forKey: .agentModeEnabled)
     }
 }
 
@@ -230,6 +249,9 @@ struct Chat: Identifiable, Codable {
     var title: String = "Новый чат"
     var messages: [ChatMessage] = []
     var configuration = ChatConfiguration()
+    /// Контекст активного/последнего FSM-прогона (задача 35). Персистится:
+    /// прогон переживает рестарт (normalize running → paused, «Продолжить»).
+    var agentContext: AgentTaskContext?
     var createdAt: Date = Date()
 
     // Runtime (не в CodingKeys).
@@ -240,7 +262,9 @@ struct Chat: Identifiable, Codable {
         self.title = title
     }
 
-    enum CodingKeys: String, CodingKey { case id, title, messages, configuration, createdAt }
+    enum CodingKeys: String, CodingKey {
+        case id, title, messages, configuration, agentContext, createdAt
+    }
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -249,6 +273,7 @@ struct Chat: Identifiable, Codable {
         messages = try c.decodeIfPresent([ChatMessage].self, forKey: .messages) ?? []
         configuration = try c.decodeIfPresent(ChatConfiguration.self, forKey: .configuration)
             ?? ChatConfiguration()
+        agentContext = try c.decodeIfPresent(AgentTaskContext.self, forKey: .agentContext)
         createdAt = try c.decodeIfPresent(Date.self, forKey: .createdAt) ?? Date()
     }
 

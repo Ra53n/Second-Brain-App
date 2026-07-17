@@ -240,6 +240,61 @@ final class ToolUseLoopTests: XCTestCase {
         XCTAssertFalse(outcome.transcript[0].ok, "вызов помечен ошибочным")
         XCTAssertTrue(outcome.transcript[0].result.hasPrefix("ERROR"))
     }
+
+    /// Регрессия (задача 35): пустой финальный текст при непустом транскрипте
+    /// больше НЕ выбрасывает emptyResponse — берётся последний непустой текст
+    /// ассистента из цикла, транскрипт не теряется.
+    func testEmptyFinalTextFallsBackToLastAssistantText() async throws {
+        let provider = ScriptedToolProvider(steps: [
+            ToolLoopStep(text: "Промежуточный вывод",
+                         toolCalls: [ToolCallRequest(id: "c1", name: "fs__read",
+                                                     argumentsJSON: "{}")],
+                         usage: nil),
+            ToolLoopStep(text: "", toolCalls: [], usage: nil),
+        ])
+        let outcome = try await ToolUseLoop.run(
+            provider: provider, settings: settings,
+            messages: [ToolAwareMessage(role: .user, content: "в")],
+            tools: tools) { _, _ in "данные" }
+        XCTAssertEqual(outcome.text, "Промежуточный вывод")
+        XCTAssertEqual(outcome.transcript.count, 1, "транскрипт сохранён")
+    }
+
+    /// Пустой текст при непустом транскрипте и без текста в цикле —
+    /// отдаётся пустой текст с транскриптом (решает вызывающий), не ошибка.
+    func testEmptyTextWithTranscriptReturnsTranscript() async throws {
+        let provider = ScriptedToolProvider(steps: [
+            ToolLoopStep(text: nil,
+                         toolCalls: [ToolCallRequest(id: "c1", name: "fs__read",
+                                                     argumentsJSON: "{}")],
+                         usage: nil),
+            ToolLoopStep(text: nil, toolCalls: [], usage: nil),
+        ])
+        let outcome = try await ToolUseLoop.run(
+            provider: provider, settings: settings,
+            messages: [ToolAwareMessage(role: .user, content: "в")],
+            tools: tools) { _, _ in "данные" }
+        XCTAssertEqual(outcome.text, "")
+        XCTAssertEqual(outcome.transcript.count, 1)
+    }
+
+    /// Совсем пустой ответ (ни текста, ни вызовов) по-прежнему ошибка.
+    func testFullyEmptyResponseStillThrows() async throws {
+        let provider = ScriptedToolProvider(steps: [
+            ToolLoopStep(text: nil, toolCalls: [], usage: nil),
+        ])
+        do {
+            _ = try await ToolUseLoop.run(
+                provider: provider, settings: settings,
+                messages: [ToolAwareMessage(role: .user, content: "в")],
+                tools: tools) { _, _ in "" }
+            XCTFail("ожидали emptyResponse")
+        } catch let error as LLMError {
+            guard case .emptyResponse = error else {
+                return XCTFail("не та ошибка: \(error)")
+            }
+        }
+    }
 }
 
 // MARK: - Конфиг серверов

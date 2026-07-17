@@ -40,6 +40,9 @@
 | 32 | [Пикер моделей: только доступные](32-real-model-picker.md) | 09, 24, 26, 29 | [x] |
 | 33 | [Изоляция тестов роутинга от routing.json](33-routing-tests-isolation.md) | 17 | [x] |
 | 34 | [Реестр баз знаний (multi-base RAG) + rag_search](34-knowledge-base-registry.md) | 27, 31 | [x] |
+| 35 | [FSM-пайплайн ответов в чате](35-chat-fsm.md) | 12, 14, 15, 21, 34 | [x] |
+| 36 | [Пайплайны: раздел, CRUD, cron, PR-watch](36-pipelines.md) | 35, 34, 21, 15, 17 | [ ] |
+| 37 | [Автоматизация code review](37-code-review-pipeline.md) | 35, 36, 25, 21, 22 | [ ] |
 
 ## Рекомендуемый порядок
 

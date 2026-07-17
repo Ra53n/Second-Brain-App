@@ -87,6 +87,14 @@ final class ChatViewModel: ObservableObject {
     /// Активные генерации по чату — для отмены.
     private var generationTasks: [UUID: Task<Void, Never>] = [:]
 
+    // FSM-прогоны (задача 35). Хранимые свойства — здесь (extension не может),
+    // оркестратор — в ChatViewModel+AgentRun.swift.
+    /// Поколение прогона на чат: каждый старт инкрементит. Старый (отменённый)
+    /// Task, доигрывая отмену, сверяет поколение и НЕ трогает чужое состояние.
+    var agentGen: [UUID: Int] = [:]
+    /// Активные FSM-прогоны по чату — для паузы/отмены.
+    var agentTasks: [UUID: Task<Void, Never>] = [:]
+
     init(router: FunctionRouter,
          registry: ProviderRegistry,
          fileURL: URL = ChatPersistence.defaultFileURL) {
@@ -94,7 +102,12 @@ final class ChatViewModel: ObservableObject {
         self.registry = registry
         self.fileURL = fileURL
 
-        let loaded = ChatPersistence.load(from: fileURL)
+        var loaded = ChatPersistence.load(from: fileURL)
+        // Normalize FSM-прогонов (задача 35, паттерн MeetingStore): зависшие
+        // «running» после краша/рестарта → paused, кнопка «Продолжить».
+        for i in loaded.indices where loaded[i].agentContext?.status == .running {
+            loaded[i].agentContext?.status = .paused
+        }
         if loaded.isEmpty {
             let first = Chat()
             chats = [first]
@@ -141,6 +154,11 @@ final class ChatViewModel: ObservableObject {
 
     func deleteChat(_ id: UUID) {
         cancelGeneration(chatID: id)
+        // FSM-прогон (задача 35): гасим Task и поднимаем поколение — доигрывающий
+        // Task выйдет по сверке, не тронув чужое состояние.
+        agentTasks[id]?.cancel()
+        agentTasks[id] = nil
+        agentGen[id] = (agentGen[id] ?? 0) + 1
         chats.removeAll { $0.id == id }
         if selectedChatID == id { selectedChatID = chats.first?.id }
     }
@@ -308,6 +326,12 @@ final class ChatViewModel: ObservableObject {
             handleSlashCommand(command, rawText: text, chatIndex: index)
             return
         }
+        // «Полный проход (FSM)» (задача 35): вместо одного запроса — прогон
+        // planning → execution → validation → answer.
+        if chats[index].configuration.agentModeEnabled {
+            startAgentRun(chatIndex: index, userText: text)
+            return
+        }
         startGeneration(chatIndex: index, userText: text, overrides: TurnOverrides())
     }
 
@@ -409,7 +433,12 @@ final class ChatViewModel: ObservableObject {
         chats[index].messages.append(placeholder)
 
         let configuration = chats[index].configuration
-        let history = Array(chats[index].messages.dropLast(2).suffix(configuration.historyWindow))
+        // Промежуточные сообщения FSM-прогонов (план/шаги/проверка) — шум для
+        // последующих ходов: в окно истории идут только реплики пользователя
+        // и финальные ответы (задача 35, паттерн dialogContext MA).
+        let history = Array(chats[index].messages.dropLast(2)
+            .filter { $0.agentState == nil || $0.agentState == .answer }
+            .suffix(configuration.historyWindow))
             + [ChatMessage(role: .user, content: text)]
         let chatSnapshot = chats[index]
 
@@ -564,7 +593,8 @@ final class ChatViewModel: ObservableObject {
     // MARK: - Внутренности
 
     /// Провайдер: per-чат переопределение (если валидно) → роутер функции .chat.
-    private func resolveProvider(for chat: Chat) -> ResolvedChatProvider? {
+    /// Не private: FSM-оркестратор (ChatViewModel+AgentRun) резолвит так же.
+    func resolveProvider(for chat: Chat) -> ResolvedChatProvider? {
         if let providerID = chat.configuration.providerID,
            registry.isAvailable(providerID),
            let provider = registry.chatProvider(for: providerID) {
@@ -647,7 +677,10 @@ final class ChatViewModel: ObservableObject {
         guard let messageIndex = chats[chatIndex].messages.firstIndex(where: { $0.id == messageID })
         else { return }
 
+        // Сообщение с tool-транскриптом при пустом тексте не выбрасываем:
+        // вызовы инструментов — тоже результат хода (задача 35).
         let isEmpty = chats[chatIndex].messages[messageIndex].content.isEmpty
+            && (chats[chatIndex].messages[messageIndex].toolCalls ?? []).isEmpty
         if let error {
             chats[chatIndex].errorText = (error as? LocalizedError)?.errorDescription
                 ?? error.localizedDescription
@@ -667,6 +700,12 @@ final class ChatViewModel: ObservableObject {
                 model: resolved?.model)
         }
         // Немедленная запись финального состояния (debounce мог не успеть).
+        ChatPersistence.save(chats, to: fileURL)
+    }
+
+    /// Немедленная синхронная запись (persistNow MA): FSM-прогон фиксирует
+    /// каждый переход на диск, не дожидаясь debounce.
+    func persistNow() {
         ChatPersistence.save(chats, to: fileURL)
     }
 }

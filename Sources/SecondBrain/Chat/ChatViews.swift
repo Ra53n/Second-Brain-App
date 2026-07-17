@@ -171,11 +171,13 @@ struct ChatDetailView: View {
         VStack(spacing: 0) {
             messagesList
             Divider()
+            agentStatusBar
             errorBar
             inputBar
         }
         .navigationTitle(chat?.title ?? "Чат")
         .toolbar {
+            ToolbarItem(placement: .primaryAction) { agentModeToggle }
             ToolbarItem(placement: .primaryAction) { mcpMenu }
             ToolbarItem(placement: .primaryAction) { ragToggle }
             ToolbarItem(placement: .primaryAction) { ragTuningButton }
@@ -266,6 +268,65 @@ struct ChatDetailView: View {
     /// чипы («осиротевшие» serverID удалённых серверов не считаются).
     private var enabledToolSourcesCount: Int {
         toolSourceSummaries.count
+    }
+
+    /// Тумблер «Полный проход (FSM)» (задача 35, persisted per-чат):
+    /// planning → execution → validation → answer вместо одного запроса.
+    private var agentModeToggle: some View {
+        Toggle(isOn: Binding(
+            get: { viewModel.agentModeBinding },
+            set: { viewModel.agentModeBinding = $0 }
+        )) {
+            Label("Агент", systemImage: "point.3.connected.trianglepath.dotted")
+        }
+        .toggleStyle(.button)
+        .help("Полный проход (FSM): план → выполнение по шагам → проверка → ответ. Этапы приходят отдельными сообщениями, без стриминга. Выключено — один запрос.")
+    }
+
+    /// Статус-полоса активного FSM-прогона (задача 35): этап/шаг + управление.
+    @ViewBuilder
+    private var agentStatusBar: some View {
+        if let chat, let ctx = chat.agentContext, ctx.status != .finished {
+            HStack(spacing: 8) {
+                Image(systemName: "point.3.connected.trianglepath.dotted")
+                    .foregroundStyle(.secondary)
+                Text(agentStatusLine(ctx))
+                if ctx.status == .running {
+                    ProgressView().controlSize(.mini)
+                }
+                Spacer()
+                if ctx.status == .running {
+                    Button("Пауза") { viewModel.pauseAgentRun(chatID: chat.id) }
+                        .help("Остановить прогон; «Продолжить» возобновит с того же шага")
+                }
+                if ctx.status == .paused || ctx.status == .failed {
+                    Button("Продолжить") { viewModel.resumeAgentRun(chatID: chat.id) }
+                        .help("Возобновить прогон с текущего этапа/шага")
+                    Button("Сбросить") { viewModel.resetAgentRun(chatID: chat.id) }
+                        .help("Забыть прогон; сообщения этапов останутся в истории")
+                }
+            }
+            .font(.caption)
+            .controlSize(.small)
+            .padding(.horizontal)
+            .padding(.vertical, 6)
+            .background(Color.accentColor.opacity(0.06))
+        }
+    }
+
+    /// «Полный проход: Выполнение · шаг 2/5 (пауза)» — строка статус-полосы.
+    private func agentStatusLine(_ ctx: AgentTaskContext) -> String {
+        var line = "Полный проход: \(ctx.state.label)"
+        if ctx.state == .execution, ctx.total > 0 {
+            line += " · шаг \(min(ctx.step + 1, ctx.total))/\(ctx.total)"
+        }
+        switch ctx.status {
+        case .running: break
+        case .paused: line += " (пауза)"
+        case .failed: line += " (ошибка)"
+        case .finished: break
+        }
+        return line
     }
 
     /// Тумблер «Отвечать по базе» (persisted per-чат).
@@ -419,7 +480,13 @@ struct ChatDetailView: View {
 
             if chat?.isLoading == true {
                 Button {
-                    if let id = chat?.id { viewModel.cancelGeneration(chatID: id) }
+                    guard let id = chat?.id else { return }
+                    // FSM-прогон (задача 35): Стоп = пауза (возобновляемо).
+                    if chat?.agentContext?.status == .running {
+                        viewModel.pauseAgentRun(chatID: id)
+                    } else {
+                        viewModel.cancelGeneration(chatID: id)
+                    }
                 } label: {
                     Image(systemName: "stop.circle.fill")
                         .font(.title2)
@@ -623,9 +690,12 @@ struct MessageBubble: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text(message.role == .user ? "Вы" : "Ассистент")
-                .font(.caption2)
-                .foregroundStyle(.secondary)
+            HStack(spacing: 6) {
+                Text(message.role == .user ? "Вы" : "Ассистент")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                agentBadge
+            }
             toolCallsBlock
             Markdown(renderedContent)
                 .markdownTheme(.docC)
@@ -648,6 +718,35 @@ struct MessageBubble: View {
         )
         .overlay(alignment: .topTrailing) { copyButton }
         .onHover { isHovering = $0 }
+    }
+
+    /// Бейдж этапа FSM-прогона (задача 35): «Планирование», «Выполнение ·
+    /// шаг N/M», «Проверка», «Ответ» — цвет по этапу.
+    @ViewBuilder
+    private var agentBadge: some View {
+        if let state = message.agentState {
+            Text(agentBadgeText(state))
+                .font(.caption2.bold())
+                .padding(.horizontal, 6)
+                .padding(.vertical, 1)
+                .background(Capsule().fill(agentBadgeColor(state).opacity(0.15)))
+                .foregroundStyle(agentBadgeColor(state))
+        }
+    }
+
+    private func agentBadgeText(_ state: AgentTaskState) -> String {
+        guard state == .execution, let step = message.agentStep,
+              let total = message.agentTotal, total > 0 else { return state.label }
+        return "\(state.label) · шаг \(step + 1)/\(total)"
+    }
+
+    private func agentBadgeColor(_ state: AgentTaskState) -> Color {
+        switch state {
+        case .planning: return .blue
+        case .execution: return .orange
+        case .validation: return .purple
+        case .answer: return .green
+        }
     }
 
     /// Копирование сообщения (задача 23): сырой markdown в буфер обмена.
