@@ -18,21 +18,16 @@ struct SyncStatusButton: View {
 
     var body: some View {
         Button {
-            viewModel.showsPanel.toggle()
+            viewModel.togglePanel()
         } label: {
             Label("Синхронизация", systemImage: iconName)
                 .foregroundStyle(iconColor)
         }
         .help(helpText)
-        // Состояние показа — в SyncViewModel (задача 24): локальный @State
-        // сбрасывался при пересоздании ToolbarItem, и панель не открывалась.
-        .popover(isPresented: $viewModel.showsPanel, arrowEdge: .bottom) {
-            GitSyncPanel(viewModel: viewModel)
-        }
-        // Обновляем статус при каждом открытии панели: дёшево и всегда свежо.
-        .onChange(of: viewModel.showsPanel) { _, shown in
-            if shown { Task { await viewModel.refresh() } }
-        }
+        // ВАЖНО: поповер панели НЕ здесь. Кнопка живёт в ToolbarItem и
+        // пересоздаётся при обновлении статуса — прикреплённый к ней поповер
+        // закрывался сразу после открытия. Панель показывает ContentView,
+        // якорь — стабильный корень окна (задача 24).
     }
 
     private var iconName: String {

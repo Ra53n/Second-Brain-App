@@ -36,12 +36,15 @@ struct ContentView: View {
     /// (дерево/выбор vault — detail, ошибки поиска — alert).
     @ObservedObject private var vaultManager: VaultManager
     @ObservedObject private var searchViewModel: SearchViewModel
+    /// Панель синка показывается отсюда (стабильный якорь окна, задача 24).
+    @ObservedObject private var syncViewModel: SyncViewModel
     @State private var showsQuickSwitcher = false
 
     init(model: AppModel) {
         self.model = model
         _vaultManager = ObservedObject(wrappedValue: model.vaultManager)
         _searchViewModel = ObservedObject(wrappedValue: model.searchViewModel)
+        _syncViewModel = ObservedObject(wrappedValue: model.syncViewModel)
     }
 
     var body: some View {
@@ -63,6 +66,14 @@ struct ContentView: View {
             ToolbarItem {
                 SyncStatusButton(viewModel: model.syncViewModel)
             }
+        }
+        // Панель синка прикреплена к корню окна, а НЕ к кнопке тулбара:
+        // ToolbarItem пересоздаётся при обновлении статуса (refresh при
+        // открытии), и поповер с якорем-кнопкой закрывался сразу (задача 24).
+        .popover(isPresented: $syncViewModel.showsPanel,
+                 attachmentAnchor: .point(.topTrailing),
+                 arrowEdge: .bottom) {
+            GitSyncPanel(viewModel: syncViewModel)
         }
         // Quick switcher: команда меню (Cmd+P, App.swift) шлёт нотификацию.
         .onReceive(NotificationCenter.default.publisher(for: .showQuickSwitcher)) { _ in
