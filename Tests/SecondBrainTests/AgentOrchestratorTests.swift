@@ -255,6 +255,70 @@ final class AgentOrchestratorTests: XCTestCase {
         XCTAssertFalse(vm.chats[0].isLoading)
     }
 
+    // MARK: - Awaitable-хуки для пайплайнов (задача 36)
+
+    func testRunAgentToCompletionAwaitsRealFinish() async throws {
+        let provider = QueuedChatProvider([
+            .success("1. единственный шаг"),
+            .success("сделано\nNEXT_STEP"),
+            .success("ВЕРДИКТ: ВЫПОЛНЕНО"),
+            .success("Готовый ответ"),
+        ])
+        register(provider)
+        let vm = makeViewModel()
+
+        let status = await vm.runAgentToCompletion(chatIndex: 0, userText: "задача")
+
+        XCTAssertEqual(status, .finished, "статус возвращается ПОСЛЕ завершения прогона")
+        XCTAssertEqual(provider.requests.count, 4, "все фазы отработали до возврата")
+        XCTAssertEqual(vm.chats[0].messages.last?.content, "Готовый ответ")
+        XCTAssertFalse(vm.chats[0].isLoading)
+    }
+
+    func testRunAgentToCompletionProviderErrorReturnsFailed() async throws {
+        struct BoomError: LocalizedError {
+            var errorDescription: String? { "взорвалось" }
+        }
+        register(QueuedChatProvider([.failure(BoomError())]))
+        let vm = makeViewModel()
+
+        let status = await vm.runAgentToCompletion(chatIndex: 0, userText: "задача")
+        XCTAssertEqual(status, .failed)
+        XCTAssertEqual(vm.chats[0].agentContext?.errorText, "взорвалось")
+    }
+
+    func testRunAgentToCompletionNoProviderReturnsFailed() async throws {
+        // Провайдер не зарегистрирован: startAgentRun выходит без Task.
+        let vm = makeViewModel()
+        let status = await vm.runAgentToCompletion(chatIndex: 0, userText: "задача")
+        XCTAssertEqual(status, .failed)
+        XCTAssertNotNil(vm.chats[0].errorText)
+    }
+
+    func testRunSingleTurnToCompletionReturnsNilOnSuccess() async throws {
+        register(MockChatProvider(responses: ["Ответ одним запросом"]))
+        let vm = makeViewModel()
+
+        let error = await vm.runSingleTurnToCompletion(chatIndex: 0, userText: "вопрос")
+
+        XCTAssertNil(error)
+        // Мок стримит по словам с хвостовым пробелом — сравниваем без него.
+        XCTAssertEqual(vm.chats[0].messages.last?.content
+                        .trimmingCharacters(in: .whitespaces),
+                       "Ответ одним запросом")
+        XCTAssertFalse(vm.chats[0].isLoading)
+    }
+
+    func testRunSingleTurnToCompletionReturnsErrorText() async throws {
+        let provider = MockChatProvider(responses: ["не дойдёт"])
+        provider.errorToThrow = LLMError.emptyResponse
+        register(provider)
+        let vm = makeViewModel()
+
+        let error = await vm.runSingleTurnToCompletion(chatIndex: 0, userText: "вопрос")
+        XCTAssertNotNil(error, "ошибка провайдера возвращается движку пайплайна")
+    }
+
     // MARK: - Обычный режим не затронут
 
     func testAgentModeOffUsesPlainGeneration() async throws {

@@ -76,6 +76,21 @@ extension ChatViewModel {
         persistNow()
     }
 
+    /// Прогон FSM до терминала для движка пайплайнов (задача 36): обычный
+    /// startAgentRun + ожидание его Task. Возвращает финальный статус контекста
+    /// (.finished / .failed / .paused). Осознанное упрощение: если пользователь
+    /// поставил паузу и потом возобновил прогон руками, движок дождался только
+    /// ПЕРВОГО Task — для истории прогонов пауза не успех, хотя возобновлённый
+    /// прогон доедет до ответа в чате.
+    func runAgentToCompletion(chatIndex index: Int, userText text: String) async -> AgentRunStatus {
+        let chatID = chats[index].id
+        startAgentRun(chatIndex: index, userText: text)
+        // Провайдер недоступен → startAgentRun вышел без запуска Task.
+        guard let task = agentTasks[chatID] else { return .failed }
+        await task.value
+        return chats.first { $0.id == chatID }?.agentContext?.status ?? .failed
+    }
+
     private func spawnAgentTask(chatID: UUID) {
         let gen = (agentGen[chatID] ?? 0) + 1
         agentGen[chatID] = gen
@@ -252,52 +267,27 @@ extension ChatViewModel {
                                resolved: ResolvedChatProvider,
                                configuration: ChatConfiguration,
                                ragToolDefinition: ToolDefinition?) async throws -> AgentPhaseOutcome {
-        var tools: [ToolDefinition] = []
-        if !configuration.enabledMCPServerIDs.isEmpty, let bridge = mcpBridge {
-            tools = await bridge.tools(configuration.enabledMCPServerIDs)
-        }
-        var projectNames: Set<String> = []
-        if configuration.projectToolsEnabled, let project = projectToolsBridge {
-            let projectTools = project.tools()
-            projectNames = Set(projectTools.map(\.name))
-            tools += projectTools
-        }
-        if let ragToolDefinition { tools.append(ragToolDefinition) }
+        // Единая сборка и маршрутизация инструментов (ChatToolAssembly):
+        // источники rag_search копятся в исход фазы.
+        var collectedSources: [RagSource] = []
+        let tooling = await assembleTooling(
+            configuration: configuration,
+            ragToolDefinition: ragToolDefinition,
+            onRagSources: { collectedSources += $0 })
 
         let messages: [ToolAwareMessage] = [
             ToolAwareMessage(role: .system, content: system),
             ToolAwareMessage(role: .user, content: user)
         ]
 
-        if !tools.isEmpty, let toolProvider = resolved.provider as? ToolCapableChatProvider {
-            let mcpBridge = self.mcpBridge
-            let projectBridge = self.projectToolsBridge
-            let ragBridge = self.ragToolBridge
-            var collectedSources: [RagSource] = []
+        if !tooling.tools.isEmpty,
+           let toolProvider = resolved.provider as? ToolCapableChatProvider {
             let outcome = try await ToolUseLoop.run(
                 provider: toolProvider,
                 settings: settings,
                 messages: messages,
-                tools: tools,
-                execute: { name, args in
-                    if name == RagSearchTool.toolName,
-                       ragToolDefinition != nil, let ragBridge {
-                        let result = await ragBridge.execute(
-                            args,
-                            configuration.enabledKnowledgeBaseIDs,
-                            configuration.ragTopK,
-                            configuration.ragMinScore)
-                        collectedSources += result.sources
-                        return result.text
-                    }
-                    if projectNames.contains(name), let projectBridge {
-                        return await projectBridge.execute(name, args)
-                    }
-                    guard let mcpBridge else {
-                        return "ERROR: исполнитель инструмента «\(name)» недоступен"
-                    }
-                    return await mcpBridge.execute(name, args)
-                })
+                tools: tooling.tools,
+                execute: tooling.execute)
             return AgentPhaseOutcome(text: outcome.text, usage: outcome.usage,
                                      transcript: outcome.transcript,
                                      sources: collectedSources)

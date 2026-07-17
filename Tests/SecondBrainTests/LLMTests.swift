@@ -426,6 +426,12 @@ final class KeyStoreTests: XCTestCase {
         XCTAssertEqual(KeyStore.key(for: id), "из-keychain")
     }
 
+    func testEnvVarSanitizesDash() {
+        // Запись «github-token» (задача 36): дефис невалиден в env-имени.
+        XCTAssertEqual(KeyStore.envVar(for: "github-token"),
+                       "SECONDBRAIN_GITHUB_TOKEN_KEY")
+    }
+
     func testDeletingNonExistentKeyIsNoOp() {
         KeyStore.setKey("", for: "never-existed")
         XCTAssertNil(KeyStore.key(for: "never-existed"))

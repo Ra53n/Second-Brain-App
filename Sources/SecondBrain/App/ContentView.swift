@@ -12,6 +12,7 @@ enum AppSection: String, CaseIterable, Identifiable {
     case notes = "Заметки"
     case meetings = "Встречи"
     case chat = "Чат"
+    case pipelines = "Пайплайны"
     case settings = "Настройки"
 
     var id: String { rawValue }
@@ -22,6 +23,7 @@ enum AppSection: String, CaseIterable, Identifiable {
         case .notes: return "doc.text"
         case .meetings: return "mic"
         case .chat: return "bubble.left.and.bubble.right"
+        case .pipelines: return "gearshape.arrow.triangle.2.circlepath"
         case .settings: return "gearshape"
         }
     }
@@ -86,6 +88,12 @@ struct ContentView: View {
             vaultManager.rebuild() // свежесозданная заметка могла ещё не попасть в дерево
             vaultManager.selection = url
         }
+        // «Открыть чат» из истории прогонов пайплайна (задача 36).
+        .onReceive(NotificationCenter.default.publisher(for: .openPipelineChat)) { notification in
+            guard let chatID = notification.object as? UUID else { return }
+            selection = .chat
+            model.chatViewModel.selectedChatID = chatID
+        }
         .sheet(isPresented: $showsQuickSwitcher) {
             QuickSwitcherView(vaultManager: vaultManager)
         }
@@ -111,6 +119,10 @@ struct ContentView: View {
             MeetingsPane(viewModel: model.meetingsViewModel)
         case .chat:
             ChatListPane(viewModel: model.chatViewModel)
+        case .pipelines:
+            PipelinesPane(store: model.pipelineStore,
+                          engine: model.pipelineEngine,
+                          watcher: model.prWatcher)
         case .settings:
             // Настройки живут в стандартном окне Settings (задача 17).
             ContentUnavailableView {
@@ -131,82 +143,6 @@ struct ContentView: View {
         }
     }
 
-    /// Связка чата с RAG (задачи 14, 34): статический ретрив (фолбэк без
-    /// tool-calling) идёт через фасад реестра баз; rewrite/rerank используют
-    /// тот же чат-роутер (только чисто-vault путь). Однократно, лениво.
-    private func wireRagProvider() {
-        let chatViewModel = model.chatViewModel
-        guard chatViewModel.ragProvider == nil else { return }
-        chatViewModel.ragProvider = { [weak knowledgeBaseManager = model.knowledgeBaseManager,
-                                       weak functionRouter = model.functionRouter] chat, query in
-            guard let manager = knowledgeBaseManager else { return nil }
-            let needsLLM = chat.configuration.ragQueryRewrite || chat.configuration.ragRerankEnabled
-            // Задача 28: у реранка/переписывания своя функция роутинга.
-            let chatProvider = needsLLM ? functionRouter?.resolveChatProvider(for: .ragRerank) : nil
-            return await manager.retrieve(enabledIDs: chat.configuration.enabledKnowledgeBaseIDs,
-                                          query: query,
-                                          history: chat.messages,
-                                          configuration: chat.configuration,
-                                          chatProvider: chatProvider)
-        }
-    }
-
-    /// Связка чата с инструментом rag_search (задача 34): определение по
-    /// включённым базам чата и исполнитель поиска. Однократно, лениво.
-    private func wireRagTool() {
-        let chatViewModel = model.chatViewModel
-        guard chatViewModel.ragToolBridge == nil else { return }
-        let manager = model.knowledgeBaseManager
-        chatViewModel.ragToolBridge = ChatViewModel.RagToolBridge(
-            definition: { enabledIDs in
-                manager.toolDefinition(enabledIDs: enabledIDs)
-            },
-            execute: { args, enabledIDs, topK, minScore in
-                await manager.executeSearchTool(argumentsJSON: args,
-                                                enabledIDs: enabledIDs,
-                                                topK: topK,
-                                                minScore: minScore)
-            })
-    }
-
-    /// Связка чата с MCP (задача 15): инструменты включённых серверов и
-    /// исполнитель вызовов. Однократно, лениво.
-    private func wireMCPBridge() {
-        let chatViewModel = model.chatViewModel
-        guard chatViewModel.mcpBridge == nil else { return }
-        let manager = model.mcpServersViewModel.manager
-        chatViewModel.mcpBridge = ChatViewModel.MCPBridge(
-            tools: { [weak mcpServersViewModel = model.mcpServersViewModel] serverIDs in
-                await mcpServersViewModel?.tools(for: serverIDs) ?? []
-            },
-            execute: { name, args in
-                await manager.call(qualifiedName: name, argumentsJSON: args)
-            })
-    }
-
-    /// Связка чата со встроенными инструментами проекта (задача 21):
-    /// провайдер держит исполнитель для текущего projectRepoPath и
-    /// пересоздаёт его при смене пути. Однократно, лениво.
-    private func wireProjectTools() {
-        let chatViewModel = model.chatViewModel
-        guard chatViewModel.projectToolsBridge == nil else { return }
-        let provider = model.projectToolsProvider
-        chatViewModel.projectToolsBridge = ChatViewModel.ProjectToolsBridge(
-            available: { provider.current() != nil },
-            tools: { provider.current()?.registry.definitions() ?? [] },
-            execute: { name, args in
-                guard let current = provider.current() else {
-                    return "ERROR: репозиторий проекта не выбран (Настройки → Инструменты)"
-                }
-                return await current.executor.execute(name: name, argumentsJSON: args)
-            })
-        // /help (задачи 22, 25): RAG-ретрив по докам репозитория с фолбэком
-        // на полный контекст — вся логика в ProjectToolsProvider.
-        chatViewModel.projectDocsProvider = { question in
-            await provider.helpContext(question: question)
-        }
-    }
-
     /// Расширения файлов, которые открываются в markdown-редакторе.
     private static let editableExtensions: Set<String> = ["md", "markdown", "txt"]
 
@@ -222,12 +158,13 @@ struct ContentView: View {
                            knowledgeBaseStore: model.knowledgeBaseStore,
                            knowledgeBaseManager: model.knowledgeBaseManager,
                            resolveWikilink: { vaultManager.linkIndex?.resolve($0) })
-                .onAppear {
-                    wireRagProvider()
-                    wireRagTool()
-                    wireMCPBridge()
-                    wireProjectTools()
-                }
+        } else if selection == .pipelines {
+            PipelineDetailView(store: model.pipelineStore,
+                               engine: model.pipelineEngine,
+                               watcher: model.prWatcher,
+                               chatViewModel: model.chatViewModel,
+                               mcpViewModel: model.mcpServersViewModel,
+                               knowledgeBaseStore: model.knowledgeBaseStore)
         } else if selection == .notes {
             if let url = vaultManager.selection,
                let node = vaultManager.root?.find(url) {

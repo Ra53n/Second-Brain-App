@@ -490,63 +490,29 @@ final class ChatViewModel: ObservableObject {
                 var settings = ChatSettings(model: resolved.model)
                 settings.temperature = configuration.temperature
 
-                // Инструменты (задачи 15, 21): MCP-серверы чата + встроенные
-                // инструменты проекта → tool-use цикл БЕЗ стриминга (ответ
-                // приходит целиком после вызовов).
-                var tools: [ToolDefinition] = []
-                if !chatSnapshot.configuration.enabledMCPServerIDs.isEmpty, let bridge = self.mcpBridge {
-                    tools = await bridge.tools(chatSnapshot.configuration.enabledMCPServerIDs)
-                }
-                // Имена project-инструментов вычисляются на этот ход: по ним
-                // executor-замыкание маршрутизирует вызовы между мостами.
-                var projectNames: Set<String> = []
-                if chatSnapshot.configuration.projectToolsEnabled || overrides.forceProjectTools,
-                   let project = self.projectToolsBridge {
-                    let projectTools = project.tools()
-                    projectNames = Set(projectTools.map(\.name))
-                    tools += projectTools
-                }
-                // rag_search (задача 34) — последним: git/MCP-имена с ним не
-                // пересекаются (маршрутизация в execute проверяет его первым).
-                if let ragToolDefinition {
-                    tools.append(ragToolDefinition)
-                }
+                // Инструменты (задачи 15, 21, 34): единая сборка и маршрутизация
+                // (ChatToolAssembly) → tool-use цикл БЕЗ стриминга (ответ
+                // приходит целиком после вызовов). Источники rag_search
+                // цепляются к сообщению сразу — цитаты видны ещё в ходе цикла.
+                let tooling = await self.assembleTooling(
+                    configuration: chatSnapshot.configuration,
+                    ragToolDefinition: ragToolDefinition,
+                    forceProjectTools: overrides.forceProjectTools,
+                    onRagSources: { sources in
+                        self.appendSources(chatID: chatID, messageID: placeholderID,
+                                           new: sources)
+                    })
+                let tools = tooling.tools
                 // Итоговый usage хода (задача 29): стрим отдаёт событием,
                 // tool-цикл суммирует по итерациям.
                 var turnUsage: ChatUsage?
                 if !tools.isEmpty, let toolProvider = resolved.provider as? ToolCapableChatProvider {
-                    let mcpBridge = self.mcpBridge
-                    let projectBridge = self.projectToolsBridge
-                    let ragBridge = self.ragToolBridge
-                    let ragConfiguration = chatSnapshot.configuration
                     let outcome = try await ToolUseLoop.run(
                         provider: toolProvider,
                         settings: settings,
                         messages: messages.map(ToolAwareMessage.init),
                         tools: tools,
-                        execute: { name, args in
-                            // rag_search (задача 34): источники цепляются к
-                            // сообщению сразу — цитаты видны ещё в ходе цикла.
-                            if name == RagSearchTool.toolName,
-                               ragToolDefinition != nil, let ragBridge {
-                                let outcome = await ragBridge.execute(
-                                    args,
-                                    ragConfiguration.enabledKnowledgeBaseIDs,
-                                    ragConfiguration.ragTopK,
-                                    ragConfiguration.ragMinScore)
-                                self.appendSources(chatID: chatID,
-                                                   messageID: placeholderID,
-                                                   new: outcome.sources)
-                                return outcome.text
-                            }
-                            if projectNames.contains(name), let projectBridge {
-                                return await projectBridge.execute(name, args)
-                            }
-                            guard let mcpBridge else {
-                                return "ERROR: исполнитель инструмента «\(name)» недоступен"
-                            }
-                            return await mcpBridge.execute(name, args)
-                        })
+                        execute: tooling.execute)
                     self.appendToMessage(chatID: chatID, messageID: placeholderID,
                                          chunk: outcome.text)
                     self.attachToolCalls(chatID: chatID, messageID: placeholderID,
@@ -582,6 +548,18 @@ final class ChatViewModel: ObservableObject {
             }
             self.generationTasks[chatID] = nil
         }
+    }
+
+    /// Одиночный ход до завершения для движка пайплайнов (задача 36): обычная
+    /// генерация + ожидание её Task. Возвращает errorText чата после хода
+    /// (nil = успех). Переопределения хода не нужны — пайплайн управляет
+    /// инструментами через конфигурацию destination-чата.
+    func runSingleTurnToCompletion(chatIndex index: Int, userText text: String) async -> String? {
+        let chatID = chats[index].id
+        startGeneration(chatIndex: index, userText: text, overrides: TurnOverrides())
+        // Провайдер недоступен → Task не создан, errorText уже проставлен.
+        await generationTasks[chatID]?.value
+        return chats.first { $0.id == chatID }?.errorText
     }
 
     /// Отмена генерации: частичный ответ остаётся в истории.

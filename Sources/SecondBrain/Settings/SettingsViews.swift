@@ -419,6 +419,7 @@ struct ToolsSettingsTab: View {
                                   folderService: knowledgeBaseManager.folderService)
             MCPServersSection(viewModel: viewModel,
                               projectRepoPath: settingsStore.settings.projectRepoPath)
+            GitHubTokenSection()
         }
         .formStyle(.grouped)
         // Проверка «папка — git-репозиторий?» + статистика индекса доков
@@ -532,6 +533,59 @@ struct ToolsSettingsTab: View {
         let isRepo = await GitClient(repoURL: URL(fileURLWithPath: path)).isRepository()
         projectRepoWarning = isRepo ? nil
             : "Папка не является корнем git-репозитория: git-инструменты будут недоступны, останутся list_files и read_file."
+    }
+}
+
+// MARK: - GitHub-токен (задача 36)
+
+/// Секция токена GitHub для PR-watch пайплайнов. Паттерн providerRow:
+/// SecureField + Сохранить/Удалить, значение никогда не показывается,
+/// хранение — Keychain (запись «github-token»). Для отслеживания PR хватает
+/// read-only доступа; без токена GitHub даёт всего 60 запросов в час.
+struct GitHubTokenSection: View {
+    @State private var draft = ""
+    /// Тик перерисовки статуса «токен задан» (KeyStore — не ObservableObject).
+    @State private var keyChangeTick = 0
+
+    var body: some View {
+        Section("GitHub (PR-watch пайплайнов)") {
+            let hasKey = keyChangeTick >= 0 && KeyStore.hasKey(for: PRWatcher.githubTokenID)
+            VStack(alignment: .leading, spacing: 6) {
+                HStack {
+                    Text("Personal access token")
+                        .fontWeight(.medium)
+                    Spacer()
+                    Label(hasKey ? "токен задан" : "токена нет",
+                          systemImage: hasKey ? "checkmark.circle" : "circle")
+                        .font(.caption)
+                        .foregroundStyle(hasKey ? .green : .secondary)
+                }
+                HStack {
+                    SecureField("Новый токен", text: $draft)
+                        .textFieldStyle(.roundedBorder)
+                    Button("Сохранить") {
+                        KeyStore.setKey(draft, for: PRWatcher.githubTokenID)
+                        draft = ""
+                        keyChangeTick += 1
+                    }
+                    .disabled(draft.trimmingCharacters(in: .whitespaces).isEmpty)
+                    if hasKey {
+                        Button("Удалить", role: .destructive) {
+                            KeyStore.setKey("", for: PRWatcher.githubTokenID)
+                            keyChangeTick += 1
+                        }
+                    }
+                }
+                HStack(spacing: 4) {
+                    Link("Как выпустить токен",
+                         destination: URL(string: "https://github.com/settings/tokens")!)
+                    Text("— достаточно read-only (Public repos / repo:read). Без токена лимит GitHub — 60 запросов в час.")
+                        .foregroundStyle(.secondary)
+                }
+                .font(.caption)
+            }
+            .padding(.vertical, 2)
+        }
     }
 }
 

@@ -31,6 +31,11 @@ final class AppModel: ObservableObject {
     /// Реестр баз знаний и фасад ретрива по ним (задача 34).
     let knowledgeBaseStore: KnowledgeBaseStore
     let knowledgeBaseManager: KnowledgeBaseManager
+    /// Пайплайны (задача 36): стор, движок прогонов, cron-планировщик, PR-watch.
+    let pipelineStore: PipelineStore
+    let pipelineEngine: PipelineEngine
+    let pipelineScheduler: PipelineScheduler
+    let prWatcher: PRWatcher
 
     private var cancellables: Set<AnyCancellable> = []
 
@@ -69,6 +74,15 @@ final class AppModel: ObservableObject {
                                                     ragIndexManager: ragIndexManager,
                                                     projectToolsProvider: projectToolsProvider,
                                                     router: router)
+
+        // Пайплайны (задача 36): движок гоняет прогоны поверх чатов,
+        // планировщик и PR-watcher стартуют в wire() после подвязки мостов.
+        let pipelineStore = PipelineStore()
+        self.pipelineStore = pipelineStore
+        let pipelineEngine = PipelineEngine(store: pipelineStore, chatViewModel: chatViewModel)
+        self.pipelineEngine = pipelineEngine
+        pipelineScheduler = PipelineScheduler(store: pipelineStore, engine: pipelineEngine)
+        prWatcher = PRWatcher(store: pipelineStore, engine: pipelineEngine)
 
         wire()
     }
@@ -122,5 +136,97 @@ final class AppModel: ObservableObject {
             .removeDuplicates()
             .sink { [weak self] url in self?.syncViewModel.attach(vaultURL: url) }
             .store(in: &cancellables)
+
+        // Мосты инструментов чата — здесь, а не в ContentView.onAppear
+        // (задача 36): пайплайн, сработавший до первого открытия раздела
+        // «Чат», иначе бежал бы без инструментов и RAG.
+        wireChatBridges()
+        // Фоновые циклы пайплайнов — после подвязки мостов (catch-up на старте
+        // может сразу запустить прогон). Гашение — по willTerminate внутри.
+        pipelineScheduler.start()
+        prWatcher.start()
+    }
+
+    // MARK: - Мосты чата (задачи 14, 15, 21, 34)
+
+    /// Все четыре моста — однократно (guard == nil сохраняет идемпотентность
+    /// на случай повторного вызова).
+    private func wireChatBridges() {
+        wireRagProvider()
+        wireRagTool()
+        wireMCPBridge()
+        wireProjectTools()
+    }
+
+    /// Связка чата с RAG (задачи 14, 34): статический ретрив (фолбэк без
+    /// tool-calling) идёт через фасад реестра баз; rewrite/rerank используют
+    /// тот же чат-роутер (только чисто-vault путь).
+    private func wireRagProvider() {
+        guard chatViewModel.ragProvider == nil else { return }
+        chatViewModel.ragProvider = { [weak knowledgeBaseManager,
+                                       weak functionRouter] chat, query in
+            guard let manager = knowledgeBaseManager else { return nil }
+            let needsLLM = chat.configuration.ragQueryRewrite || chat.configuration.ragRerankEnabled
+            // Задача 28: у реранка/переписывания своя функция роутинга.
+            let chatProvider = needsLLM ? functionRouter?.resolveChatProvider(for: .ragRerank) : nil
+            return await manager.retrieve(enabledIDs: chat.configuration.enabledKnowledgeBaseIDs,
+                                          query: query,
+                                          history: chat.messages,
+                                          configuration: chat.configuration,
+                                          chatProvider: chatProvider)
+        }
+    }
+
+    /// Связка чата с инструментом rag_search (задача 34): определение по
+    /// включённым базам чата и исполнитель поиска.
+    private func wireRagTool() {
+        guard chatViewModel.ragToolBridge == nil else { return }
+        let manager = knowledgeBaseManager
+        chatViewModel.ragToolBridge = ChatViewModel.RagToolBridge(
+            definition: { enabledIDs in
+                manager.toolDefinition(enabledIDs: enabledIDs)
+            },
+            execute: { args, enabledIDs, topK, minScore in
+                await manager.executeSearchTool(argumentsJSON: args,
+                                                enabledIDs: enabledIDs,
+                                                topK: topK,
+                                                minScore: minScore)
+            })
+    }
+
+    /// Связка чата с MCP (задача 15): инструменты включённых серверов и
+    /// исполнитель вызовов.
+    private func wireMCPBridge() {
+        guard chatViewModel.mcpBridge == nil else { return }
+        let manager = mcpServersViewModel.manager
+        chatViewModel.mcpBridge = ChatViewModel.MCPBridge(
+            tools: { [weak mcpServersViewModel] serverIDs in
+                await mcpServersViewModel?.tools(for: serverIDs) ?? []
+            },
+            execute: { name, args in
+                await manager.call(qualifiedName: name, argumentsJSON: args)
+            })
+    }
+
+    /// Связка чата со встроенными инструментами проекта (задача 21):
+    /// провайдер держит исполнитель для текущего projectRepoPath и
+    /// пересоздаёт его при смене пути.
+    private func wireProjectTools() {
+        guard chatViewModel.projectToolsBridge == nil else { return }
+        let provider = projectToolsProvider
+        chatViewModel.projectToolsBridge = ChatViewModel.ProjectToolsBridge(
+            available: { provider.current() != nil },
+            tools: { provider.current()?.registry.definitions() ?? [] },
+            execute: { name, args in
+                guard let current = provider.current() else {
+                    return "ERROR: репозиторий проекта не выбран (Настройки → Инструменты)"
+                }
+                return await current.executor.execute(name: name, argumentsJSON: args)
+            })
+        // /help (задачи 22, 25): RAG-ретрив по докам репозитория с фолбэком
+        // на полный контекст — вся логика в ProjectToolsProvider.
+        chatViewModel.projectDocsProvider = { question in
+            await provider.helpContext(question: question)
+        }
     }
 }
