@@ -45,6 +45,7 @@ final class ToolRegistry: Sendable {
             GitBranchesTool(git: git),
             GitStatusTool(git: git),
             GitLogTool(git: git),
+            GitDiffTool(git: git),
             ListFilesTool(git: git),
             ReadFileTool()
         ])

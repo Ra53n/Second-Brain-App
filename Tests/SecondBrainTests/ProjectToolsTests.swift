@@ -145,7 +145,8 @@ final class ToolRegistryTests: XCTestCase {
         let registry = ToolRegistry.projectTools(repoRoot: FileManager.default.temporaryDirectory)
         let defs = registry.definitions()
         XCTAssertEqual(Set(defs.map(\.name)),
-                       ["git_branches", "git_status", "git_log", "list_files", "read_file"])
+                       ["git_branches", "git_status", "git_log", "git_diff",
+                        "list_files", "read_file"])
         for def in defs {
             XCTAssertFalse(def.name.contains("__"),
                            "\(def.name): коллизия с qualified-именами MCP")

@@ -235,7 +235,7 @@ final class SlashHelpViewModelTests: XCTestCase {
     func testHelpInjectsDocsAndProjectTools() async throws {
         let provider = RecordingToolProvider()
         let viewModel = makeViewModel(provider: provider)
-        viewModel.projectDocsProvider = { "=== README.md ===\nЭто проект." }
+        viewModel.projectDocsProvider = { _ in "=== README.md ===\nЭто проект." }
         viewModel.projectToolsBridge = ChatViewModel.ProjectToolsBridge(
             available: { true },
             tools: { [ToolDefinition(name: "git_status", description: "статус",
@@ -287,7 +287,7 @@ final class SlashHelpViewModelTests: XCTestCase {
     func testHelpWithoutRepositoryShowsError() async throws {
         let provider = RecordingToolProvider()
         let viewModel = makeViewModel(provider: provider)
-        viewModel.projectDocsProvider = { nil } // репозиторий не настроен
+        viewModel.projectDocsProvider = { _ in nil } // репозиторий не настроен
 
         viewModel.input = "/help вопрос"
         viewModel.send()
@@ -303,7 +303,7 @@ final class SlashHelpViewModelTests: XCTestCase {
     func testHelpDegradesGracefullyWithoutToolSupport() async throws {
         let provider = StreamOnlyProvider()
         let viewModel = makeViewModel(provider: provider)
-        viewModel.projectDocsProvider = { "=== README.md ===\nДоки." }
+        viewModel.projectDocsProvider = { _ in "=== README.md ===\nДоки." }
         viewModel.projectToolsBridge = ChatViewModel.ProjectToolsBridge(
             available: { true },
             tools: { [ToolDefinition(name: "git_status", description: "с",
@@ -323,7 +323,7 @@ final class SlashHelpViewModelTests: XCTestCase {
     func testHelpSkipsRagRetrieval() async throws {
         let provider = RecordingToolProvider()
         let viewModel = makeViewModel(provider: provider)
-        viewModel.projectDocsProvider = { "доки" }
+        viewModel.projectDocsProvider = { _ in "доки" }
         var ragCalled = false
         viewModel.ragProvider = { _, _ in ragCalled = true; return nil }
         if let id = viewModel.selectedChatID,

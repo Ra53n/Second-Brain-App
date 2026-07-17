@@ -122,6 +122,46 @@ final class GitLogTool: BuiltinTool {
     }
 }
 
+// MARK: - git_diff
+
+/// Diff незакоммиченных изменений (задача 25, «по желанию — diff» из
+/// исходной задачи пользователя). Только чтение.
+final class GitDiffTool: BuiltinTool {
+    /// Кап вывода — диффы бывают огромными, модели столько не нужно.
+    static let maxChars = 64 * 1024
+
+    let name = "git_diff"
+    let description = "Diff незакоммиченных изменений репозитория проекта (рабочее дерево против HEAD). Опционально — только по указанному пути."
+    let parameters = ToolSchemas.object([
+        "path": ToolSchemas.string("Файл или папка относительно корня; пусто — весь репозиторий.")
+    ])
+
+    private let git: GitClient
+    init(git: GitClient) { self.git = git }
+
+    func execute(_ ctx: ToolContext) async -> ToolResult {
+        var path: String?
+        if let p = ctx.input("path"), !p.isEmpty {
+            guard SafePath.resolve(p, under: ctx.repoRoot) != nil else {
+                return .error("путь «\(p)» вне корня проекта")
+            }
+            path = p
+        }
+        do {
+            let out = try await git.diff(path: path)
+            guard !out.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                return .ok("Незакоммиченных изменений нет.")
+            }
+            if out.count > Self.maxChars {
+                return .ok(String(out.prefix(Self.maxChars)) + "\n…(diff обрезан, уточните path)")
+            }
+            return .ok(out)
+        } catch {
+            return .error(GitBranchesTool.describe(error))
+        }
+    }
+}
+
 // MARK: - list_files
 
 /// Список файлов: git ls-files, фолбэк — обход ФС (папка без git).

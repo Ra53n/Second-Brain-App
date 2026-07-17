@@ -11,10 +11,34 @@ import Foundation
 @MainActor
 final class ProjectToolsProvider {
     private let settingsStore: SettingsStore
+    /// Роутер для эмбеддингов /help-ретрива (задача 25); nil — только фолбэк.
+    private let router: FunctionRouter?
+    /// RAG-индекс доков репозитория (задача 25).
+    private let docsIndex = ProjectDocsIndexService()
     private var cached: (path: String, registry: ToolRegistry, executor: ToolExecutor)?
 
-    init(settingsStore: SettingsStore) {
+    init(settingsStore: SettingsStore, router: FunctionRouter? = nil) {
         self.settingsStore = settingsStore
+        self.router = router
+    }
+
+    /// Контекст /help по вопросу (задача 25): RAG-ретрив top-K чанков доков
+    /// при доступном эмбеддере; фолбэк — полный текст доков под бюджет
+    /// (обязан работать без единого ключа). nil — репозиторий не выбран.
+    func helpContext(question: String) async -> String? {
+        guard let root = currentRepoRoot() else { return nil }
+        if let resolved = router?.resolveEmbeddingProvider(for: .embedding) {
+            let tag = "\(resolved.model)|\(resolved.provider.dimension)"
+            if let block = await docsIndex.helpBlock(repoRoot: root,
+                                                    embedder: resolved.provider,
+                                                    tag: tag,
+                                                    question: question) {
+                return block
+            }
+        }
+        return await Task.detached(priority: .userInitiated) {
+            ProjectDocsContext.build(files: ProjectDocsLoader.loadFiles(repoRoot: root))
+        }.value
     }
 
     /// Корень выбранного репозитория; nil — путь не задан (для /help, задача 22).

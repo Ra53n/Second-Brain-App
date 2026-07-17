@@ -49,9 +49,10 @@ final class ChatViewModel: ObservableObject {
         projectToolsBridge?.available() ?? false
     }
 
-    /// /help (задача 22): блок [PROJECT_DOCS] выбранного репозитория.
+    /// /help (задачи 22, 25): блок [PROJECT_DOCS] по вопросу пользователя —
+    /// RAG-ретрив top-K чанков доков либо полный контекст (фолбэк).
     /// nil — репозиторий не настроен; пустая строка — доков в нём нет.
-    var projectDocsProvider: (() async -> String?)?
+    var projectDocsProvider: ((String) async -> String?)?
 
     private let fileURL: URL
     private var saveCancellable: AnyCancellable?
@@ -336,7 +337,7 @@ final class ChatViewModel: ObservableObject {
                 // Документация проекта (задача 22): только для /help-хода.
                 var projectDocs: String?
                 if overrides.wantsProjectDocs {
-                    guard let docs = await self.projectDocsProvider?() else {
+                    guard let docs = await self.projectDocsProvider?(text) else {
                         throw SlashHelpError.repositoryNotConfigured
                     }
                     // Репозиторий без README/docs — честно говорим модели.

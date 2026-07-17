@@ -21,6 +21,7 @@
 | `meeting_settings.json` | `MeetingSettingsStore` (Meetings/MeetingSettings.swift) | JSON — правила раскладки, промпт-правила |
 | `<vault-id>/search.sqlite` | `SearchIndex` (Search/) | SQLite FTS5 — полнотекстовый индекс заметок |
 | `<vault-id>/rag.sqlite` | `RagIndex` (RAG/) | SQLite — чанки и векторы RAG |
+| `<repo-id>/project-docs.sqlite` | `ProjectDocsIndexService` (Tools/) | SQLite (схема RagIndex) — RAG-индекс README+docs выбранного репозитория для /help |
 | `WhisperKit/` | WhisperKit-провайдер (LocalRuntime/) | кэш скачанных CoreML-моделей Whisper |
 
 `<vault-id>` — стабильный id открытого vault: первые 16 hex-символов SHA-256 от стандартизованного пути папки (`VaultID.make`, Vault/VaultTree.swift). У каждого vault — свои индексы.

@@ -168,13 +168,10 @@ struct ContentView: View {
                 }
                 return await current.executor.execute(name: name, argumentsJSON: args)
             })
-        // /help (задача 22): README + docs/*.md выбранного репозитория.
-        // Чтение файлов — вне главного потока.
-        chatViewModel.projectDocsProvider = {
-            guard let root = provider.currentRepoRoot() else { return nil }
-            return await Task.detached(priority: .userInitiated) {
-                ProjectDocsContext.build(files: ProjectDocsLoader.loadFiles(repoRoot: root))
-            }.value
+        // /help (задачи 22, 25): RAG-ретрив по докам репозитория с фолбэком
+        // на полный контекст — вся логика в ProjectToolsProvider.
+        chatViewModel.projectDocsProvider = { question in
+            await provider.helpContext(question: question)
         }
     }
 

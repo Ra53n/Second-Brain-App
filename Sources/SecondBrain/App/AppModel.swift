@@ -59,7 +59,7 @@ final class AppModel: ObservableObject {
         ragIndexManager = RagIndexManager(vaultManager: manager, router: router)
         mcpServersViewModel = MCPServersViewModel()
         syncViewModel = SyncViewModel()
-        projectToolsProvider = ProjectToolsProvider(settingsStore: settingsStore)
+        projectToolsProvider = ProjectToolsProvider(settingsStore: settingsStore, router: router)
 
         wire()
     }

@@ -404,6 +404,22 @@ actor GitClient {
             .map(String.init)
     }
 
+    /// Diff незакоммиченных изменений: рабочее дерево против HEAD (задача 25).
+    /// path — опциональный фильтр. Пустой репозиторий без HEAD → diff против
+    /// пустого индекса (обычный `git diff`).
+    func diff(path: String? = nil) async throws -> String {
+        var args = ["diff", "HEAD"]
+        if let path { args += ["--", path] }
+        do {
+            return try await run(args)
+        } catch let error as GitError {
+            guard case .commandFailed = error else { throw error }
+            var fallback = ["diff"]
+            if let path { fallback += ["--", path] }
+            return try await run(fallback)
+        }
+    }
+
     /// Remotes из `git remote -v` (по одному на имя, URL — fetch-вариант).
     func remotes() async throws -> [GitRemote] {
         let out = try await run(["remote", "-v"])
