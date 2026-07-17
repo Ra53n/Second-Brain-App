@@ -143,35 +143,49 @@ final class FunctionRoutingConfigTests: XCTestCase {
 
 final class FunctionRoutingStoreTests: XCTestCase {
 
+    // ВАЖНО (задача 33): только temp-файлы. Прежние версии этих тестов
+    // удаляли/перезаписывали НАСТОЯЩИЙ routing.json пользователя при каждом
+    // прогоне swift test — пользователь терял выбор модели эмбеддинга.
+    private var tempURL: URL!
+
+    override func setUpWithError() throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("routing-tests-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        tempURL = dir.appendingPathComponent("routing.json")
+    }
+
+    override func tearDownWithError() throws {
+        try? FileManager.default.removeItem(at: tempURL.deletingLastPathComponent())
+    }
+
     func testSaveAndLoadRoundTrip() throws {
         var config = FunctionRoutingConfig()
         config[.chat] = FunctionAssignment(providerID: "openai", model: "gpt-4o-mini")
 
-        FunctionRoutingStore.save(config)
-        defer { try? FileManager.default.removeItem(at: FunctionRoutingStore.fileURL) }
+        FunctionRoutingStore.save(config, to: tempURL)
 
-        XCTAssertEqual(FunctionRoutingStore.load(), config)
+        XCTAssertEqual(FunctionRoutingStore.load(from: tempURL), config)
     }
 
     func testLoadMissingFileGivesEmptyConfig() {
-        try? FileManager.default.removeItem(at: FunctionRoutingStore.fileURL)
-        XCTAssertEqual(FunctionRoutingStore.load(), FunctionRoutingConfig())
+        XCTAssertEqual(FunctionRoutingStore.load(from: tempURL), FunctionRoutingConfig())
     }
 
     func testCorruptFileMovedAsideAndEmptyConfigReturned() throws {
-        let dir = FunctionRoutingStore.fileURL.deletingLastPathComponent()
-        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        try Data("гарантированно битый json {{{".utf8).write(to: FunctionRoutingStore.fileURL)
-        let backup = FunctionRoutingStore.fileURL.deletingPathExtension().appendingPathExtension("corrupt.json")
-        defer {
-            try? FileManager.default.removeItem(at: FunctionRoutingStore.fileURL)
-            try? FileManager.default.removeItem(at: backup)
-        }
+        try Data("гарантированно битый json {{{".utf8).write(to: tempURL)
+        let backup = tempURL.deletingPathExtension().appendingPathExtension("corrupt.json")
 
-        let config = FunctionRoutingStore.load()
+        let config = FunctionRoutingStore.load(from: tempURL)
 
         XCTAssertEqual(config, FunctionRoutingConfig())
         XCTAssertTrue(FileManager.default.fileExists(atPath: backup.path))
+    }
+
+    /// Регресс задачи 33: дефолтный путь стора — реальный файл, тесты роутера
+    /// обязаны получать temp-URL (see makeRouter в FunctionRouterTests).
+    func testDefaultFileURLPointsToAppSupport() {
+        XCTAssertTrue(FunctionRoutingStore.fileURL.path.contains("SecondBrain/routing.json"))
     }
 }
 
@@ -182,7 +196,13 @@ final class FunctionRouterTests: XCTestCase {
 
     private func makeRouter() -> (FunctionRouter, ProviderRegistry) {
         let registry = ProviderRegistry()
-        let router = FunctionRouter(registry: registry, config: FunctionRoutingConfig())
+        // temp-URL обязателен (задача 33): assign() сохраняет конфиг, и без
+        // подмены тесты перезаписывали реальный routing.json пользователя.
+        let storeURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("router-\(UUID().uuidString).json")
+        let router = FunctionRouter(registry: registry,
+                                    config: FunctionRoutingConfig(),
+                                    storeURL: storeURL)
         return (router, registry)
     }
 

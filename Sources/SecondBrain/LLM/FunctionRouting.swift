@@ -100,23 +100,26 @@ enum FunctionRoutingStore {
         Config.appSupportDirectory.appendingPathComponent("routing.json")
     }
 
-    static func load() -> FunctionRoutingConfig {
-        guard let data = try? Data(contentsOf: fileURL) else { return FunctionRoutingConfig() }
+    /// url параметризован (задача 33): тесты обязаны работать с temp-файлом —
+    /// раньше они удаляли/перезаписывали НАСТОЯЩИЙ routing.json пользователя
+    /// при каждом прогоне swift test.
+    static func load(from url: URL = fileURL) -> FunctionRoutingConfig {
+        guard let data = try? Data(contentsOf: url) else { return FunctionRoutingConfig() }
         do {
             return try JSONDecoder().decode(FunctionRoutingConfig.self, from: data)
         } catch {
-            let backup = fileURL.deletingPathExtension().appendingPathExtension("corrupt.json")
+            let backup = url.deletingPathExtension().appendingPathExtension("corrupt.json")
             try? FileManager.default.removeItem(at: backup)
-            try? FileManager.default.moveItem(at: fileURL, to: backup)
+            try? FileManager.default.moveItem(at: url, to: backup)
             return FunctionRoutingConfig()
         }
     }
 
-    static func save(_ config: FunctionRoutingConfig) {
-        let dir = fileURL.deletingLastPathComponent()
+    static func save(_ config: FunctionRoutingConfig, to url: URL = fileURL) {
+        let dir = url.deletingLastPathComponent()
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         guard let data = try? JSONEncoder().encode(config) else { return }
-        try? data.write(to: fileURL, options: .atomic)
+        try? data.write(to: url, options: .atomic)
     }
 }
 
@@ -140,10 +143,16 @@ struct ResolvedEmbeddingProvider { let provider: EmbeddingProvider; let model: S
 final class FunctionRouter: ObservableObject {
     @Published private(set) var config: FunctionRoutingConfig
     let registry: ProviderRegistry
+    /// Куда сохранять конфиг (задача 33): тесты подставляют temp-файл,
+    /// чтобы assign() не перезаписывал реальный routing.json пользователя.
+    private let storeURL: URL
 
-    init(registry: ProviderRegistry, config: FunctionRoutingConfig = FunctionRoutingStore.load()) {
+    init(registry: ProviderRegistry,
+         config: FunctionRoutingConfig = FunctionRoutingStore.load(),
+         storeURL: URL = FunctionRoutingStore.fileURL) {
         self.registry = registry
         self.config = config
+        self.storeURL = storeURL
     }
 
     /// Явное назначение пользователя для функции, чтобы показать в UI настроек
@@ -155,13 +164,13 @@ final class FunctionRouter: ObservableObject {
     /// Назначает функцию на провайдер+модель и сохраняет немедленно.
     func assign(_ assignment: FunctionAssignment, to function: AppFunction) {
         config[function] = assignment
-        FunctionRoutingStore.save(config)
+        FunctionRoutingStore.save(config, to: storeURL)
     }
 
     /// Снимает назначение — функция вернётся к автодефолту.
     func clearAssignment(for function: AppFunction) {
         config[function] = nil
-        FunctionRoutingStore.save(config)
+        FunctionRoutingStore.save(config, to: storeURL)
     }
 
     func resolveChatProvider(for function: AppFunction) -> ResolvedChatProvider? {
