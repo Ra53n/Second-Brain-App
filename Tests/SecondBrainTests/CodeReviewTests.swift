@@ -176,6 +176,18 @@ final class CodeReviewPromptsTests: XCTestCase {
         XCTAssertTrue(task.contains("ИТОГ РЕВЬЮ: APPROVE"))
         XCTAssertTrue(task.hasSuffix("[DIFF]\nx"))
     }
+
+    func testReviewTaskCustomInstructionReplacesDefault() {
+        let task = CodeReviewPrompts.reviewTask(assembledInput: "[DIFF]\nx",
+                                                instruction: "Смотри только на тесты.")
+        XCTAssertTrue(task.hasPrefix("Смотри только на тесты."))
+        XCTAssertFalse(task.contains("строгий, но доброжелательный"),
+                       "своя инструкция полностью заменяет стандартную")
+        XCTAssertTrue(task.hasSuffix("[DIFF]\nx"), "секции input добавляются всегда")
+        // Пустая/пробельная инструкция — откат к стандартной.
+        XCTAssertTrue(CodeReviewPrompts.reviewTask(assembledInput: "x", instruction: "  \n")
+            .contains("ИТОГ РЕВЬЮ: APPROVE"))
+    }
 }
 
 // MARK: - CodeReviewRunner (сборка + прогон + постинг)
@@ -701,12 +713,15 @@ final class CodeReviewPresetEngineTests: XCTestCase {
         XCTAssertTrue(chat.agentContext?.task.contains("[DIFF]\ndiff --git") == true,
                       "input собран раннером (diff внутри)")
         XCTAssertEqual(chat.messages.last?.reviewTarget?.number, 42)
-        XCTAssertTrue(postRecorder.requests.isEmpty, "автопост выключен по умолчанию")
+        // Автопост итога выключен по умолчанию; единственный POST —
+        // стартовый комментарий из фабрики пресета.
+        XCTAssertEqual(postRecorder.requests.count, 1)
     }
 
     func testPresetAutoPostAfterFinishedRun() async throws {
         var preset = PipelineConfig.codeReviewPreset()
         preset.autoPostReviewComment = true
+        preset.startCommentTemplate = "" // изолируем автопост от старт-коммента
         store.add(preset)
 
         let run = await engine.run(preset, trigger: .prWatch, payload: payload42)
@@ -718,6 +733,46 @@ final class CodeReviewPresetEngineTests: XCTestCase {
                        "https://api.github.com/repos/octo/hello/issues/42/comments")
         let chat = try XCTUnwrap(chatVM.chats.first { $0.id == run.destinationChatID })
         XCTAssertNotNil(chat.messages.last?.reviewPostedAt)
+    }
+
+    func testPresetPostsStartCommentBeforeReview() async throws {
+        var preset = PipelineConfig.codeReviewPreset() // шаблон стартового комментария в фабрике
+        preset.autoPostReviewComment = true
+        store.add(preset)
+
+        let run = await engine.run(preset, trigger: .prWatch, payload: payload42)
+
+        XCTAssertEqual(run.status, .ok)
+        XCTAssertEqual(postRecorder.requests.count, 2, "старт-коммент + автопост итога")
+        let startBody = try JSONDecoder().decode(
+            [String: String].self,
+            from: try XCTUnwrap(postRecorder.requests[0].httpBody))["body"] ?? ""
+        XCTAssertTrue(startBody.contains("взял PR в ревью"),
+                      "первый POST — стартовый комментарий")
+        let finalBody = try JSONDecoder().decode(
+            [String: String].self,
+            from: try XCTUnwrap(postRecorder.requests[1].httpBody))["body"] ?? ""
+        XCTAssertTrue(finalBody.contains("ИТОГ РЕВЬЮ"), "второй POST — итог ревью")
+    }
+
+    func testPresetEmptyStartTemplateSkipsComment() async throws {
+        var preset = PipelineConfig.codeReviewPreset()
+        preset.startCommentTemplate = ""
+        store.add(preset)
+        _ = await engine.run(preset, trigger: .prWatch, payload: payload42)
+        XCTAssertTrue(postRecorder.requests.isEmpty,
+                      "пустой шаблон — старт-коммент не постится (автопост тоже выкл)")
+    }
+
+    func testPresetCustomInstructionReachesAgentTask() async throws {
+        var preset = PipelineConfig.codeReviewPreset()
+        preset.startCommentTemplate = ""
+        preset.inputTemplate = "Проверь только безопасность."
+        store.add(preset)
+        let run = await engine.run(preset, trigger: .prWatch, payload: payload42)
+        let chat = try XCTUnwrap(chatVM.chats.first { $0.id == run.destinationChatID })
+        XCTAssertTrue(chat.agentContext?.task.hasPrefix("Проверь только безопасность.") == true,
+                      "инструкция из пайплайна дошла до FSM-задачи")
     }
 
     func testPresetManualRunWithoutPayloadIsError() async throws {

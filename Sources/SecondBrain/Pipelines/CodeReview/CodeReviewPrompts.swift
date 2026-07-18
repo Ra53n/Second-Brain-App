@@ -9,11 +9,10 @@
 import Foundation
 
 enum CodeReviewPrompts {
-    /// Задача для FSM-прогона: инструкция ревьюера + собранный input
-    /// (CodeReviewInput.assemble). Структура ответа жёсткая — её парсит
-    /// parseVerdict и читает человек.
-    static func reviewTask(assembledInput: String) -> String {
-        """
+    /// Стандартная инструкция ревьюера. Вынесена отдельно: пайплайн может
+    /// заменить её своей (PipelineConfig.inputTemplate пресета) — структура
+    /// ответа тогда на совести пользователя (без маркера не будет бейджа).
+    static let defaultInstruction = """
         Проведи code review изменений ниже. Ты — строгий, но доброжелательный \
         ревьюер: ищи баги, риски и расхождения с документацией проекта, \
         отмечай хорошее кратко. Если секция [TESTS] указывает тесты — оцени, \
@@ -30,9 +29,15 @@ enum CodeReviewPrompts {
         (что покрыто, чего не хватает)
         Последней строкой выведи РОВНО одно из двух:
         «ИТОГ РЕВЬЮ: APPROVE» либо «ИТОГ РЕВЬЮ: НУЖНЫ ПРАВКИ».
-
-        \(assembledInput)
         """
+
+    /// Задача для FSM-прогона: инструкция ревьюера + собранный input
+    /// (CodeReviewInput.assemble). instruction — переопределение из
+    /// пайплайна; nil/пусто — стандартная.
+    static func reviewTask(assembledInput: String, instruction: String? = nil) -> String {
+        let trimmed = instruction?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let effective = (trimmed?.isEmpty == false) ? trimmed! : defaultInstruction
+        return effective + "\n\n" + assembledInput
     }
 
     /// Map-фаза сжатия большого диффа: конспект одного чанка. Пути и номера

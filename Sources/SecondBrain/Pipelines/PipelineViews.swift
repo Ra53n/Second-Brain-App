@@ -191,14 +191,23 @@ private struct PipelineEditorForm: View {
             Section("Пайплайн") {
                 TextField("Название", text: $pipeline.name)
                 Toggle("Включён", isOn: $pipeline.enabled)
-                if pipeline.preset == .codeReview {
-                    Text("Пресет Code Review: input прогона (diff PR, документация, тесты) собирается автоматически — промпт ниже не используется.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
             }
             triggerSection
-            if pipeline.preset != .codeReview {
+            if pipeline.preset == .codeReview {
+                Section("Промпт агента-ревьюера") {
+                    TextEditor(text: $pipeline.inputTemplate)
+                        .font(.body.monospaced())
+                        .frame(minHeight: 88)
+                    Text("Инструкция ревьюера; пусто — стандартная (структура с «ИТОГ РЕВЬЮ: APPROVE|НУЖНЫ ПРАВКИ» — без маркера не будет бейджа вердикта). Секции [PR]/[DIFF]/[PROJECT_DOCS]/[TESTS] добавляются к промпту автоматически.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Button("Подставить стандартную для правки") {
+                        pipeline.inputTemplate = CodeReviewPrompts.defaultInstruction
+                    }
+                    .controlSize(.small)
+                    .disabled(!pipeline.inputTemplate.isEmpty)
+                }
+            } else {
                 Section("Промпт") {
                     TextEditor(text: $pipeline.inputTemplate)
                         .font(.body.monospaced())
@@ -415,7 +424,9 @@ private struct PipelineEditorForm: View {
                 // терминала FSM (правило бэклога №16).
                 Toggle("Постить ревью комментарием в PR автоматически",
                        isOn: $pipeline.autoPostReviewComment)
-                Text("Нужен GitHub-токен с правом записи (Настройки → «Инструменты»). Без автопоста ревью отправляется кнопкой под сообщением.")
+                TextField("Комментарий в PR при старте ревью (пусто — не постить)",
+                          text: $pipeline.startCommentTemplate)
+                Text("Стартовый комментарий сообщает автору PR, что агент взял его в работу; поддерживает {{trigger_payload}} и {{date}}. И автопост, и стартовый комментарий требуют GitHub-токен с правом записи (Настройки → «Инструменты»); без токена ревью идёт, комментарии пропускаются.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

@@ -118,10 +118,16 @@ struct PipelineConfig: Identifiable, Codable, Equatable {
     /// Догонять один пропущенный cron-слот при старте приложения (паттерн MA).
     var catchUpOnStart: Bool = false
     /// Встроенный пресет (задача 37): .codeReview меняет сборку input прогона.
+    /// Для пресета inputTemplate — ИНСТРУКЦИЯ ревьюера (пусто — стандартная
+    /// из CodeReviewPrompts); секции [PR]/[DIFF]/… добавляются автоматически.
     var preset: PipelinePreset?
     /// Автопост итога ревью комментарием в PR (только preset == .codeReview,
     /// только после успешного терминала FSM). Default выкл — write-операция.
     var autoPostReviewComment: Bool = false
+    /// Комментарий в PR при СТАРТЕ ревью (фидбек: «не узнаешь, что началось»).
+    /// Пусто — не постить. Плейсхолдеры PipelineTemplate; best-effort — без
+    /// write-токена комментарий тихо пропускается, ревью идёт дальше.
+    var startCommentTemplate: String = ""
     var createdAt: Date = Date()
 
     init(name: String = "Новый пайплайн") {
@@ -133,7 +139,7 @@ struct PipelineConfig: Identifiable, Codable, Equatable {
         case projectToolsEnabled, enabledMCPServerIDs, enabledKnowledgeBaseIDs
         case agentMode, providerID, model
         case destinationChatID, catchUpOnStart, createdAt
-        case preset, autoPostReviewComment
+        case preset, autoPostReviewComment, startCommentTemplate
     }
 
     init(from decoder: Decoder) throws {
@@ -164,6 +170,8 @@ struct PipelineConfig: Identifiable, Codable, Equatable {
         preset = (try? c.decodeIfPresent(PipelinePreset.self, forKey: .preset)) ?? nil
         autoPostReviewComment = try c.decodeIfPresent(Bool.self, forKey: .autoPostReviewComment)
             ?? d.autoPostReviewComment
+        startCommentTemplate = try c.decodeIfPresent(String.self, forKey: .startCommentTemplate)
+            ?? d.startCommentTemplate
         createdAt = try c.decodeIfPresent(Date.self, forKey: .createdAt) ?? Date()
     }
 }
@@ -179,6 +187,7 @@ extension PipelineConfig {
         preset.agentMode = .fsm
         preset.preset = .codeReview
         preset.projectToolsEnabled = true
+        preset.startCommentTemplate = "🤖 Агент взял PR в ревью — итог будет комментарием после проверки."
         return preset
     }
 }

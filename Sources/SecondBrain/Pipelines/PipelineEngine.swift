@@ -151,12 +151,23 @@ final class PipelineEngine {
         }
         let chatID = chatViewModel.chats[chatIndex].id
         do {
+            // Стартовый комментарий в PR — ДО долгой подготовки (сжатие
+            // большого диффа занимает минуты): автор PR сразу видит, что
+            // агент взял его в работу. Best-effort — ошибка не мешает ревью.
+            if !pipeline.startCommentTemplate.isEmpty,
+               let target = PRReference.firstMatch(in: payload) {
+                await runner.postStartComment(target: target,
+                                              template: pipeline.startCommentTemplate,
+                                              payload: payload)
+            }
             // Сжатие диффа — той же моделью, что поведёт FSM: applySelection
             // уже перенёс override пайплайна в конфигурацию чата.
             let condenseProvider = chatViewModel.resolveProvider(
                 for: chatViewModel.chats[chatIndex])
-            let prepared = try await runner.prepareInput(prWatchPayload: payload,
-                                                         condenseProvider: condenseProvider)
+            let prepared = try await runner.prepareInput(
+                prWatchPayload: payload,
+                condenseProvider: condenseProvider,
+                instruction: pipeline.inputTemplate)
             let status = await runner.runReview(prepared: prepared, chatIndex: chatIndex)
             return fsmErrorText(status: status, chatID: chatID)
         } catch {

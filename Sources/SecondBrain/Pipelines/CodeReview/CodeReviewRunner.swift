@@ -72,8 +72,10 @@ final class CodeReviewRunner {
     /// Ревью PR по ссылке (/review <URL | owner/repo#n>): метаданные + diff.
     /// condenseProvider — провайдер map-сжатия большого диффа: та же модель,
     /// что поведёт FSM (override чата/пайплайна); nil — дефолт роутера.
+    /// instruction — инструкция ревьюера из пайплайна; nil — стандартная.
     func prepareInput(reference: PRReference,
-                      condenseProvider: ResolvedChatProvider? = nil) async throws -> PreparedReview {
+                      condenseProvider: ResolvedChatProvider? = nil,
+                      instruction: String? = nil) async throws -> PreparedReview {
         let token = tokenProvider()
         let pr = try await client.pullRequest(owner: reference.owner,
                                               repo: reference.repo,
@@ -87,13 +89,15 @@ final class CodeReviewRunner {
                               prTitle: pr.title,
                               diff: diff,
                               target: reference,
-                              condenseProvider: condenseProvider)
+                              condenseProvider: condenseProvider,
+                              instruction: instruction)
     }
 
     /// Ревью из PR-watch: payload уже содержит метаданные и diff_url —
     /// отдельный запрос метаданных не нужен (подсказка задачи).
     func prepareInput(prWatchPayload payload: String,
-                      condenseProvider: ResolvedChatProvider? = nil) async throws -> PreparedReview {
+                      condenseProvider: ResolvedChatProvider? = nil,
+                      instruction: String? = nil) async throws -> PreparedReview {
         guard let reference = PRReference.firstMatch(in: payload) else {
             throw ReviewError.payloadWithoutPR
         }
@@ -109,7 +113,8 @@ final class CodeReviewRunner {
                               prTitle: title,
                               diff: diff,
                               target: reference,
-                              condenseProvider: condenseProvider)
+                              condenseProvider: condenseProvider,
+                              instruction: instruction)
     }
 
     /// Локальное ревью незакоммиченных изменений projectRepoPath. Диф — через
@@ -127,7 +132,28 @@ final class CodeReviewRunner {
                               prTitle: "локальные изменения \(root.lastPathComponent)",
                               diff: diff,
                               target: nil,
-                              condenseProvider: condenseProvider)
+                              condenseProvider: condenseProvider,
+                              instruction: nil)
+    }
+
+    /// Стартовый комментарий в PR («агент взял в ревью», фидбек пользователя).
+    /// Best-effort: нет токена или сеть упала — ревью идёт дальше, возвращаем
+    /// текст проблемы для бейджа/лога (не для статуса прогона).
+    @discardableResult
+    func postStartComment(target: ReviewTarget, template: String,
+                          payload: String?) async -> String? {
+        let text = PipelineTemplate.render(template, payload: payload)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return nil }
+        do {
+            try await client.postComment(owner: target.owner, repo: target.repo,
+                                         number: target.number, body: text,
+                                         token: tokenProvider())
+            return nil
+        } catch {
+            return (error as? LocalizedError)?.errorDescription
+                ?? error.localizedDescription
+        }
     }
 
     // MARK: - Прогон и постинг
@@ -179,7 +205,8 @@ final class CodeReviewRunner {
     /// Общая часть: condense большого диффа, доки, тесты, сборка секций.
     private func assemble(prSummary: String?, prTitle: String,
                           diff: String, target: ReviewTarget?,
-                          condenseProvider: ResolvedChatProvider?) async -> PreparedReview {
+                          condenseProvider: ResolvedChatProvider?,
+                          instruction: String?) async -> PreparedReview {
         let files = CodeReviewInput.splitByFile(diff)
         let diffSection = await condenseIfNeeded(diff: diff, files: files,
                                                  preferred: condenseProvider)
@@ -191,7 +218,8 @@ final class CodeReviewRunner {
                                              tests: tests)
         let display = target.map { "Ревью PR #\($0.number): \(prTitle)" }
             ?? "Ревью: \(prTitle)"
-        return PreparedReview(task: CodeReviewPrompts.reviewTask(assembledInput: input),
+        return PreparedReview(task: CodeReviewPrompts.reviewTask(assembledInput: input,
+                                                                 instruction: instruction),
                               display: display,
                               target: target)
     }
