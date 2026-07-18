@@ -119,7 +119,7 @@ button:disabled{opacity:.5;cursor:default}
   <!-- Чат -->
   <div id="viewChat" class="view active">
     <div class="sidebar">
-      <div style="padding:8px"><button id="newChatBtn" class="primary" style="width:100%">+ Новый диалог</button></div>
+      <div style="padding:8px"><button id="newChatBtn" class="primary" style="width:100%">+ Новое обращение</button></div>
       <div id="chatList" class="list"></div>
     </div>
     <div class="pane">
@@ -340,7 +340,7 @@ function renderAuth(){
     login.onclick = function(){ $("loginErr").textContent=""; $("loginBack").classList.add("open"); $("loginUser").focus(); };
     a.appendChild(login);
     $("banner").style.display="block";
-    $("banner").textContent="Гостевой режим: история чата хранится только в этом браузере. Войдите, чтобы сохранять диалоги на сервере и получать ответы с учётом ваших обращений.";
+    $("banner").textContent="Гостевой режим: история обращения хранится только в этом браузере. Войдите, чтобы сохранять обращения на сервере и получать ответы с учётом ваших прошлых заявок.";
   }
 }
 function doLogin(){
@@ -359,16 +359,16 @@ function doLogout(){
 function loadChats(){
   var list=$("chatList"); list.innerHTML="";
   if(!state.me){
-    var note = el("div","status","Гость: один диалог, история в этом браузере. Войдите, чтобы вести несколько диалогов.");
+    var note = el("div","status","Гость: одно обращение, история в этом браузере. Войдите, чтобы вести несколько обращений.");
     note.style.padding="8px"; list.appendChild(note);
     return Promise.resolve();
   }
   return api("/chats").then(function(page){
     (page.items||[]).forEach(function(s){
       var item = el("div","chat-item"+(s.id===state.currentId?" active":""));
-      var t = el("div","t", s.title || "Без названия");
+      var t = el("div","t", s.title || "Без темы");
       var del = el("span","del","✕");
-      del.onclick=function(ev){ ev.stopPropagation(); if(confirm("Удалить диалог?")) api("/chats/"+s.id,{method:"DELETE"}).then(function(){ if(state.currentId===s.id){ state.currentId=null; clearMessages(); } loadChats(); }); };
+      del.onclick=function(ev){ ev.stopPropagation(); if(confirm("Удалить обращение?")) api("/chats/"+s.id,{method:"DELETE"}).then(function(){ if(state.currentId===s.id){ state.currentId=null; clearMessages(); } loadChats(); }); };
       item.onclick=function(){ selectChat(s.id); };
       item.appendChild(t); item.appendChild(del); list.appendChild(item);
     });
