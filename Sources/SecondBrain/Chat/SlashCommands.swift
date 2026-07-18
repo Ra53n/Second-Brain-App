@@ -12,6 +12,10 @@ enum SlashCommand: Equatable {
     case help(question: String)
     /// «/help» без вопроса — показать usage.
     case helpUsage
+    /// «/review <PR URL | owner/repo#n | local>» — code review (задача 37).
+    /// Аргумент — сырая строка: адрес PR разбирает PRReference (тестируемый
+    /// отдельно), пустой аргумент — usage.
+    case review(argument: String)
     /// «/что-то» — неизвестная команда (локальная подсказка).
     case unknown(String)
 
@@ -23,7 +27,9 @@ enum SlashCommand: Equatable {
 
     static let catalog: [Spec] = [
         Spec(name: "/help",
-             summary: "ответ на вопрос о выбранном проекте по его документации и git (репозиторий — Настройки → Инструменты)")
+             summary: "ответ на вопрос о выбранном проекте по его документации и git (репозиторий — Настройки → Инструменты)"),
+        Spec(name: "/review",
+             summary: "code review: /review <ссылка на PR | owner/repo#N | local> — ревью PR с GitHub или незакоммиченных изменений проекта")
     ]
 
     /// Разбирает ввод. nil — обычный текст (не команда): команда должна
@@ -41,9 +47,24 @@ enum SlashCommand: Equatable {
         switch name.lowercased() {
         case "help":
             return argument.isEmpty ? .helpUsage : .help(question: argument)
+        case "review":
+            return .review(argument: argument)
         default:
             return .unknown("/\(name)")
         }
+    }
+
+    /// Usage команды /review — примеры всех трёх форм. Для чтения тестов
+    /// агентом в чате должны быть включены инструменты проекта.
+    static func reviewUsageText(problem: String? = nil) -> String {
+        var lines: [String] = []
+        if let problem { lines.append(problem) }
+        lines.append("Использование: `/review <ссылка | owner/repo#N | local>`")
+        lines.append("- `/review https://github.com/owner/repo/pull/42` — ревью PR по ссылке")
+        lines.append("- `/review owner/repo#42` — короткая форма")
+        lines.append("- `/review local` — ревью незакоммиченных изменений выбранного репозитория (Настройки → «Инструменты»)")
+        lines.append("Подсказка: включите в чате «Инструменты проекта», чтобы агент мог читать тесты и файлы.")
+        return lines.joined(separator: "\n")
     }
 
     /// Usage-текст (локальный ответ на «/help» без вопроса и на unknown).

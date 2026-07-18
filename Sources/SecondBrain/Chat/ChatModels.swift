@@ -84,6 +84,12 @@ struct ChatMessage: Identifiable, Codable, Equatable {
     /// Номер шага выполнения (0-based) и всего шагов — только для execution.
     var agentStep: Int?
     var agentTotal: Int?
+    /// Итог code review (задача 37): PR, к которому относится сообщение —
+    /// включает кнопку «Отправить комментарием в PR» и бейдж вердикта.
+    /// Локальное ревью маркера не получает — постить некуда.
+    var reviewTarget: ReviewTarget?
+    /// Когда ревью отправлено комментарием в PR («Отправлено ✓» персистентно).
+    var reviewPostedAt: Date?
     var createdAt: Date = Date()
 
     init(role: ChatRole, content: String, metrics: MessageMetrics? = nil) {
@@ -95,6 +101,7 @@ struct ChatMessage: Identifiable, Codable, Equatable {
     enum CodingKeys: String, CodingKey {
         case id, role, content, metrics, sources, toolCalls, createdAt
         case agentState, agentStep, agentTotal
+        case reviewTarget, reviewPostedAt
     }
 
     init(from decoder: Decoder) throws {
@@ -108,6 +115,8 @@ struct ChatMessage: Identifiable, Codable, Equatable {
         agentState = try c.decodeIfPresent(AgentTaskState.self, forKey: .agentState)
         agentStep = try c.decodeIfPresent(Int.self, forKey: .agentStep)
         agentTotal = try c.decodeIfPresent(Int.self, forKey: .agentTotal)
+        reviewTarget = try c.decodeIfPresent(ReviewTarget.self, forKey: .reviewTarget)
+        reviewPostedAt = try c.decodeIfPresent(Date.self, forKey: .reviewPostedAt)
         createdAt = try c.decodeIfPresent(Date.self, forKey: .createdAt) ?? Date()
     }
 }

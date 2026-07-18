@@ -183,6 +183,11 @@ struct ChatDetailView: View {
             ToolbarItem(placement: .primaryAction) { ragTuningButton }
             ToolbarItem(placement: .primaryAction) { modelPicker }
         }
+        // Превью постинга ревью в PR (задача 37): write-операция — только
+        // после явного подтверждения в шите (правило бэклога №16).
+        .sheet(item: $viewModel.reviewPostDialog) { context in
+            ReviewPostSheet(viewModel: viewModel, context: context)
+        }
         // Клик по wikilink в ответе → открыть заметку в разделе «Заметки».
         .environment(\.openURL, OpenURLAction { url in
             guard let target = ChatWikilinkRenderer.target(from: url) else {
@@ -386,7 +391,8 @@ struct ChatDetailView: View {
                     ForEach(chat?.messages ?? []) { message in
                         MessageBubble(message: message,
                                       resolveWikilink: resolveWikilink,
-                                      openNote: openNote)
+                                      openNote: openNote,
+                                      onPostReview: { viewModel.openReviewPostDialog(for: $0) })
                             .id(message.id)
                     }
                 }
@@ -683,6 +689,8 @@ struct MessageBubble: View {
     let message: ChatMessage
     var resolveWikilink: (String) -> URL? = { _ in nil }
     var openNote: (String) -> Void = { _ in }
+    /// Постинг ревью в PR (задача 37): кнопка видна при message.reviewTarget.
+    var onPostReview: ((ChatMessage) -> Void)? = nil
 
     @State private var isHovering = false
     /// Кратковременный фидбек «скопировано» (галочка ~1 с).
@@ -695,6 +703,7 @@ struct MessageBubble: View {
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                 agentBadge
+                reviewVerdictBadge
             }
             toolCallsBlock
             Markdown(renderedContent)
@@ -707,6 +716,7 @@ struct MessageBubble: View {
                     .foregroundStyle(.tertiary)
                     .help(metricsTooltip(metrics) ?? "")
             }
+            reviewPostRow
         }
         .padding(10)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -746,6 +756,45 @@ struct MessageBubble: View {
         case .execution: return .orange
         case .validation: return .purple
         case .answer: return .green
+        }
+    }
+
+    /// Бейдж вердикта ревью (задача 37): вычисляется из content — маркер
+    /// «ИТОГ РЕВЬЮ:» ставит сама модель, персистить нечего.
+    @ViewBuilder
+    private var reviewVerdictBadge: some View {
+        if message.reviewTarget != nil,
+           let verdict = CodeReviewPrompts.parseVerdict(message.content) {
+            let approve = verdict == .approve
+            Text(approve ? "APPROVE" : "Нужны правки")
+                .font(.caption2.bold())
+                .padding(.horizontal, 6)
+                .padding(.vertical, 1)
+                .background(Capsule().fill((approve ? Color.green : .orange).opacity(0.15)))
+                .foregroundStyle(approve ? Color.green : .orange)
+        }
+    }
+
+    /// Действие «Отправить комментарием в PR» (задача 37) под итогом ревью;
+    /// после успешного постинга — персистентная метка «Отправлено ✓».
+    @ViewBuilder
+    private var reviewPostRow: some View {
+        if let target = message.reviewTarget {
+            if let postedAt = message.reviewPostedAt {
+                Label("Отправлено в PR #\(String(target.number)) · \(postedAt.formatted(date: .abbreviated, time: .shortened))",
+                      systemImage: "checkmark.circle.fill")
+                    .font(.caption)
+                    .foregroundStyle(.green)
+            } else if let onPostReview {
+                Button {
+                    onPostReview(message)
+                } label: {
+                    Label("Отправить комментарием в PR #\(String(target.number))",
+                          systemImage: "paperplane")
+                }
+                .controlSize(.small)
+                .help("Превью и подтверждение перед отправкой на GitHub")
+            }
         }
     }
 
@@ -870,5 +919,66 @@ struct MessageBubble: View {
         guard let prompt = metrics.promptTokens,
               let completion = metrics.completionTokens else { return nil }
         return "промпт: \(prompt) ток. · ответ: \(completion) ток."
+    }
+}
+
+// MARK: - Превью постинга ревью в PR (задача 37)
+
+/// Редактируемое превью + явное подтверждение перед POST-комментарием
+/// (паттерн TitleConfirmationView встреч; правило бэклога №16 о write-
+/// операциях). Ошибка отправки показывается здесь же — шит не закрывается.
+struct ReviewPostSheet: View {
+    @ObservedObject var viewModel: ChatViewModel
+    let context: ChatViewModel.ReviewPostContext
+
+    @State private var commentBody: String
+    @State private var errorText: String?
+    @State private var isPosting = false
+
+    init(viewModel: ChatViewModel, context: ChatViewModel.ReviewPostContext) {
+        self.viewModel = viewModel
+        self.context = context
+        _commentBody = State(initialValue: context.body)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Комментарий в PR #\(String(context.target.number)) — \(context.target.owner)/\(context.target.repo)")
+                .font(.headline)
+            TextEditor(text: $commentBody)
+                .font(.body.monospaced())
+                .frame(minWidth: 480, minHeight: 240)
+            if !viewModel.reviewPostTokenAvailable {
+                Label("Нужен GitHub-токен с правом записи — Настройки → «Инструменты».",
+                      systemImage: "exclamationmark.triangle")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+            }
+            if let errorText {
+                Label(errorText, systemImage: "xmark.octagon")
+                    .font(.caption)
+                    .foregroundStyle(.red)
+                    .lineLimit(3)
+            }
+            HStack {
+                Spacer()
+                Button("Отмена") { viewModel.reviewPostDialog = nil }
+                Button(isPosting ? "Отправка…" : "Отправить в PR #\(String(context.target.number))") {
+                    isPosting = true
+                    errorText = nil
+                    Task {
+                        // nil = успех (диалог уже закрыт submitReviewPost'ом).
+                        errorText = await viewModel.submitReviewPost(body: commentBody,
+                                                                     context: context)
+                        isPosting = false
+                    }
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(isPosting
+                          || !viewModel.reviewPostTokenAvailable
+                          || commentBody.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+        }
+        .padding()
     }
 }

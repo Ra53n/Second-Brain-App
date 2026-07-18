@@ -36,6 +36,8 @@ final class AppModel: ObservableObject {
     let pipelineEngine: PipelineEngine
     let pipelineScheduler: PipelineScheduler
     let prWatcher: PRWatcher
+    /// Code review (задача 37): общий раннер /review, пресета и локального диффа.
+    let codeReviewRunner: CodeReviewRunner
 
     private var cancellables: Set<AnyCancellable> = []
 
@@ -83,6 +85,9 @@ final class AppModel: ObservableObject {
         self.pipelineEngine = pipelineEngine
         pipelineScheduler = PipelineScheduler(store: pipelineStore, engine: pipelineEngine)
         prWatcher = PRWatcher(store: pipelineStore, engine: pipelineEngine)
+        codeReviewRunner = CodeReviewRunner(chatViewModel: chatViewModel,
+                                            projectToolsProvider: projectToolsProvider,
+                                            router: router)
 
         wire()
     }
@@ -141,6 +146,10 @@ final class AppModel: ObservableObject {
         // (задача 36): пайплайн, сработавший до первого открытия раздела
         // «Чат», иначе бежал бы без инструментов и RAG.
         wireChatBridges()
+        // Code review (задача 37): раннер — обработчик /review в чате и
+        // сборщик input пресета в движке (weak-ссылки, владелец — AppModel).
+        chatViewModel.codeReviewRunner = codeReviewRunner
+        pipelineEngine.reviewRunner = codeReviewRunner
         // Фоновые циклы пайплайнов — после подвязки мостов (catch-up на старте
         // может сразу запустить прогон). Гашение — по willTerminate внутри.
         pipelineScheduler.start()

@@ -78,6 +78,11 @@ struct AgentTaskContext: Codable, Identifiable, Equatable {
     var id = UUID()
     // --- формальная модель ---
     var task: String                        // исходный запрос пользователя
+    /// Короткая версия task для ленты (задача 37): ревью показывает
+    /// «Ревью PR #N…», а полный input (diff+доки, десятки КБ) живёт в task.
+    /// task персистится целиком — осознанно: resume должен повторить фазу
+    /// с тем же входом. nil — отображается сам task (обычные прогоны).
+    var displayText: String? = nil
     var state: AgentTaskState = .planning   // текущий этап автомата
     var step: Int = 0                       // индекс текущего шага выполнения (0-based)
     var total: Int = 0                      // всего шагов (= plan.count)
@@ -100,13 +105,14 @@ struct AgentTaskContext: Codable, Identifiable, Equatable {
     static let maxPlanRetries = 2
 
     enum CodingKeys: String, CodingKey {
-        case id, task, state, step, total, plan, done, current
+        case id, task, displayText, state, step, total, plan, done, current
         case status, validationResult, validationPassed, answer
         case executionRetries, planRetries, planFeedback, errorText, startedAt
     }
 
-    init(task: String) {
+    init(task: String, displayText: String? = nil) {
         self.task = task
+        self.displayText = displayText
     }
 
     /// Миграционно-устойчивое декодирование (паттерн TaskContext/MeetingContext):
@@ -115,6 +121,7 @@ struct AgentTaskContext: Codable, Identifiable, Equatable {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         id = try c.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
         task = try c.decodeIfPresent(String.self, forKey: .task) ?? ""
+        displayText = try c.decodeIfPresent(String.self, forKey: .displayText)
         state = try c.decodeIfPresent(AgentTaskState.self, forKey: .state) ?? .planning
         step = try c.decodeIfPresent(Int.self, forKey: .step) ?? 0
         total = try c.decodeIfPresent(Int.self, forKey: .total) ?? 0

@@ -27,6 +27,11 @@ final class PipelineEngine {
     private let store: PipelineStore
     private let chatViewModel: ChatViewModel
 
+    /// Раннер code review (задача 37): пресет .codeReview собирает input
+    /// через него (diff+доки+тесты), а не через inputTemplate. weak — владелец
+    /// обоих AppModel, проставляется в wire().
+    weak var reviewRunner: CodeReviewRunner?
+
     /// Overlap guard: пайплайны с живым прогоном.
     private(set) var runningPipelineIDs: Set<UUID> = []
 
@@ -67,33 +72,29 @@ final class PipelineEngine {
         defer { runningPipelineIDs.remove(pipeline.id) }
 
         applySelection(pipeline, toChatAt: chatIndex)
-        let prompt = PipelineTemplate.render(pipeline.inputTemplate, payload: payload)
 
         // Снапшот сообщений ДО прогона: токены и итог считаем по новым.
         let messagesBefore = Set(chatViewModel.chats[chatIndex].messages.map(\.id))
 
-        // running-запись — ДО вызова LLM (crash-safety).
+        // running-запись — ДО подготовки input и вызовов LLM (crash-safety;
+        // у пресета ревью подготовка сама ходит в сеть и может звать модель).
         store.appendRun(run)
 
         var errorText: String?
-        switch pipeline.agentMode {
-        case .fsm:
-            let status = await chatViewModel.runAgentToCompletion(chatIndex: chatIndex,
-                                                                  userText: prompt)
-            switch status {
-            case .finished:
-                errorText = nil
-            case .failed:
-                errorText = chatViewModel.chats.first { $0.id == chatID }?
-                    .agentContext?.errorText
-                    ?? chatViewModel.chats.first { $0.id == chatID }?.errorText
-                    ?? "Прогон завершился ошибкой."
-            case .paused, .running:
-                errorText = "Прогон прерван (пауза/отмена)."
-            }
-        case .single:
-            errorText = await chatViewModel.runSingleTurnToCompletion(chatIndex: chatIndex,
+        if pipeline.preset == .codeReview {
+            errorText = await runCodeReview(pipeline: pipeline, payload: payload,
+                                            chatIndex: chatIndex)
+        } else {
+            let prompt = PipelineTemplate.render(pipeline.inputTemplate, payload: payload)
+            switch pipeline.agentMode {
+            case .fsm:
+                let status = await chatViewModel.runAgentToCompletion(chatIndex: chatIndex,
                                                                       userText: prompt)
+                errorText = fsmErrorText(status: status, chatID: chatID)
+            case .single:
+                errorText = await chatViewModel.runSingleTurnToCompletion(chatIndex: chatIndex,
+                                                                          userText: prompt)
+            }
         }
 
         // Созданный пайплайном чат сохраняет своё имя: автотайтл из первого
@@ -117,10 +118,61 @@ final class PipelineEngine {
             stored.completionTokens = tokens.completion
             stored.totalTokens = tokens.total
         }
+
+        // Автопост ревью (задача 37): строго после успешного терминала и
+        // строго content итогового сообщения (по resultMessageID). Ошибка
+        // автопоста НЕ портит статус прогона — ревью состоялось; текст ошибки
+        // попадает в run и баннер чата, ручная кнопка остаётся fallback'ом.
+        if pipeline.preset == .codeReview, pipeline.autoPostReviewComment,
+           errorText == nil, let runner = reviewRunner {
+            if let postError = await runner.autoPostIfConfigured(chatID: chatID,
+                                                                 messageID: resultMessageID) {
+                let message = "Ревью готово, но автопост в PR не удался: \(postError)"
+                store.updateRun(id: run.id) { $0.errorText = message }
+                if let index = chatViewModel.chats.firstIndex(where: { $0.id == chatID }) {
+                    chatViewModel.chats[index].errorText = message
+                }
+            }
+        }
         return store.runs.first { $0.id == run.id } ?? run
     }
 
     // MARK: - Внутренности
+
+    /// Прогон пресета Code Review: input собирает раннер (сеть + condense),
+    /// прогон — runner.runReview (FSM + маркер reviewTarget на итоге).
+    private func runCodeReview(pipeline: PipelineConfig, payload: String?,
+                               chatIndex: Int) async -> String? {
+        guard let runner = reviewRunner else {
+            return "Code review недоступен: раннер не подключён."
+        }
+        guard let payload else {
+            return "Ручной прогон пресета Code Review без PR невозможен — он запускается триггером PR-watch. Для ревью по ссылке используйте /review в чате."
+        }
+        let chatID = chatViewModel.chats[chatIndex].id
+        do {
+            let prepared = try await runner.prepareInput(prWatchPayload: payload)
+            let status = await runner.runReview(prepared: prepared, chatIndex: chatIndex)
+            return fsmErrorText(status: status, chatID: chatID)
+        } catch {
+            return (error as? LocalizedError)?.errorDescription
+                ?? error.localizedDescription
+        }
+    }
+
+    /// Маппинг статуса FSM-прогона в errorText записи (nil = успех).
+    private func fsmErrorText(status: AgentRunStatus, chatID: UUID) -> String? {
+        switch status {
+        case .finished:
+            return nil
+        case .failed:
+            return chatViewModel.chats.first { $0.id == chatID }?.agentContext?.errorText
+                ?? chatViewModel.chats.first { $0.id == chatID }?.errorText
+                ?? "Прогон завершился ошибкой."
+        case .paused, .running:
+            return "Прогон прерван (пауза/отмена)."
+        }
+    }
 
     /// Индекс destination-чата; отсутствующий/удалённый → новый чат
     /// «Пайплайн: <имя>» в КОНЦЕ списка (не выдёргиваем пользователя из

@@ -47,6 +47,31 @@ final class PipelineModelsTests: XCTestCase {
         XCTAssertEqual(decoded.agentMode, .single)
     }
 
+    // MARK: - Пресет Code Review (задача 37)
+
+    func testPresetFieldsRoundTripAndDefaults() throws {
+        var config = PipelineConfig.codeReviewPreset()
+        config.autoPostReviewComment = true
+        let decoded = try JSONDecoder().decode(PipelineConfig.self,
+                                               from: JSONEncoder().encode(config))
+        XCTAssertEqual(decoded.preset, .codeReview)
+        XCTAssertTrue(decoded.autoPostReviewComment)
+        XCTAssertEqual(decoded.agentMode, .fsm)
+        XCTAssertTrue(decoded.projectToolsEnabled)
+
+        // Конфиг задачи 36 без новых полей: preset nil, автопост выключен.
+        let old = try JSONDecoder().decode(PipelineConfig.self,
+                                           from: Data(#"{"name": "Старый"}"#.utf8))
+        XCTAssertNil(old.preset)
+        XCTAssertFalse(old.autoPostReviewComment)
+    }
+
+    func testUnknownPresetDegradesToPlainPipeline() throws {
+        let json = #"{"name": "x", "preset": "будущийПресет"}"#
+        let decoded = try JSONDecoder().decode(PipelineConfig.self, from: Data(json.utf8))
+        XCTAssertNil(decoded.preset, "незнакомый пресет не роняет декод — обычный пайплайн")
+    }
+
     // MARK: - PipelineTrigger
 
     func testTriggerRoundTrip() throws {

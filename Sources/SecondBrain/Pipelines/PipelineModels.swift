@@ -82,6 +82,14 @@ enum PipelineTrigger: Codable, Equatable {
     }
 }
 
+/// Встроенный пресет пайплайна (задача 37). nil — обычный пайплайн.
+/// Незнакомое значение из будущих версий → nil (пайплайн живёт как обычный).
+enum PipelinePreset: String, Codable {
+    /// Code review: input собирает CodeReviewRunner (diff+доки+тесты),
+    /// inputTemplate конфига не используется.
+    case codeReview
+}
+
 /// Конфиг пайплайна — намерение пользователя. Runtime-состояние (lastSeen PR,
 /// история прогонов) живёт отдельно в PipelineStore: редактирование конфига
 /// в форме не должно затирать состояние.
@@ -109,6 +117,11 @@ struct PipelineConfig: Identifiable, Codable, Equatable {
     var destinationChatID: UUID?
     /// Догонять один пропущенный cron-слот при старте приложения (паттерн MA).
     var catchUpOnStart: Bool = false
+    /// Встроенный пресет (задача 37): .codeReview меняет сборку input прогона.
+    var preset: PipelinePreset?
+    /// Автопост итога ревью комментарием в PR (только preset == .codeReview,
+    /// только после успешного терминала FSM). Default выкл — write-операция.
+    var autoPostReviewComment: Bool = false
     var createdAt: Date = Date()
 
     init(name: String = "Новый пайплайн") {
@@ -120,6 +133,7 @@ struct PipelineConfig: Identifiable, Codable, Equatable {
         case projectToolsEnabled, enabledMCPServerIDs, enabledKnowledgeBaseIDs
         case agentMode, providerID, model
         case destinationChatID, catchUpOnStart, createdAt
+        case preset, autoPostReviewComment
     }
 
     init(from decoder: Decoder) throws {
@@ -145,7 +159,27 @@ struct PipelineConfig: Identifiable, Codable, Equatable {
         destinationChatID = try c.decodeIfPresent(UUID.self, forKey: .destinationChatID)
         catchUpOnStart = try c.decodeIfPresent(Bool.self, forKey: .catchUpOnStart)
             ?? d.catchUpOnStart
+        // Незнакомый пресет будущей версии не должен ронять декод конфига —
+        // try? превращает его в nil (обычный пайплайн).
+        preset = (try? c.decodeIfPresent(PipelinePreset.self, forKey: .preset)) ?? nil
+        autoPostReviewComment = try c.decodeIfPresent(Bool.self, forKey: .autoPostReviewComment)
+            ?? d.autoPostReviewComment
         createdAt = try c.decodeIfPresent(Date.self, forKey: .createdAt) ?? Date()
+    }
+}
+
+extension PipelineConfig {
+    /// Преднастроенный пресет «Code Review» (задача 37): PR-watch + полный
+    /// FSM + инструменты проекта (агент читает тесты/файлы). Поля репозитория
+    /// пустые — пользователь заполняет их в обычной форме редактора.
+    static func codeReviewPreset() -> PipelineConfig {
+        var preset = PipelineConfig(name: "Code Review")
+        preset.trigger = .prWatch(owner: "", repo: "",
+                                  pollIntervalMin: PipelineTrigger.minPollIntervalMin)
+        preset.agentMode = .fsm
+        preset.preset = .codeReview
+        preset.projectToolsEnabled = true
+        return preset
     }
 }
 

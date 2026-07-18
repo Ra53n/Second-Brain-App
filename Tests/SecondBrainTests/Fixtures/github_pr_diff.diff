@@ -1,0 +1,40 @@
+diff --git a/Sources/App/StreamParser.swift b/Sources/App/StreamParser.swift
+index 1111111..2222222 100644
+--- a/Sources/App/StreamParser.swift
++++ b/Sources/App/StreamParser.swift
+@@ -10,6 +10,9 @@ struct StreamParser {
+     func parse(_ chunk: String) -> [Event] {
++        // Пустой чанк — конец keep-alive, не событие.
++        guard !chunk.isEmpty else { return [] }
+         var events: [Event] = []
+         for line in chunk.split(separator: "\n") {
+             events.append(Event(line: String(line)))
+         }
+         return events
+     }
+diff --git a/Sources/App/Session.swift b/Sources/App/Session.swift
+index 3333333..4444444 100644
+--- a/Sources/App/Session.swift
++++ b/Sources/App/Session.swift
+@@ -1,5 +1,6 @@
+ final class Session {
+     let parser = StreamParser()
++    var isAlive = true
+
+     func handle(_ chunk: String) {
+         _ = parser.parse(chunk)
+     }
+ }
+diff --git a/Tests/AppTests/StreamParserTests.swift b/Tests/AppTests/StreamParserTests.swift
+index 5555555..6666666 100644
+--- a/Tests/AppTests/StreamParserTests.swift
++++ b/Tests/AppTests/StreamParserTests.swift
+@@ -8,4 +8,10 @@ final class StreamParserTests: XCTestCase {
+     func testParsesLines() {
+         XCTAssertEqual(StreamParser().parse("a\nb").count, 2)
+     }
++
++    func testEmptyChunkYieldsNoEvents() {
++        XCTAssertTrue(StreamParser().parse("").isEmpty)
++    }
+ }

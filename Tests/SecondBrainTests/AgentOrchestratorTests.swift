@@ -319,6 +319,34 @@ final class AgentOrchestratorTests: XCTestCase {
         XCTAssertNotNil(error, "ошибка провайдера возвращается движку пайплайна")
     }
 
+    // MARK: - displayText (задача 37)
+
+    func testDisplayTextShownWhileFullTaskDrivesRun() async throws {
+        let provider = QueuedChatProvider([
+            .success("1. единственный шаг"),
+            .success("сделано\nNEXT_STEP"),
+            .success("ВЕРДИКТ: ВЫПОЛНЕНО"),
+            .success("Ответ"),
+        ])
+        register(provider)
+        let vm = makeViewModel()
+        let hugeTask = "Проревьюй diff:\n" + String(repeating: "x", count: 5_000)
+
+        let status = await vm.runAgentToCompletion(chatIndex: 0, userText: hugeTask,
+                                                   displayText: "Ревью PR #42: фикс")
+        XCTAssertEqual(status, .finished)
+        // В ленте и тайтле — короткая версия, в контексте прогона — полная.
+        XCTAssertEqual(vm.chats[0].messages.first?.content, "Ревью PR #42: фикс")
+        XCTAssertEqual(vm.chats[0].title, "Ревью PR #42: фикс")
+        XCTAssertEqual(vm.chats[0].agentContext?.task, hugeTask)
+        XCTAssertEqual(vm.chats[0].agentContext?.displayText, "Ревью PR #42: фикс")
+        // Полный task ушёл модели в [QUERY] фазы планирования.
+        XCTAssertTrue(provider.requests[0].last!.content.contains("Проревьюй diff:"))
+        // Короткая версия не течёт в [КОНТЕКСТ ДИАЛОГА] (последнее user-сообщение
+        // вырезается из снапшота и при displayText).
+        XCTAssertFalse(provider.requests[0].last!.content.contains("[КОНТЕКСТ ДИАЛОГА]"))
+    }
+
     // MARK: - Обычный режим не затронут
 
     func testAgentModeOffUsesPlainGeneration() async throws {

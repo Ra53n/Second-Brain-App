@@ -2,10 +2,10 @@
 //
 // Только поллинг (webhooks — вне объёма): GET /repos/{owner}/{repo}/pulls
 // с интервалом из конфига пайплайна (минимум 5 мин — без токена rate limit
-// GitHub всего 60 req/ч). Три слоя:
+// GitHub всего 60 req/ч). Слои:
 //  - PRWatchDiff — чистый дифф «какие PR новые» (тестируется на фикстурах);
-//  - GitHubClient — тонкий HTTP с инжектируемым транспортом (ETag/If-None-Match
-//    для экономии лимита, Authorization: Bearer при наличии токена);
+//  - GitHubClient (CodeReview/GitHubClient.swift, общий для 36/37) — тонкий
+//    HTTP с инжектируемым транспортом, ETag/If-None-Match, Bearer-токен;
 //  - PRWatcher — минутный цикл поверх них.
 // Персистентно только lastSeenPRNumbers (PipelineStore.prWatchState): нельзя
 // ре-триггерить уже обработанные PR после рестарта. ETag/remaining/lastError —
@@ -14,35 +14,6 @@
 
 import AppKit
 import Foundation
-
-/// PR из ответа GitHub — только нужные пайплайну поля.
-struct GitHubPullRequest: Codable, Equatable {
-    let number: Int
-    let title: String
-    let user: Author
-    let htmlURL: String
-    let diffURL: String
-
-    struct Author: Codable, Equatable {
-        let login: String
-    }
-
-    enum CodingKeys: String, CodingKey {
-        case number, title, user
-        case htmlURL = "html_url"
-        case diffURL = "diff_url"
-    }
-
-    /// Payload триггера ({{trigger_payload}}): всё, что нужно промпту ревью.
-    var payloadText: String {
-        """
-        PR #\(number): \(title)
-        Автор: \(user.login)
-        URL: \(htmlURL)
-        diff: \(diffURL)
-        """
-    }
-}
 
 /// Чистый дифф списка открытых PR против «уже виденных».
 enum PRWatchDiff {
@@ -65,65 +36,6 @@ enum PRWatchDiff {
             .filter { !lastSeen.contains($0.number) }
             .sorted { $0.number < $1.number }
         return Outcome(triggers: triggers, lastSeen: fetchedNumbers)
-    }
-}
-
-/// Тонкий HTTP-клиент GitHub. Транспорт инжектируется — тесты проверяют
-/// заголовки и разбор ответов без сети.
-struct GitHubClient {
-    enum PullsResponse: Equatable {
-        /// 304: список не менялся с прошлого ETag — тишина, лимит сэкономлен.
-        case notModified
-        case ok(pulls: [GitHubPullRequest], etag: String?, rateLimitRemaining: Int?)
-    }
-
-    enum GitHubError: LocalizedError {
-        case badStatus(code: Int)
-
-        var errorDescription: String? {
-            switch self {
-            case .badStatus(let code):
-                return code == 403 || code == 429
-                    ? "GitHub: превышен rate limit (код \(code)). Добавьте токен в Настройках → «Инструменты»."
-                    : "GitHub: запрос не удался (код \(code))."
-            }
-        }
-    }
-
-    /// Транспорт (дефолт — URLSession.shared).
-    var perform: (URLRequest) async throws -> (Data, HTTPURLResponse) = { request in
-        let (data, response) = try await URLSession.shared.data(for: request)
-        guard let http = response as? HTTPURLResponse else {
-            throw URLError(.badServerResponse)
-        }
-        return (data, http)
-    }
-
-    /// Открытые PR репозитория. etag — от прошлого успешного ответа.
-    func openPulls(owner: String, repo: String,
-                   etag: String?, token: String?) async throws -> PullsResponse {
-        var request = URLRequest(
-            url: URL(string: "https://api.github.com/repos/\(owner)/\(repo)/pulls?state=open")!)
-        request.timeoutInterval = 15
-        request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
-        if let etag {
-            request.setValue(etag, forHTTPHeaderField: "If-None-Match")
-        }
-        if let token, !token.isEmpty {
-            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        }
-
-        let (data, http) = try await perform(request)
-        if http.statusCode == 304 { return .notModified }
-        guard (200...299).contains(http.statusCode) else {
-            throw GitHubError.badStatus(code: http.statusCode)
-        }
-        let pulls = try JSONDecoder().decode([GitHubPullRequest].self, from: data)
-        let remaining = http.value(forHTTPHeaderField: "x-ratelimit-remaining")
-            .flatMap(Int.init)
-        return .ok(pulls: pulls,
-                   etag: http.value(forHTTPHeaderField: "etag"),
-                   rateLimitRemaining: remaining)
     }
 }
 

@@ -42,7 +42,7 @@
 | 34 | [Реестр баз знаний (multi-base RAG) + rag_search](34-knowledge-base-registry.md) | 27, 31 | [x] |
 | 35 | [FSM-пайплайн ответов в чате](35-chat-fsm.md) | 12, 14, 15, 21, 34 | [x] |
 | 36 | [Пайплайны: раздел, CRUD, cron, PR-watch](36-pipelines.md) | 35, 34, 21, 15, 17 | [x] |
-| 37 | [Автоматизация code review](37-code-review-pipeline.md) | 35, 36, 25, 21, 22 | [ ] |
+| 37 | [Автоматизация code review](37-code-review-pipeline.md) | 35, 36, 25, 21, 22 | [x] |
 
 ## Рекомендуемый порядок
 

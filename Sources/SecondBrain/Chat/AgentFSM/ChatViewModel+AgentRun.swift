@@ -25,10 +25,14 @@ extension ChatViewModel {
     }
 
     /// Запуск нового прогона: свежий контекст, сообщение пользователя в ленту.
-    func startAgentRun(chatIndex index: Int, userText text: String) {
+    /// displayText (задача 37) — короткая версия для ленты/тайтла, когда
+    /// полный task огромен (diff ревью); nil — показывается сам task.
+    func startAgentRun(chatIndex index: Int, userText text: String,
+                       displayText: String? = nil) {
         let chatID = chats[index].id
+        let visible = displayText ?? text
         if !chats[index].messages.contains(where: { $0.role == .user }) {
-            chats[index].title = Chat.makeTitle(from: text)
+            chats[index].title = Chat.makeTitle(from: visible)
         }
         guard resolveProvider(for: chats[index]) != nil else {
             let base = LLMError.providerUnavailable(
@@ -38,8 +42,8 @@ extension ChatViewModel {
             return
         }
         chats[index].errorText = nil
-        chats[index].messages.append(ChatMessage(role: .user, content: text))
-        var ctx = AgentTaskContext(task: text)
+        chats[index].messages.append(ChatMessage(role: .user, content: visible))
+        var ctx = AgentTaskContext(task: text, displayText: displayText)
         ctx.status = .running
         chats[index].agentContext = ctx
         chats[index].isLoading = true
@@ -82,9 +86,10 @@ extension ChatViewModel {
     /// поставил паузу и потом возобновил прогон руками, движок дождался только
     /// ПЕРВОГО Task — для истории прогонов пауза не успех, хотя возобновлённый
     /// прогон доедет до ответа в чате.
-    func runAgentToCompletion(chatIndex index: Int, userText text: String) async -> AgentRunStatus {
+    func runAgentToCompletion(chatIndex index: Int, userText text: String,
+                              displayText: String? = nil) async -> AgentRunStatus {
         let chatID = chats[index].id
-        startAgentRun(chatIndex: index, userText: text)
+        startAgentRun(chatIndex: index, userText: text, displayText: displayText)
         // Провайдер недоступен → startAgentRun вышел без запуска Task.
         guard let task = agentTasks[chatID] else { return .failed }
         await task.value
@@ -125,7 +130,10 @@ extension ChatViewModel {
         // пользователя + финальные ответы, без текущей задачи (она в [QUERY]).
         let dialog: String = {
             var msgs = chatSnapshot.messages
-            if let last = msgs.last, last.role == .user, last.content == ctx0.task {
+            // Последнее user-сообщение — текущая задача (она в [QUERY], не в
+            // контексте); при displayText в ленте лежит короткая версия.
+            if let last = msgs.last, last.role == .user,
+               last.content == ctx0.task || last.content == ctx0.displayText {
                 msgs.removeLast()
             }
             return AgentPrompts.dialogContext(messages: msgs)

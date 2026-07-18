@@ -53,6 +53,16 @@ struct PipelinesPane: View {
                 }
                 .help("Новый пайплайн")
             }
+            ToolbarItem(placement: .primaryAction) {
+                Button {
+                    let preset = PipelineConfig.codeReviewPreset()
+                    store.add(preset)
+                    store.selectedPipelineID = preset.id
+                } label: {
+                    Label("Добавить Code Review", systemImage: "checkmark.seal")
+                }
+                .help("Пресет Code Review: ревью новых PR выбранного репозитория")
+            }
         }
     }
 
@@ -181,15 +191,22 @@ private struct PipelineEditorForm: View {
             Section("Пайплайн") {
                 TextField("Название", text: $pipeline.name)
                 Toggle("Включён", isOn: $pipeline.enabled)
+                if pipeline.preset == .codeReview {
+                    Text("Пресет Code Review: input прогона (diff PR, документация, тесты) собирается автоматически — промпт ниже не используется.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
             }
             triggerSection
-            Section("Промпт") {
-                TextEditor(text: $pipeline.inputTemplate)
-                    .font(.body.monospaced())
-                    .frame(minHeight: 88)
-                Text("Плейсхолдеры: {{trigger_payload}} — полезная нагрузка триггера (данные PR), {{date}} — сегодняшняя дата.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+            if pipeline.preset != .codeReview {
+                Section("Промпт") {
+                    TextEditor(text: $pipeline.inputTemplate)
+                        .font(.body.monospaced())
+                        .frame(minHeight: 88)
+                    Text("Плейсхолдеры: {{trigger_payload}} — полезная нагрузка триггера (данные PR), {{date}} — сегодняшняя дата.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
             }
             agentSection
             toolsSection
@@ -392,6 +409,15 @@ private struct PipelineEditorForm: View {
             }
             if case .cron = pipeline.trigger {
                 Toggle("Догонять пропущенный слот при старте", isOn: $pipeline.catchUpOnStart)
+            }
+            if pipeline.preset == .codeReview {
+                // Write-операция: default выкл, постинг строго после успешного
+                // терминала FSM (правило бэклога №16).
+                Toggle("Постить ревью комментарием в PR автоматически",
+                       isOn: $pipeline.autoPostReviewComment)
+                Text("Нужен GitHub-токен с правом записи (Настройки → «Инструменты»). Без автопоста ревью отправляется кнопкой под сообщением.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
         }
     }

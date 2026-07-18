@@ -44,6 +44,49 @@ final class ChatViewModel: ObservableObject {
     }
     var projectToolsBridge: ProjectToolsBridge?
 
+    /// Раннер code review (задача 37) — обработчик /review. weak: раннер
+    /// держит ChatViewModel строго, владелец обоих — AppModel.
+    weak var codeReviewRunner: CodeReviewRunner?
+
+    /// Диалог превью постинга ревью в PR (item-based sheet, паттерн
+    /// titleDialog встреч). non-nil → шит открыт.
+    struct ReviewPostContext: Identifiable {
+        let messageID: UUID
+        let target: ReviewTarget
+        /// Предзаполненный текст комментария (content сообщения), редактируемый.
+        var body: String
+        var id: UUID { messageID }
+    }
+    @Published var reviewPostDialog: ReviewPostContext?
+
+    /// Открыть превью постинга для итогового сообщения ревью.
+    func openReviewPostDialog(for message: ChatMessage) {
+        guard let target = message.reviewTarget else { return }
+        reviewPostDialog = ReviewPostContext(messageID: message.id,
+                                             target: target,
+                                             body: message.content)
+    }
+
+    /// Есть ли GitHub-токен (disabled-состояние кнопки отправки в шите).
+    var reviewPostTokenAvailable: Bool {
+        codeReviewRunner?.hasToken ?? false
+    }
+
+    /// Постинг из шита. nil — успех (диалог закрыт, сообщение помечено
+    /// «Отправлено ✓»); текст — ошибка, шит остаётся открытым.
+    func submitReviewPost(body: String, context: ReviewPostContext) async -> String? {
+        guard let runner = codeReviewRunner else { return "Code review недоступен." }
+        do {
+            try await runner.post(target: context.target, body: body,
+                                  messageID: context.messageID)
+            reviewPostDialog = nil
+            return nil
+        } catch {
+            return (error as? LocalizedError)?.errorDescription
+                ?? error.localizedDescription
+        }
+    }
+
     /// Мост rag_search (задача 34): определение инструмента по включённым
     /// базам чата и исполнитель поиска (KnowledgeBaseManager). Отдельно от
     /// ragProvider: тот — статическая подстановка, этот — tool-режим.
@@ -374,9 +417,69 @@ final class ChatViewModel: ObservableObject {
         case .helpUsage:
             appendLocalExchange(chatIndex: chatIndex, userText: rawText,
                                 assistantText: SlashCommand.usageText())
+        case .review(let argument):
+            handleReviewCommand(argument: argument, rawText: rawText, chatIndex: chatIndex)
         case .unknown(let name):
             appendLocalExchange(chatIndex: chatIndex, userText: rawText,
                                 assistantText: SlashCommand.usageText(unknownCommand: name))
+        }
+    }
+
+    /// /review (задача 37): пустой аргумент/мусор — usage локально; «local» —
+    /// незакоммиченные изменения репо; иначе — PR по ссылке. Валидный target
+    /// всегда идёт полным FSM-проходом (независимо от тумблера чата).
+    private func handleReviewCommand(argument: String, rawText: String, chatIndex: Int) {
+        guard let runner = codeReviewRunner else {
+            appendLocalExchange(chatIndex: chatIndex, userText: rawText,
+                                assistantText: "Code review недоступен: раннер не подключён.")
+            return
+        }
+        if argument.isEmpty {
+            appendLocalExchange(chatIndex: chatIndex, userText: rawText,
+                                assistantText: SlashCommand.reviewUsageText())
+            return
+        }
+        if argument.lowercased() == "local" {
+            startReviewRun(rawText: rawText, chatIndex: chatIndex) {
+                try await runner.prepareLocalInput()
+            }
+            return
+        }
+        guard let reference = PRReference.parse(argument) else {
+            appendLocalExchange(chatIndex: chatIndex, userText: rawText,
+                                assistantText: SlashCommand.reviewUsageText(
+                                    problem: "Не удалось разобрать «\(argument)»."))
+            return
+        }
+        startReviewRun(rawText: rawText, chatIndex: chatIndex) {
+            try await runner.prepareInput(reference: reference)
+        }
+    }
+
+    /// Асинхронная часть /review: isLoading лочит чат на время fetch (иначе
+    /// повторный send успел бы до старта FSM); КАЖДАЯ ветка ошибки обязана
+    /// его снять, иначе чат зависнет заблокированным.
+    private func startReviewRun(rawText: String, chatIndex: Int,
+                                prepare: @escaping () async throws -> CodeReviewRunner.PreparedReview) {
+        let chatID = chats[chatIndex].id
+        chats[chatIndex].errorText = nil
+        chats[chatIndex].isLoading = true
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                let prepared = try await prepare()
+                guard let index = self.chats.firstIndex(where: { $0.id == chatID }) else { return }
+                // startAgentRun сам включит isLoading; снимаем свой лок.
+                self.chats[index].isLoading = false
+                await self.codeReviewRunner?.runReview(prepared: prepared, chatIndex: index)
+            } catch {
+                guard let index = self.chats.firstIndex(where: { $0.id == chatID }) else { return }
+                self.chats[index].isLoading = false
+                self.appendLocalExchange(
+                    chatIndex: index, userText: rawText,
+                    assistantText: (error as? LocalizedError)?.errorDescription
+                        ?? error.localizedDescription)
+            }
         }
     }
 
