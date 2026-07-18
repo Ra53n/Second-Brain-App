@@ -70,7 +70,10 @@ final class CodeReviewRunner {
     }
 
     /// Ревью PR по ссылке (/review <URL | owner/repo#n>): метаданные + diff.
-    func prepareInput(reference: PRReference) async throws -> PreparedReview {
+    /// condenseProvider — провайдер map-сжатия большого диффа: та же модель,
+    /// что поведёт FSM (override чата/пайплайна); nil — дефолт роутера.
+    func prepareInput(reference: PRReference,
+                      condenseProvider: ResolvedChatProvider? = nil) async throws -> PreparedReview {
         let token = tokenProvider()
         let pr = try await client.pullRequest(owner: reference.owner,
                                               repo: reference.repo,
@@ -83,12 +86,14 @@ final class CodeReviewRunner {
         return await assemble(prSummary: pr.payloadText,
                               prTitle: pr.title,
                               diff: diff,
-                              target: reference)
+                              target: reference,
+                              condenseProvider: condenseProvider)
     }
 
     /// Ревью из PR-watch: payload уже содержит метаданные и diff_url —
     /// отдельный запрос метаданных не нужен (подсказка задачи).
-    func prepareInput(prWatchPayload payload: String) async throws -> PreparedReview {
+    func prepareInput(prWatchPayload payload: String,
+                      condenseProvider: ResolvedChatProvider? = nil) async throws -> PreparedReview {
         guard let reference = PRReference.firstMatch(in: payload) else {
             throw ReviewError.payloadWithoutPR
         }
@@ -103,13 +108,14 @@ final class CodeReviewRunner {
         return await assemble(prSummary: payload,
                               prTitle: title,
                               diff: diff,
-                              target: reference)
+                              target: reference,
+                              condenseProvider: condenseProvider)
     }
 
     /// Локальное ревью незакоммиченных изменений projectRepoPath. Диф — через
     /// GitClient напрямую (без 64 КБ-капа инструмента git_diff: кап и
     /// чанкование у ревью свои).
-    func prepareLocalInput() async throws -> PreparedReview {
+    func prepareLocalInput(condenseProvider: ResolvedChatProvider? = nil) async throws -> PreparedReview {
         guard let root = projectToolsProvider.currentRepoRoot() else {
             throw ReviewError.repositoryNotConfigured
         }
@@ -120,7 +126,8 @@ final class CodeReviewRunner {
         return await assemble(prSummary: nil,
                               prTitle: "локальные изменения \(root.lastPathComponent)",
                               diff: diff,
-                              target: nil)
+                              target: nil,
+                              condenseProvider: condenseProvider)
     }
 
     // MARK: - Прогон и постинг
@@ -171,9 +178,11 @@ final class CodeReviewRunner {
 
     /// Общая часть: condense большого диффа, доки, тесты, сборка секций.
     private func assemble(prSummary: String?, prTitle: String,
-                          diff: String, target: ReviewTarget?) async -> PreparedReview {
+                          diff: String, target: ReviewTarget?,
+                          condenseProvider: ResolvedChatProvider?) async -> PreparedReview {
         let files = CodeReviewInput.splitByFile(diff)
-        let diffSection = await condenseIfNeeded(diff: diff, files: files)
+        let diffSection = await condenseIfNeeded(diff: diff, files: files,
+                                                 preferred: condenseProvider)
         let docs = await projectToolsProvider.helpContext(question: "code review: \(prTitle)")
         let tests = await testsSection(files: files)
         let input = CodeReviewInput.assemble(pr: prSummary,
@@ -188,9 +197,12 @@ final class CodeReviewRunner {
     }
 
     /// Map-сжатие диффа сверх лимита; в пределах лимита — как есть, 0 вызовов.
-    private func condenseIfNeeded(diff: String, files: [CodeReviewInput.FileDiff]) async -> String {
+    /// preferred — override чата/пайплайна (фидбек пользователя: сжатие должно
+    /// идти той же моделью, что и ревью, а не дефолтом роутера).
+    private func condenseIfNeeded(diff: String, files: [CodeReviewInput.FileDiff],
+                                  preferred: ResolvedChatProvider?) async -> String {
         guard diff.count > CodeReviewInput.maxDiffChars else { return diff }
-        guard let resolved = router.resolveChatProvider(for: .chat) else {
+        guard let resolved = preferred ?? router.resolveChatProvider(for: .chat) else {
             // Провайдера нет — прогон всё равно упадёт с понятной ошибкой
             // на старте FSM; отдаём жёстко обрезанный diff, не теряя запуск.
             return String(diff.prefix(CodeReviewInput.maxDiffChars))

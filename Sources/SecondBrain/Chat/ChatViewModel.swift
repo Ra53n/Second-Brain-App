@@ -439,9 +439,11 @@ final class ChatViewModel: ObservableObject {
                                 assistantText: SlashCommand.reviewUsageText())
             return
         }
+        // Сжатие большого диффа — той же моделью, что поведёт FSM в этом чате.
+        let condenseProvider = resolveProvider(for: chats[chatIndex])
         if argument.lowercased() == "local" {
             startReviewRun(rawText: rawText, chatIndex: chatIndex) {
-                try await runner.prepareLocalInput()
+                try await runner.prepareLocalInput(condenseProvider: condenseProvider)
             }
             return
         }
@@ -452,7 +454,8 @@ final class ChatViewModel: ObservableObject {
             return
         }
         startReviewRun(rawText: rawText, chatIndex: chatIndex) {
-            try await runner.prepareInput(reference: reference)
+            try await runner.prepareInput(reference: reference,
+                                          condenseProvider: condenseProvider)
         }
     }
 

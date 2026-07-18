@@ -151,7 +151,12 @@ final class PipelineEngine {
         }
         let chatID = chatViewModel.chats[chatIndex].id
         do {
-            let prepared = try await runner.prepareInput(prWatchPayload: payload)
+            // Сжатие диффа — той же моделью, что поведёт FSM: applySelection
+            // уже перенёс override пайплайна в конфигурацию чата.
+            let condenseProvider = chatViewModel.resolveProvider(
+                for: chatViewModel.chats[chatIndex])
+            let prepared = try await runner.prepareInput(prWatchPayload: payload,
+                                                         condenseProvider: condenseProvider)
             let status = await runner.runReview(prepared: prepared, chatIndex: chatIndex)
             return fsmErrorText(status: status, chatID: chatID)
         } catch {

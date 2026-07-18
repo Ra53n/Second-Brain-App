@@ -350,6 +350,37 @@ final class CodeReviewRunnerTests: XCTestCase {
                       "map-промпт по чанкам")
     }
 
+    func testCondenseUsesPreferredProviderOverRouterDefault() async throws {
+        // Дефолт роутера — один мок, override пайплайна/чата — другой:
+        // map-вызовы обязаны уйти в override (фидбек: сжатие той же моделью).
+        let routerDefault = MockChatProvider(responses: ["не должен вызываться"])
+        register(routerDefault)
+        let override = MockChatProvider(responses: ["SQUEEZED-BY-OVERRIDE"])
+        let bigDiff = "diff --git a/F.swift b/F.swift\n"
+            + String(repeating: "+x\n", count: 14_000)
+        var client = GitHubClient()
+        client.perform = { request in
+            let body: Data = request.value(forHTTPHeaderField: "Accept")
+                == "application/vnd.github.v3.diff"
+                ? Data(bigDiff.utf8)
+                : try TestFixtures.data("github_pr_42.json")
+            return (body, HTTPURLResponse(url: request.url!, statusCode: 200,
+                                          httpVersion: nil, headerFields: nil)!)
+        }
+        let runner = makeRunner(client: client)
+
+        let prepared = try await runner.prepareInput(
+            reference: PRReference(owner: "octo", repo: "hello", number: 42),
+            condenseProvider: ResolvedChatProvider(provider: override,
+                                                   model: "deepseek-chat",
+                                                   providerID: "deepseek",
+                                                   displayName: "DeepSeek"))
+        XCTAssertTrue(prepared.task.contains("SQUEEZED-BY-OVERRIDE"))
+        XCTAssertFalse(override.receivedMessages.isEmpty, "map ушёл в override")
+        XCTAssertTrue(routerDefault.receivedMessages.isEmpty,
+                      "дефолт роутера не трогали")
+    }
+
     func testRunReviewMarksResultMessage() async throws {
         register(MockChatProvider(responses: fsmReviewResponses))
         let runner = makeRunner()
