@@ -80,6 +80,8 @@ final class ChatViewModel: ObservableObject {
         var overview: (String?) async -> GitChangesOverview?
         var commit: (String?, String) async -> String?
         var push: (String?) async -> String?
+        /// Точечный откат одного файла: tracked → к HEAD, новый → в Корзину.
+        var revertFile: (String?, String) async -> String?
     }
     var chatGitBridge: ChatGitBridge?
 

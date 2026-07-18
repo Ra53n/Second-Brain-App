@@ -163,3 +163,43 @@ struct GitChangesOverview: Equatable {
             : text
     }
 }
+
+// MARK: - Точечный откат файла
+
+/// Откат ОДНОГО файла (задача 40, по фидбеку «агент хотел откатить лишнее»):
+/// tracked-файл возвращается к HEAD (git checkout HEAD -- path), новый
+/// (untracked) — перемещается в Корзину (обратимо; git clean не используем
+/// принципиально). Массовых откатов здесь нет — только по одному пути.
+enum GitRevert {
+    /// nil — успех; иначе текст ошибки для баннера.
+    static func revert(git: GitClient, root: URL, path: String) async -> String? {
+        let trimmed = path.trimmingCharacters(in: .whitespacesAndNewlines)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        guard !trimmed.isEmpty else { return "пустой путь" }
+        // Путь из git status/чата — всё равно прогоняем через SafePath:
+        // откат не должен уметь выйти из корня каталога.
+        guard let url = SafePath.resolve(trimmed, under: root) else {
+            return "путь «\(trimmed)» вне корня каталога"
+        }
+        let tracked = (try? await git.raw(["ls-files", "--", trimmed], timeout: 15))?
+            .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+        if tracked {
+            do {
+                _ = try await git.raw(["checkout", "HEAD", "--", trimmed], timeout: 30)
+                return nil
+            } catch {
+                return (error as? LocalizedError)?.errorDescription
+                    ?? error.localizedDescription
+            }
+        }
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            return "«\(trimmed)» не найден (уже откачен?)"
+        }
+        do {
+            try FileManager.default.trashItem(at: url, resultingItemURL: nil)
+            return nil
+        } catch {
+            return "не удалось переместить «\(trimmed)» в Корзину: \(error.localizedDescription)"
+        }
+    }
+}

@@ -50,6 +50,14 @@ enum ChatPromptBuilder {
         Все пути указывай ОТНОСИТЕЛЬНО корня. Перед write_file/edit_file \
         существующего файла обязательно прочитай его через read_file.
         """]
+        lines.append("""
+        ОТКАТ ИЗМЕНЕНИЙ: отменяй только СВОИ правки и строго по одному файлу \
+        (edit_file обратной правкой; delete_file — для файла, который сам \
+        создал; git checkout HEAD -- <один файл> — для своего изменения \
+        tracked-файла). НИКОГДА не выполняй массовые откаты — git checkout ., \
+        git restore ., git clean, git reset --hard, git stash: в каталоге есть \
+        незакоммиченные изменения пользователя, их трогать нельзя.
+        """)
         switch mode {
         case .ask:
             lines.append("""

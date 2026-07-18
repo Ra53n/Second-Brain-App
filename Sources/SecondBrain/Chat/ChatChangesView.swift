@@ -14,12 +14,15 @@ import SwiftUI
 // MARK: - Карточка diff'а одного файла
 
 /// Заголовок (путь + бейдж +N −M) с раскрываемым цветным diff'ом.
+/// onRevert — точечный откат этого файла (задача 40); nil — кнопки нет
+/// (например, секция закоммиченных отличий от базовой ветки).
 struct FileDiffCard: View {
     let title: String
     var subtitle: String?
     var badge: String?
     let diff: String
     var initiallyExpanded = false
+    var onRevert: (() -> Void)?
 
     @State private var isExpanded = false
     @State private var appeared = false
@@ -48,6 +51,16 @@ struct FileDiffCard: View {
                         .font(.caption2.monospaced().bold())
                         .foregroundStyle(.secondary)
                 }
+                if let onRevert {
+                    Button {
+                        onRevert()
+                    } label: {
+                        Image(systemName: "arrow.uturn.backward")
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.secondary)
+                    .help("Откатить этот файл (tracked — к HEAD, новый — в Корзину)")
+                }
             }
         }
         .padding(8)
@@ -72,6 +85,10 @@ struct ChatChangesPanel: View {
     @State private var refreshTick = 0
     @State private var commitMessage = ""
     @State private var isCommitting = false
+    /// Файл, ожидающий подтверждения отката (диалог — откат разрушает
+    /// незакоммиченные правки этого файла).
+    @State private var revertTarget: String?
+    @State private var showsRevertConfirm = false
 
     private var chat: Chat? { viewModel.selectedChat }
     private var rootOverride: String? { chat?.configuration.projectRootPath }
@@ -89,6 +106,26 @@ struct ChatChangesPanel: View {
         .task(id: "\(chat?.id.uuidString ?? "")|\(refreshTick)") {
             await reload()
         }
+        // Подтверждение отката: per-file, никаких массовых «откатить всё».
+        .confirmationDialog("Откатить файл?",
+                            isPresented: $showsRevertConfirm,
+                            titleVisibility: .visible,
+                            presenting: revertTarget) { path in
+            Button("Откатить «\(path)»", role: .destructive) {
+                runGitAction {
+                    await viewModel.chatGitBridge?.revertFile(rootOverride, path)
+                }
+            }
+            Button("Отмена", role: .cancel) {}
+        } message: { path in
+            Text("Отслеживаемый файл вернётся к последнему коммиту (незакоммиченные правки «\(path)» пропадут), новый файл будет перемещён в Корзину. Другие файлы не затрагиваются.")
+        }
+    }
+
+    /// Запросить откат файла (кнопка ↩ на карточке/строке).
+    private func requestRevert(_ path: String) {
+        revertTarget = path
+        showsRevertConfirm = true
     }
 
     private func reload() async {
@@ -147,7 +184,10 @@ struct ChatChangesPanel: View {
                     subtitle: "\(entry.change.kind.label) · \(entry.messageDate.formatted(date: .abbreviated, time: .shortened))",
                     badge: nil,
                     diff: entry.change.diff,
-                    initiallyExpanded: index == 0)
+                    initiallyExpanded: index == 0,
+                    onRevert: entry.change.kind == .deleted ? nil : {
+                        requestRevert(entry.change.relativePath)
+                    })
             }
         }
     }
@@ -227,6 +267,14 @@ struct ChatChangesPanel: View {
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                     Spacer()
+                    Button {
+                        requestRevert(file.path)
+                    } label: {
+                        Image(systemName: "arrow.uturn.backward")
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.secondary)
+                    .help("Откатить: tracked — к HEAD, новый — в Корзину")
                 }
                 .padding(8)
                 .background(RoundedRectangle(cornerRadius: 6)
@@ -236,7 +284,8 @@ struct ChatChangesPanel: View {
                 FileDiffCard(title: section.path,
                              badge: section.badge,
                              diff: section.text,
-                             initiallyExpanded: index == 0 && sections.count <= 3)
+                             initiallyExpanded: index == 0 && sections.count <= 3,
+                             onRevert: { requestRevert(section.path) })
             }
             commitControls
         }

@@ -293,6 +293,12 @@ final class AppModel: ObservableObject {
                     return (error as? LocalizedError)?.errorDescription
                         ?? error.localizedDescription
                 }
+            },
+            revertFile: { rootOverride, path in
+                guard let root = provider.effectiveRootURL(override: rootOverride)
+                else { return "каталог не задан" }
+                return await GitRevert.revert(git: GitClient(repoURL: root),
+                                              root: root, path: path)
             })
     }
 }

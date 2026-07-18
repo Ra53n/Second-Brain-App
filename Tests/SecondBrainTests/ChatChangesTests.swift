@@ -145,6 +145,43 @@ final class GitChangesOverviewTests: XCTestCase {
         XCTAssertTrue(overview.isClean, "рабочее дерево после коммита чистое")
     }
 
+    // MARK: - Точечный откат (GitRevert)
+
+    /// Tracked-файл: откат возвращает содержимое HEAD, соседние
+    /// незакоммиченные файлы НЕ затрагиваются.
+    func testRevertTrackedFileRestoresHeadAndKeepsOthers() async throws {
+        try "чужая правка\n".write(to: repoRoot.appendingPathComponent("user.md"),
+                                   atomically: true, encoding: .utf8)
+        try "правка агента\n".write(to: repoRoot.appendingPathComponent("a.md"),
+                                    atomically: true, encoding: .utf8)
+
+        let error = await GitRevert.revert(git: git, root: repoRoot, path: "a.md")
+        XCTAssertNil(error)
+        let restored = try String(contentsOf: repoRoot.appendingPathComponent("a.md"),
+                                  encoding: .utf8)
+        XCTAssertEqual(restored, "первая\n", "вернулись к HEAD")
+        // Незакоммиченный файл пользователя жив.
+        XCTAssertTrue(FileManager.default.fileExists(
+            atPath: repoRoot.appendingPathComponent("user.md").path))
+    }
+
+    /// Новый (untracked) файл: откат перемещает в Корзину, не удаляет насовсем.
+    func testRevertUntrackedFileGoesToTrash() async throws {
+        try "новый\n".write(to: repoRoot.appendingPathComponent("fresh.md"),
+                            atomically: true, encoding: .utf8)
+        let error = await GitRevert.revert(git: git, root: repoRoot, path: "fresh.md")
+        XCTAssertNil(error)
+        XCTAssertFalse(FileManager.default.fileExists(
+            atPath: repoRoot.appendingPathComponent("fresh.md").path))
+    }
+
+    func testRevertRejectsEscapeAndMissing() async {
+        let escape = await GitRevert.revert(git: git, root: repoRoot, path: "../evil")
+        XCTAssertNotNil(escape)
+        let missing = await GitRevert.revert(git: git, root: repoRoot, path: "нет.md")
+        XCTAssertNotNil(missing)
+    }
+
     /// commitAll — путь кнопки «Закоммитить» вкладки: дерево чистеет.
     func testCommitAllClearsTree() async throws {
         try "ещё\n".write(to: repoRoot.appendingPathComponent("new.md"),
