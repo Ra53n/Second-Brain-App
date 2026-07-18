@@ -96,5 +96,26 @@ cat > "${APP_DIR}/Contents/Info.plist" <<PLIST
 </plist>
 PLIST
 
+# --- Подпись стабильной личностью (задача 39, фикс повторных запросов) ---
+# Без явной подписи бинарь получает ad-hoc подпись линкера, которая меняется
+# каждой сборкой — macOS считает приложение НОВЫМ и заново спрашивает и
+# Keychain (ключи API), и TCC (Рабочий стол/Документы). Стабильный сертификат
+# («Second Brain Dev», self-signed, см. tasks/39-file-tools.md, или Developer
+# ID) делает designated requirement постоянным — разрешения выдаются один раз.
+IDENTITY="${SIGN_IDENTITY:-}"
+if [ -z "${IDENTITY}" ]; then
+    IDENTITY="$(security find-identity -v -p codesigning 2>/dev/null \
+        | grep -oE '"(Second Brain Dev|Developer ID Application: [^"]*)"' \
+        | head -1 | tr -d '"' || true)"
+fi
+if [ -n "${IDENTITY}" ]; then
+    echo "▶ Подпись: ${IDENTITY}"
+    codesign --force --sign "${IDENTITY}" "${APP_DIR}"
+else
+    echo "⚠ Сертификат «Second Brain Dev» не найден — ad-hoc подпись:"
+    echo "  macOS будет заново спрашивать разрешения после каждой пересборки."
+    echo "  Одноразовая настройка — см. «Результат» в tasks/39-file-tools.md."
+fi
+
 echo "✅ Готово: ${APP_DIR}"
 echo "   Запуск:  open \"${APP_DIR}\""

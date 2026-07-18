@@ -52,6 +52,16 @@
 
 Дополнение (2026-07-18, по фидбеку пользователя): настройки чата вынесены в нижнюю статус-строку под полем ввода (стиль Claude Code) — каталог, режим разрешений, модель, инструменты, Агент, RAG в одном месте; тулбар чата разгружен. Проверено вживую на установленной сборке.
 
+Дополнение 2 (2026-07-18, по фидбеку «каждый запуск просит разрешения»): причина — отсутствие подписи (ad-hoc подпись линкера меняется каждой сборкой, macOS считает приложение новым: Keychain и TCC спрашивают заново). run.sh теперь подписывает .app стабильным сертификатом «Second Brain Dev» (self-signed) либо Developer ID, если они есть в Keychain. Одноразовая настройка сертификата (файлы лежат в `~/.secondbrain-signing/`, пароль p12 — `sbdev`):
+
+```bash
+security import ~/.secondbrain-signing/sb-dev.p12 -k ~/Library/Keychains/login.keychain-db -P sbdev -T /usr/bin/codesign
+security add-trusted-cert -p codeSign -k ~/Library/Keychains/login.keychain-db ~/.secondbrain-signing/sb-dev.crt
+./install.sh
+```
+
+После первого запуска подписанной сборки macOS спросит разрешения ПОСЛЕДНИЙ раз (Keychain — «Разрешать всегда», Рабочий стол — «Разрешить»); дальнейшие пересборки сохраняют designated requirement — запросы не повторяются. dist.sh не менялся (для чужих Mac self-signed не помогает — там по-прежнему Developer ID либо ad-hoc + снятие карантина).
+
 Агентам следующих задач:
 - Новые инструменты добавлять в `ToolRegistry.projectTools` И классифицировать в `ToolRiskClassifier.classify` (незнакомое имя = dangerous — защитный дефолт, но лучше явно).
 - `ToolExecutor.execute` принимает опциональный `FileOpsContext`; без него write-инструменты честно отказывают — прямые вызовы исполнителя (пайплайны, будущие фичи) должны передавать контекст чата.
