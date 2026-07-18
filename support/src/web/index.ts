@@ -517,21 +517,29 @@ function sendFeedback(bar,resolved,email,comment){
 function ensureSession(){
   if(state.currentId) return Promise.resolve(state.currentId);
   return api("/chats",{method:"POST",body:{}}).then(function(s){
-    state.currentId=s.id; loadChats(); return s.id;
+    state.currentId=s.id; ls("lastChatId", s.id); loadChats(); return s.id;
   });
 }
 function selectChat(id){
-  state.currentId=id; clearMessages();
+  state.currentId=id; ls("lastChatId", id); clearMessages();
   api("/chats/"+id).then(function(res){
+    var lastB=null, lastRole=null;
     (res.messages||[]).forEach(function(m){
       var b=addMessage(m.role, m.content);
       if(m.usage||m.toolCalls) setMeta(b, {usage:m.usage, toolCalls:m.toolCalls});
+      lastB=b; lastRole=m.role;
     });
+    // Плашка фидбека переживает перерисовку: диалог мог быть открыт заново.
+    if(lastRole==="assistant" && lastB) addFeedbackBar(lastB.el);
     loadChats();
+  }).catch(function(){
+    // Диалог удалён/чужой (протухший lastChatId) — начинаем с чистого листа.
+    state.currentId=null; ls("lastChatId","");
   });
 }
 function newChat(){
-  state.currentId=null; clearMessages();
+  state.currentId=null; ls("lastChatId","");
+  clearMessages();
   if(!state.me){ state.guest=[]; ls("guestHistory","[]"); }
   loadChats(); $("input").focus();
 }
@@ -809,7 +817,14 @@ function boot(){
   selectTab("chat");
   if(!state.me){
     try{ state.guest = JSON.parse(ls("guestHistory")||"[]")||[]; }catch(e){ state.guest=[]; }
-    state.guest.forEach(function(m){ addMessage(m.role, m.content); });
+    var lastB=null, lastRole=null;
+    state.guest.forEach(function(m){ lastB=addMessage(m.role, m.content); lastRole=m.role; });
+    // После перезагрузки страницы кнопки «решено / в поддержку» остаются.
+    if(lastRole==="assistant" && lastB) addFeedbackBar(lastB.el);
+  } else {
+    // Вошедший: после перезагрузки открываем последний диалог (id в браузере).
+    var last = state.currentId || ls("lastChatId");
+    if(last) selectChat(last);
   }
   loadChats(); loadHealth();
 }
