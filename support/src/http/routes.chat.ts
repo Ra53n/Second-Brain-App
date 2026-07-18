@@ -9,7 +9,7 @@ import type { AppContext } from "./context.js";
 import { AppError, NotFoundError, ValidationError } from "../domain/errors.js";
 import { requireUserOrAdmin, ownerScope } from "./authMiddleware.js";
 import type { AnswerResult, HistoryMessage } from "../chat/supportChatService.js";
-import { createChatBody, sendChatMessageBody } from "./schemas.js";
+import { createChatBody, guestChatBody, sendChatMessageBody } from "./schemas.js";
 
 const HEARTBEAT_MS = 15_000;
 
@@ -72,21 +72,59 @@ async function respond(
   return reply;
 }
 
+/**
+ * Гостевой чат — ПУБЛИЧНО, без аккаунта: историю присылает клиент (браузер
+ * хранит её у себя), сервер ничего не пишет. Без CRM-контекста (нет email),
+ * но с RAG. Rate-limit обязателен: публичный эндпоинт к тяжёлой модели;
+ * от перегрузки дополнительно защищает FifoGate (429 при полной очереди).
+ */
+export function registerGuestChatRoutes(app: FastifyInstance, ctx: AppContext): void {
+  // Здоровье LLM/очереди — публично: строка статуса в SPA видна и гостю.
+  app.get("/support/llm/health", async () => {
+    const queue = ctx.chat.queueStats();
+    const settings = ctx.settings.getPublic();
+    try {
+      const [version, loaded] = await Promise.all([ctx.ollama.version(), ctx.ollama.ps()]);
+      return { reachable: true, version, loaded, queue, provider: settings.provider };
+    } catch {
+      return { reachable: false, version: "", loaded: [], queue, provider: settings.provider };
+    }
+  });
+
+  app.post<{ Body: { messages: HistoryMessage[]; stream?: boolean } }>(
+    "/support/guest/chat",
+    {
+      schema: { body: guestChatBody },
+      config: { rateLimit: { max: 12, timeWindow: "1 minute" } },
+    },
+    async (req, reply) => {
+      const history = (req.body.messages ?? []).map((m) => ({
+        role: m.role,
+        content: m.content,
+      }));
+      if (history.length === 0) throw new ValidationError("Пустой список сообщений.");
+      return respond(
+        ctx,
+        req,
+        reply,
+        req.body.stream === true,
+        (opts) => ctx.chat.answer({ history, userEmail: null, ...opts }),
+        (res) => ({
+          message: { role: "assistant", content: res.content },
+          usage: res.usage,
+          timings: res.timings,
+          toolCalls: res.toolCalls,
+          sources: res.sources,
+          droppedCount: res.droppedCount,
+        }),
+      );
+    },
+  );
+}
+
 export function registerChatRoutes(app: FastifyInstance, ctx: AppContext): void {
   app.register(async (instance) => {
     instance.addHook("preHandler", requireUserOrAdmin(ctx.apiToken, ctx.auth));
-
-    // Здоровье LLM/очереди — для строки статуса в SPA.
-    instance.get("/support/llm/health", async () => {
-      const queue = ctx.chat.queueStats();
-      const settings = ctx.settings.getPublic();
-      try {
-        const [version, loaded] = await Promise.all([ctx.ollama.version(), ctx.ollama.ps()]);
-        return { reachable: true, version, loaded, queue, provider: settings.provider };
-      } catch {
-        return { reachable: false, version: "", loaded: [], queue, provider: settings.provider };
-      }
-    });
 
     // ── Персистентные чаты ────────────────────────────────────────────────────
     instance.post<{ Body: { title?: string } }>(

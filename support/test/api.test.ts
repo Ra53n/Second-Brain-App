@@ -146,6 +146,34 @@ describe("публичные маршруты", () => {
   });
 });
 
+describe("гостевой чат (без аккаунта)", () => {
+  it("отвечает без авторизации", async () => {
+    const res = await env.app.inject({
+      method: "POST",
+      url: "/support/guest/chat",
+      payload: { messages: [{ role: "user", content: "почему не работает авторизация" }] },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().message.content).toBe("Ответ ассистента");
+    expect(res.json().sources).toBeDefined();
+  });
+
+  it("пустой список сообщений → 400", async () => {
+    const res = await env.app.inject({
+      method: "POST",
+      url: "/support/guest/chat",
+      payload: { messages: [] },
+    });
+    expect(res.statusCode).toBe(400);
+  });
+
+  it("llm/health публичен", async () => {
+    const res = await env.app.inject({ method: "GET", url: "/support/llm/health" });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().queue).toBeDefined();
+  });
+});
+
 describe("чаты: авторизация и owner-scope", () => {
   it("без авторизации → 401", async () => {
     const res = await env.app.inject({ method: "GET", url: "/support/chats" });

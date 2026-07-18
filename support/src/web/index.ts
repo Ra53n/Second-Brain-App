@@ -4,9 +4,10 @@
 // template-literal'ов (backtick/${}) — конфликтуют с этой обёрткой; строки
 // собираются конкатенацией.
 //
-// Отличия от MA: гостевого режима нет (чат только после логина); у админа —
-// вкладки Настройки / База знаний / CRM / MCP / Пользователи. SSE-события чата:
-// status (ход работы: поиск в KB, вызовы инструментов), token, done, error.
+// Режимы (как в MA): гость — без аккаунта, история в localStorage, stateless
+// /support/guest/chat; авторизованный — серверные чаты + контекст тикетов по
+// email; админ — вкладки Настройки / База знаний / CRM / MCP / Пользователи.
+// SSE-события чата: status (поиск в KB, вызовы инструментов), token, done, error.
 
 export const INDEX_HTML = String.raw`<!doctype html>
 <html lang="ru">
@@ -76,7 +77,11 @@ button:disabled{opacity:.5;cursor:default}
 .pill{font-size:11px;padding:2px 8px;border-radius:999px;background:var(--assist);color:var(--muted)}
 .pill.ok{color:var(--ok)}
 .pill.bad{color:var(--danger)}
-.login-wrap{flex:1;display:flex;align-items:center;justify-content:center}
+.dialog-back{position:fixed;inset:0;background:rgba(0,0,0,.4);display:none;
+  align-items:center;justify-content:center;z-index:10}
+.dialog-back.open{display:flex}
+.banner{padding:8px 16px;background:var(--assist);color:var(--muted);font-size:13px;
+  border-bottom:1px solid var(--border)}
 .dialog{background:var(--panel);border:1px solid var(--border);border-radius:12px;
   padding:24px;width:320px;display:flex;flex-direction:column;gap:12px}
 .dialog h2{margin:0;font-size:16px}
@@ -95,24 +100,11 @@ button:disabled{opacity:.5;cursor:default}
   <span id="authArea"></span>
 </header>
 <div id="tabs" class="tabs" style="display:none"></div>
+<div id="banner" class="banner" style="display:none"></div>
 <div class="main">
 
-  <!-- Вход -->
-  <div id="viewLogin" class="view active">
-    <div class="login-wrap">
-      <div class="dialog">
-        <h2>Вход в поддержку</h2>
-        <input id="loginUser" placeholder="Логин" autocomplete="username" />
-        <input id="loginPass" type="password" placeholder="Пароль" autocomplete="current-password" />
-        <div id="loginErr" class="err"></div>
-        <button id="loginSubmit" class="primary">Войти</button>
-        <div class="status">Аккаунт выдаёт администратор сервиса.</div>
-      </div>
-    </div>
-  </div>
-
   <!-- Чат -->
-  <div id="viewChat" class="view">
+  <div id="viewChat" class="view active">
     <div class="sidebar">
       <div style="padding:8px"><button id="newChatBtn" class="primary" style="width:100%">+ Новый диалог</button></div>
       <div id="chatList" class="list"></div>
@@ -225,11 +217,26 @@ button:disabled{opacity:.5;cursor:default}
 
 </div>
 
+<!-- Вход (модально; аккаунт не обязателен) -->
+<div id="loginBack" class="dialog-back">
+  <div class="dialog">
+    <h2>Вход в поддержку</h2>
+    <input id="loginUser" placeholder="Логин" autocomplete="username" />
+    <input id="loginPass" type="password" placeholder="Пароль" autocomplete="current-password" />
+    <div id="loginErr" class="err"></div>
+    <div style="display:flex;gap:8px;justify-content:flex-end">
+      <button id="loginCancel" class="ghost">Отмена</button>
+      <button id="loginSubmit" class="primary">Войти</button>
+    </div>
+    <div class="status">Аккаунт выдаёт администратор. Без входа чат тоже работает — история хранится только в этом браузере.</div>
+  </div>
+</div>
+
 <script>
 (function(){
 "use strict";
 var API = "/support";
-var state = { me:null, currentId:null, busy:false, tab:"chat", kbFiles:[], settings:null };
+var state = { me:null, currentId:null, busy:false, tab:"chat", kbFiles:[], settings:null, guest:[] };
 
 function $(id){ return document.getElementById(id); }
 function el(tag, cls, text){ var e=document.createElement(tag); if(cls)e.className=cls; if(text!=null)e.textContent=text; return e; }
@@ -264,8 +271,7 @@ var TABS = [
 function viewId(tab){ return "view"+tab.charAt(0).toUpperCase()+tab.slice(1); }
 function renderTabs(){
   var bar=$("tabs"); bar.innerHTML="";
-  if(!state.me){ bar.style.display="none"; return; }
-  var visible = TABS.filter(function(t){ return !t.admin || state.me.isAdmin; });
+  var visible = TABS.filter(function(t){ return !t.admin || (state.me && state.me.isAdmin); });
   if(visible.length<=1){ bar.style.display="none"; }
   else {
     bar.style.display="flex";
@@ -278,10 +284,10 @@ function renderTabs(){
 }
 function selectTab(tab){
   state.tab=tab;
-  ["viewLogin","viewChat","viewSettings","viewKb","viewCrm","viewMcp","viewUsers"].forEach(function(v){
+  ["viewChat","viewSettings","viewKb","viewCrm","viewMcp","viewUsers"].forEach(function(v){
     $(v).classList.remove("active");
   });
-  $(state.me? viewId(tab) : "viewLogin").classList.add("active");
+  $(viewId(tab)).classList.add("active");
   renderTabs();
   if(tab==="settings") loadSettings();
   if(tab==="kb") loadKb();
@@ -298,12 +304,20 @@ function renderAuth(){
     var out = el("button","ghost","Выйти");
     out.onclick = doLogout;
     a.appendChild(out);
+    $("banner").style.display="none";
+  } else {
+    var login = el("button","primary","Войти");
+    login.onclick = function(){ $("loginErr").textContent=""; $("loginBack").classList.add("open"); $("loginUser").focus(); };
+    a.appendChild(login);
+    $("banner").style.display="block";
+    $("banner").textContent="Гостевой режим: история чата хранится только в этом браузере. Войдите, чтобы сохранять диалоги на сервере и получать ответы с учётом ваших обращений.";
   }
 }
 function doLogin(){
   var u=$("loginUser").value, p=$("loginPass").value;
   api("/auth/login",{method:"POST",body:{username:u,password:p}}).then(function(res){
     state.me = res.user; $("loginPass").value="";
+    $("loginBack").classList.remove("open");
     boot();
   }).catch(function(e){ $("loginErr").textContent = e.message; });
 }
@@ -314,6 +328,11 @@ function doLogout(){
 // ── Чат ──
 function loadChats(){
   var list=$("chatList"); list.innerHTML="";
+  if(!state.me){
+    var note = el("div","status","Гость: один диалог, история в этом браузере. Войдите, чтобы вести несколько диалогов.");
+    note.style.padding="8px"; list.appendChild(note);
+    return Promise.resolve();
+  }
   return api("/chats").then(function(page){
     (page.items||[]).forEach(function(s){
       var item = el("div","chat-item"+(s.id===state.currentId?" active":""));
@@ -391,17 +410,31 @@ function send(){
   var assistant = addMessage("assistant", "");
   assistant.body.appendChild(el("span","thinking","…"));
 
-  ensureSession().then(function(sid){
-    return streamChat("/chats/"+sid+"/messages", {content:text, stream:true}, assistant);
-  }).then(function(done){
+  var finishOk = function(done){
     if(done){
-      if(done.assistantMessage) assistant.body.textContent = done.assistantMessage.content;
+      var content = done.assistantMessage ? done.assistantMessage.content
+        : (done.message ? done.message.content : assistant.body.textContent);
+      assistant.body.textContent = content;
       setMeta(assistant, done);
-      loadChats();
+      if(state.me) loadChats();
+      else {
+        state.guest.push({role:"user",content:text});
+        state.guest.push({role:"assistant",content:content});
+        ls("guestHistory", JSON.stringify(state.guest));
+      }
     }
-  }).catch(function(e){
-    assistant.body.textContent = "⚠ "+e.message;
-  }).then(function(){ state.busy=false; $("sendBtn").disabled=false; $("input").focus(); });
+  };
+  var fail = function(e){ assistant.body.textContent = "⚠ "+e.message; };
+  var always = function(){ state.busy=false; $("sendBtn").disabled=false; $("input").focus(); };
+
+  if(state.me){
+    ensureSession().then(function(sid){
+      return streamChat("/chats/"+sid+"/messages", {content:text, stream:true}, assistant);
+    }).then(finishOk).catch(fail).then(always);
+  } else {
+    var msgs = state.guest.concat([{role:"user",content:text}]);
+    streamChat("/guest/chat", {messages:msgs, stream:true}, assistant).then(finishOk).catch(fail).then(always);
+  }
 }
 function ensureSession(){
   if(state.currentId) return Promise.resolve(state.currentId);
@@ -419,10 +452,13 @@ function selectChat(id){
     loadChats();
   });
 }
-function newChat(){ state.currentId=null; clearMessages(); loadChats(); $("input").focus(); }
+function newChat(){
+  state.currentId=null; clearMessages();
+  if(!state.me){ state.guest=[]; ls("guestHistory","[]"); }
+  loadChats(); $("input").focus();
+}
 
 function loadHealth(){
-  if(!state.me){ $("llmStatus").textContent="—"; return; }
   api("/llm/health").then(function(h){
     var label = h.provider==="ollama" ? "локальная модель" : h.provider;
     $("llmStatus").textContent = (h.reachable||h.provider!=="ollama") ? (label+" · готов") : (label+" · недоступна");
@@ -626,12 +662,12 @@ function createUser(){
 function boot(){
   renderAuth();
   clearMessages();
-  if(state.me){
-    selectTab("chat");
-    loadChats(); loadHealth();
-  } else {
-    selectTab("chat"); // selectTab покажет viewLogin, т.к. state.me пуст
+  selectTab("chat");
+  if(!state.me){
+    try{ state.guest = JSON.parse(ls("guestHistory")||"[]")||[]; }catch(e){ state.guest=[]; }
+    state.guest.forEach(function(m){ addMessage(m.role, m.content); });
   }
+  loadChats(); loadHealth();
 }
 
 // ── События ──
@@ -640,6 +676,7 @@ $("newChatBtn").onclick=newChat;
 $("sendBtn").onclick=send;
 $("input").addEventListener("keydown",function(e){ if(e.key==="Enter" && !e.shiftKey){ e.preventDefault(); send(); } });
 $("loginSubmit").onclick=doLogin;
+$("loginCancel").onclick=function(){ $("loginBack").classList.remove("open"); };
 $("loginPass").addEventListener("keydown",function(e){ if(e.key==="Enter") doLogin(); });
 $("saveSettingsBtn").onclick=saveSettings;
 $("kbFileSel").onchange=loadKbFile;

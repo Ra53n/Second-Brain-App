@@ -38,6 +38,28 @@ export const sendChatMessageBody = {
   },
 } as const;
 
+// Гостевой чат (без аккаунта): всю историю присылает клиент, сервер НЕ хранит.
+export const guestChatBody = {
+  type: "object",
+  additionalProperties: true,
+  required: ["messages"],
+  properties: {
+    stream: { type: "boolean" },
+    messages: {
+      type: "array",
+      maxItems: 40,
+      items: {
+        type: "object",
+        required: ["role", "content"],
+        properties: {
+          role: { type: "string", enum: ["user", "assistant"] },
+          content: { type: "string", minLength: 1, maxLength: 100000 },
+        },
+      },
+    },
+  },
+} as const;
+
 export const settingsBody = {
   type: "object",
   additionalProperties: true,

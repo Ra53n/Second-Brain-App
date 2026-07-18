@@ -7,7 +7,7 @@ import rateLimit from "@fastify/rate-limit";
 import type { AppContext } from "./context.js";
 import { AppError } from "../domain/errors.js";
 import { registerAuthRoutes } from "./routes.auth.js";
-import { registerChatRoutes } from "./routes.chat.js";
+import { registerChatRoutes, registerGuestChatRoutes } from "./routes.chat.js";
 import { registerAdminRoutes } from "./routes.admin.js";
 import { registerWebRoutes } from "./routes.web.js";
 
@@ -57,9 +57,12 @@ export function buildApp(ctx: AppContext, opts: BuildAppOptions = {}): FastifyIn
     uptime: Math.round(process.uptime()),
   }));
 
-  // Публичные: SPA и вход/выход/«кто я».
+  // Публичные: SPA, вход/выход/«кто я» и гостевой чат (вход НЕ обязателен —
+  // поддержка доступна без аккаунта; аккаунт даёт серверную историю и
+  // персональный контекст тикетов).
   registerWebRoutes(app, ctx);
   registerAuthRoutes(app, ctx);
+  registerGuestChatRoutes(app, ctx);
 
   // Чат (bearer=admin ИЛИ cookie=пользователь) и admin-зона — свои скоупы.
   registerChatRoutes(app, ctx);

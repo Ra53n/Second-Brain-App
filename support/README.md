@@ -75,6 +75,6 @@ ssh root@78.17.96.131 'cd /opt/support-assistant && \
 
 ## API (кратко)
 
-Все маршруты под `/support`. Публично: `GET /health`, SPA, `POST /auth/login|logout`, `GET /auth/me`. Пользователь (cookie) или admin (bearer `SUPPORT_API_TOKEN`): CRUD `/chats`, `POST /chats/:id/messages` (SSE при `stream:true`: события `status`/`token`/`done`/`error`), `GET /llm/health`. Только admin: `/admin/settings`, `/admin/models`, `/admin/kb*`, `/admin/crm/*`, `/admin/mcp-servers*`, `/admin/users*`.
+Все маршруты под `/support`. Публично: `GET /health`, SPA, `POST /auth/login|logout`, `GET /auth/me`, `GET /llm/health`, а также гостевой чат `POST /guest/chat` (stateless, историю присылает клиент, rate-limit 12/мин) — аккаунт для обращения в поддержку не обязателен. Пользователь (cookie) или admin (bearer `SUPPORT_API_TOKEN`): CRUD `/chats`, `POST /chats/:id/messages` (SSE при `stream:true`: события `status`/`token`/`done`/`error`), `GET /llm/health`. Только admin: `/admin/settings`, `/admin/models`, `/admin/kb*`, `/admin/crm/*`, `/admin/mcp-servers*`, `/admin/users*`.
 
 Секреты write-only: API-ключ LLM наружу не отдаётся (только `hasLlmKey` + последние 4 символа), пустой ключ в PATCH означает «не менять».
