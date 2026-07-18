@@ -790,6 +790,31 @@ final class GitHubClientReviewTests: XCTestCase {
         XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer т")
     }
 
+    func testHugeDiffFallsBackToWebURLOn406() async throws {
+        // GitHub: diff >20k строк → 406 на API-эндпоинте; web-URL без лимита.
+        let recorder = Recorder()
+        var client = GitHubClient()
+        client.perform = { request in
+            recorder.requests.append(request)
+            let url = request.url!.absoluteString
+            if url.hasPrefix("https://api.github.com/") {
+                return (Data(), HTTPURLResponse(url: request.url!, statusCode: 406,
+                                                httpVersion: nil, headerFields: nil)!)
+            }
+            return (Data("diff --git огромный".utf8),
+                    HTTPURLResponse(url: request.url!, statusCode: 200,
+                                    httpVersion: nil, headerFields: nil)!)
+        }
+        let diff = try await client.diff(owner: "octo", repo: "hello",
+                                         number: 1, token: "т")
+        XCTAssertEqual(diff, "diff --git огромный")
+        XCTAssertEqual(recorder.requests.count, 2)
+        XCTAssertEqual(recorder.requests[1].url?.absoluteString,
+                       "https://github.com/octo/hello/pull/1.diff")
+        XCTAssertNil(recorder.requests[1].value(forHTTPHeaderField: "Authorization"),
+                     "API-токен не уходит на web-URL")
+    }
+
     func testDiffByDirectURL() async throws {
         let recorder = Recorder()
         let client = makeClient(status: 200, body: Data("diff --git…".utf8),

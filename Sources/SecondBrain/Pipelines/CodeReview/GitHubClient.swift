@@ -118,13 +118,23 @@ struct GitHubClient {
         return try JSONDecoder().decode(GitHubPullRequest.self, from: data)
     }
 
-    /// Полный diff PR: тот же эндпоинт, но Accept diff — GitHub отдаёт
-    /// unified diff текстом вместо JSON.
+    /// Полный diff PR. Сначала API-эндпоинт с Accept diff (работает и для
+    /// приватных репозиториев), но на диффах больше 20 000 строк GitHub
+    /// отвечает 406 «diff exceeded the maximum number of lines» — тогда
+    /// фолбэк на web-URL `…/pull/N.diff`, у которого этого лимита нет
+    /// (без Authorization: web-URL аутентифицируется сессией, не API-токеном;
+    /// ограничение — приватный репозиторий с гигантским диффом не поддержан).
     func diff(owner: String, repo: String, number: Int,
               token: String?) async throws -> String {
-        try await diff(
-            url: URL(string: "https://api.github.com/repos/\(owner)/\(repo)/pulls/\(number)")!,
-            token: token)
+        do {
+            return try await diff(
+                url: URL(string: "https://api.github.com/repos/\(owner)/\(repo)/pulls/\(number)")!,
+                token: token)
+        } catch GitHubError.badStatus(406) {
+            return try await diff(
+                url: URL(string: "https://github.com/\(owner)/\(repo)/pull/\(number).diff")!,
+                token: nil)
+        }
     }
 
     /// Diff по прямому URL (diff_url из payload PR-watch — метаданные уже
