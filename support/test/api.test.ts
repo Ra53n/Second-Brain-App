@@ -253,6 +253,134 @@ describe("чаты: авторизация и owner-scope", () => {
   });
 });
 
+describe("фидбек «решено/не решено» → CRM", () => {
+  it("гость с email: не решено → open-тикет", async () => {
+    const res = await env.app.inject({
+      method: "POST",
+      url: "/support/feedback",
+      payload: {
+        resolved: false,
+        email: "guest@example.com",
+        messages: [
+          { role: "user", content: "не запускается приложение" },
+          { role: "assistant", content: "Снимите карантин." },
+        ],
+        comment: "не помогло",
+      },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().status).toBe("open");
+    expect(res.json().ticketId).toMatch(/^t-\d+$/);
+  });
+
+  it("гость «решено» без email — принимается без создания тикета", async () => {
+    const res = await env.app.inject({
+      method: "POST",
+      url: "/support/feedback",
+      payload: { resolved: true, messages: [{ role: "user", content: "вопрос" }] },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().ticketId).toBeNull();
+  });
+
+  it("гость «не решено» без email → 400", async () => {
+    const res = await env.app.inject({
+      method: "POST",
+      url: "/support/feedback",
+      payload: { resolved: false, messages: [{ role: "user", content: "вопрос" }] },
+    });
+    expect(res.statusCode).toBe(400);
+  });
+
+  it("вошедший: тикет привязывается к чату, повторная отметка обновляет его", async () => {
+    const cookie = await login(env, "maria", "maria-pass");
+    const created = await env.app.inject({
+      method: "POST",
+      url: "/support/chats",
+      headers: { cookie },
+      payload: {},
+    });
+    const chatId = created.json().id;
+    await env.app.inject({
+      method: "POST",
+      url: `/support/chats/${chatId}/messages`,
+      headers: { cookie },
+      payload: { content: "не работает git push" },
+    });
+
+    const first = await env.app.inject({
+      method: "POST",
+      url: "/support/feedback",
+      headers: { cookie },
+      payload: { resolved: false, chatId },
+    });
+    expect(first.statusCode).toBe(200);
+    expect(first.json().created).toBe(true);
+    const ticketId = first.json().ticketId;
+
+    const second = await env.app.inject({
+      method: "POST",
+      url: "/support/feedback",
+      headers: { cookie },
+      payload: { resolved: true, chatId },
+    });
+    expect(second.json().ticketId).toBe(ticketId);
+    expect(second.json().created).toBe(false);
+    expect(second.json().status).toBe("closed");
+  });
+});
+
+describe("admin: центр обращений", () => {
+  it("список с данными клиента; смена статуса; ответ поддержки", async () => {
+    // Создаём обращение от гостя.
+    await env.app.inject({
+      method: "POST",
+      url: "/support/feedback",
+      payload: {
+        resolved: false,
+        email: "guest@example.com",
+        name: "Гость",
+        messages: [{ role: "user", content: "проблема с установкой" }],
+      },
+    });
+    const cookie = await login(env, "admin", "admin-pass");
+    const list = await env.app.inject({
+      method: "GET",
+      url: "/support/admin/crm/tickets",
+      headers: { cookie },
+    });
+    const items = list.json().items;
+    expect(items.length).toBeGreaterThan(0);
+    expect(items[0].user.email).toBe("guest@example.com");
+    const id = items[0].id;
+
+    const st = await env.app.inject({
+      method: "POST",
+      url: `/support/admin/crm/tickets/${id}/status`,
+      headers: { cookie },
+      payload: { status: "pending" },
+    });
+    expect(st.json().status).toBe("pending");
+
+    const cm = await env.app.inject({
+      method: "POST",
+      url: `/support/admin/crm/tickets/${id}/comment`,
+      headers: { cookie },
+      payload: { text: "Мы разбираемся, ответим в течение дня." },
+    });
+    expect(cm.json().messages.at(-1).text).toContain("разбираемся");
+    expect(cm.json().messages.at(-1).author).toBe("support");
+
+    const bad = await env.app.inject({
+      method: "POST",
+      url: "/support/admin/crm/tickets/no-such/status",
+      headers: { cookie },
+      payload: { status: "open" },
+    });
+    expect(bad.statusCode).toBe(404);
+  });
+});
+
 describe("admin-зона", () => {
   it("без авторизации → 401, обычный пользователь → 403", async () => {
     const anon = await env.app.inject({ method: "GET", url: "/support/admin/settings" });

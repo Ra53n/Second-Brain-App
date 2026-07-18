@@ -46,6 +46,7 @@ export interface ChatSession {
   id: string;
   userId: string | null; // null — admin-пространство (bearer)
   title: string;
+  ticketId: string; // "" — обращение в CRM ещё не создано
   createdAt: string;
   updatedAt: string;
 }

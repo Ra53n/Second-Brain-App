@@ -18,7 +18,10 @@ import {
   kbSearchBody,
   mcpServersBody,
   settingsBody,
+  ticketCommentBody,
+  ticketStatusBody,
 } from "./schemas.js";
+import type { TicketStatus } from "../domain/types.js";
 
 /** Известные облачные модели для пикера (админ может вписать любую строку). */
 const REMOTE_MODEL_SUGGESTIONS: Record<string, string[]> = {
@@ -177,7 +180,40 @@ export function registerAdminRoutes(app: FastifyInstance, ctx: AppContext): void
       async (req) => ({ items: ctx.crm.replaceUsers(req.body.items) }),
     );
 
-    instance.get("/support/admin/crm/tickets", async () => ({ items: ctx.crm.listTickets() }));
+    // Список обращений для центра поддержки: тикеты + данные клиентов одним ответом.
+    instance.get("/support/admin/crm/tickets", async () => {
+      const users = new Map(ctx.crm.listUsers().map((u) => [u.id, u]));
+      const items = ctx.crm
+        .listTickets()
+        .map((t) => ({ ...t, user: users.get(t.user_id) ?? null }))
+        .sort((a, b) => (a.updated_at < b.updated_at ? 1 : -1));
+      return { items };
+    });
+
+    instance.post<{ Params: { id: string }; Body: { status: TicketStatus } }>(
+      "/support/admin/crm/tickets/:id/status",
+      { schema: { body: ticketStatusBody } },
+      async (req) => {
+        const ticket = ctx.crm.setTicketStatus(req.params.id, req.body.status, ctx.now().toISOString());
+        if (!ticket) throw new NotFoundError(`Тикет «${req.params.id}» не найден.`);
+        return ticket;
+      },
+    );
+
+    instance.post<{ Params: { id: string }; Body: { text: string } }>(
+      "/support/admin/crm/tickets/:id/comment",
+      { schema: { body: ticketCommentBody } },
+      async (req) => {
+        const ticket = ctx.crm.addTicketComment(
+          req.params.id,
+          "support",
+          req.body.text.trim(),
+          ctx.now().toISOString(),
+        );
+        if (!ticket) throw new NotFoundError(`Тикет «${req.params.id}» не найден.`);
+        return ticket;
+      },
+    );
 
     instance.put<{ Body: { items: unknown[] } }>(
       "/support/admin/crm/tickets",

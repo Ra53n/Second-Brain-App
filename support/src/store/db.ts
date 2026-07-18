@@ -95,6 +95,12 @@ const MIGRATIONS: string[] = [
     dim     INTEGER NOT NULL
   );
   `,
+
+  // ── v2: привязка чата к CRM-тикету (фидбек «решено/не решено» обновляет
+  //   одно и то же обращение, а не плодит новые) ─────────────────────────────
+  `
+  ALTER TABLE chat_sessions ADD COLUMN ticket_id TEXT NOT NULL DEFAULT '';
+  `,
 ];
 
 /** Применяет недостающие миграции (idempotent). */

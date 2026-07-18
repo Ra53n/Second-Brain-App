@@ -9,9 +9,20 @@
 
 import { readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import type { CrmTicket, CrmUser, TicketStatus } from "../domain/types.js";
+import type { CrmTicket, CrmUser, TicketMessage, TicketStatus } from "../domain/types.js";
 import { TICKET_STATUSES } from "../domain/types.js";
 import { ValidationError } from "../domain/errors.js";
+
+/** Следующий id вида "<prefix>-NNN" по существующим id (t-101 → t-102). */
+export function nextId(prefix: string, existing: string[]): string {
+  let max = 0;
+  const re = new RegExp(`^${prefix}-(\\d+)$`);
+  for (const id of existing) {
+    const m = re.exec(id);
+    if (m) max = Math.max(max, Number.parseInt(m[1]!, 10));
+  }
+  return `${prefix}-${String(max + 1).padStart(3, "0")}`;
+}
 
 export class CrmStore {
   constructor(private readonly dir: string) {}
@@ -67,6 +78,28 @@ export class CrmStore {
     );
   }
 
+  /**
+   * Находит пользователя по email или создаёт нового (id — следующий u-NNN).
+   * Используется фидбеком чата: обращение всегда привязано к записи CRM.
+   */
+  findOrCreateUserByEmail(email: string, name: string, at: string): CrmUser {
+    const existing = this.findUserByEmail(email);
+    if (existing) return existing;
+    const users = this.readArray<CrmUser>(this.usersPath());
+    const user: CrmUser = {
+      id: nextId("u", users.map((u) => u.id)),
+      name: name.trim() || email,
+      email: email.trim().toLowerCase(),
+      app_version: "",
+      macos_version: "",
+      registered_at: at,
+      notes: "создан из чата поддержки",
+    };
+    users.push(user);
+    this.writeAtomic(this.usersPath(), users);
+    return user;
+  }
+
   /** Полная замена users.json (админ-редактор) с валидацией схемы. */
   replaceUsers(users: unknown): CrmUser[] {
     if (!Array.isArray(users)) throw new ValidationError("users.json: ожидается массив.");
@@ -93,6 +126,48 @@ export class CrmStore {
 
   getTicket(id: string): CrmTicket | null {
     return this.listTickets().find((t) => t.id === id) ?? null;
+  }
+
+  /** Создаёт тикет (id — следующий t-NNN) с готовой перепиской. */
+  createTicket(input: {
+    userId: string;
+    subject: string;
+    status: TicketStatus;
+    tags: string[];
+    messages: TicketMessage[];
+    at: string;
+  }): CrmTicket {
+    const tickets = this.readArray<CrmTicket>(this.ticketsPath());
+    const ticket: CrmTicket = {
+      id: nextId("t", tickets.map((t) => t.id)),
+      user_id: input.userId,
+      subject: input.subject,
+      status: input.status,
+      tags: input.tags,
+      created_at: input.at,
+      updated_at: input.at,
+      messages: input.messages,
+    };
+    tickets.push(ticket);
+    this.writeAtomic(this.ticketsPath(), tickets);
+    return ticket;
+  }
+
+  /** Меняет статус тикета (+опциональный комментарий). null — тикет не найден. */
+  setTicketStatus(
+    id: string,
+    status: TicketStatus,
+    at: string,
+    comment?: { author: "user" | "support"; text: string },
+  ): CrmTicket | null {
+    const tickets = this.readArray<CrmTicket>(this.ticketsPath());
+    const ticket = tickets.find((t) => t.id === id);
+    if (!ticket) return null;
+    ticket.status = status;
+    ticket.updated_at = at;
+    if (comment) ticket.messages = [...(ticket.messages ?? []), { ...comment, at }];
+    this.writeAtomic(this.ticketsPath(), tickets);
+    return ticket;
   }
 
   /** Добавляет комментарий в тикет (read-modify-write + атомарная запись). */

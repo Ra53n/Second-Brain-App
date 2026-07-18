@@ -127,6 +127,45 @@ export const mcpServersBody = {
   },
 } as const;
 
+// Фидбек «решено/не решено»: у вошедших — chatId (email из аккаунта), у гостя —
+// email из формы + история диалога из браузера.
+export const feedbackBody = {
+  type: "object",
+  additionalProperties: true,
+  required: ["resolved"],
+  properties: {
+    resolved: { type: "boolean" },
+    chatId: { type: "string" },
+    email: { type: "string", maxLength: 200 },
+    name: { type: "string", maxLength: 200 },
+    comment: { type: "string", maxLength: 4000 },
+    messages: {
+      type: "array",
+      maxItems: 40,
+      items: {
+        type: "object",
+        required: ["role", "content"],
+        properties: {
+          role: { type: "string", enum: ["user", "assistant"] },
+          content: { type: "string", maxLength: 100000 },
+        },
+      },
+    },
+  },
+} as const;
+
+export const ticketStatusBody = {
+  type: "object",
+  required: ["status"],
+  properties: { status: { type: "string", enum: ["open", "pending", "closed"] } },
+} as const;
+
+export const ticketCommentBody = {
+  type: "object",
+  required: ["text"],
+  properties: { text: { type: "string", minLength: 1, maxLength: 8000 } },
+} as const;
+
 // CRM-редакторы принимают массив целиком (валидация схемы — в CrmStore).
 export const crmArrayBody = {
   type: "object",

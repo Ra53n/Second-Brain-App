@@ -9,7 +9,10 @@ import type { AppContext } from "./context.js";
 import { AppError, NotFoundError, ValidationError } from "../domain/errors.js";
 import { requireUserOrAdmin, ownerScope } from "./authMiddleware.js";
 import type { AnswerResult, HistoryMessage } from "../chat/supportChatService.js";
-import { createChatBody, guestChatBody, sendChatMessageBody } from "./schemas.js";
+import { createChatBody, feedbackBody, guestChatBody, sendChatMessageBody } from "./schemas.js";
+import { SESSION_COOKIE } from "./authMiddleware.js";
+import { applyFeedback } from "../crm/feedback.js";
+import type { PublicUser } from "../store/usersRepo.js";
 
 const HEARTBEAT_MS = 15_000;
 
@@ -91,6 +94,85 @@ export function registerGuestChatRoutes(app: FastifyInstance, ctx: AppContext): 
     }
   });
 
+  // Фидбек «решено/не решено» — публично (гость), но понимает cookie-сессию.
+  // Каждая отметка фиксируется в CRM оформленным обращением (см. crm/feedback.ts).
+  app.post<{
+    Body: {
+      resolved: boolean;
+      chatId?: string;
+      email?: string;
+      name?: string;
+      comment?: string;
+      messages?: HistoryMessage[];
+    };
+  }>(
+    "/support/feedback",
+    {
+      schema: { body: feedbackBody },
+      config: { rateLimit: { max: 10, timeWindow: "1 minute" } },
+    },
+    async (req) => {
+      // Опциональная cookie-сессия (без 401 — гостю тоже можно).
+      let user: PublicUser | null = null;
+      const signed = req.cookies?.[SESSION_COOKIE];
+      if (signed) {
+        const unsigned = req.unsignCookie(signed);
+        if (unsigned.valid && unsigned.value) user = ctx.auth.resolveSession(unsigned.value);
+      }
+
+      const b = req.body;
+      let history: HistoryMessage[];
+      let email: string;
+      let name: string;
+      let ticketId: string | null = null;
+      let chatId: string | null = null;
+
+      if (user && b.chatId) {
+        const session = ctx.chatRepo.getSession(b.chatId, user.id);
+        if (!session) throw new NotFoundError("Чат не найден.");
+        chatId = session.id;
+        ticketId = session.ticketId || null;
+        history = ctx.chatRepo
+          .listMessages(session.id)
+          .map((m) => ({ role: m.role, content: m.content }));
+        email = user.email || (b.email ?? "").trim();
+        name = user.username;
+        if (!email) {
+          throw new ValidationError(
+            "У аккаунта нет email — укажите email, чтобы поддержка могла ответить.",
+          );
+        }
+      } else {
+        history = (b.messages ?? []).map((m) => ({ role: m.role, content: m.content }));
+        email = (b.email ?? "").trim();
+        name = (b.name ?? "").trim();
+        if (history.length === 0) throw new ValidationError("Пустая история диалога.");
+        if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+          // Гость отметил «решено», email не оставил — не заставляем: отметка
+          // принята, но обращение в CRM не создаётся (не к кому привязать).
+          if (b.resolved) return { ticketId: null, status: null, created: false };
+          throw new ValidationError("Укажите корректный email, чтобы поддержка могла ответить.");
+        }
+      }
+
+      const outcome = applyFeedback(ctx.crm, {
+        resolved: b.resolved,
+        email,
+        name,
+        ticketId,
+        history,
+        comment: (b.comment ?? "").trim(),
+        at: ctx.now().toISOString(),
+      });
+      if (chatId && outcome.created) ctx.chatRepo.setTicketId(chatId, outcome.ticket.id);
+      return {
+        ticketId: outcome.ticket.id,
+        status: outcome.ticket.status,
+        created: outcome.created,
+      };
+    },
+  );
+
   app.post<{ Body: { messages: HistoryMessage[]; stream?: boolean } }>(
     "/support/guest/chat",
     {
@@ -136,6 +218,7 @@ export function registerChatRoutes(app: FastifyInstance, ctx: AppContext): void 
           id: randomUUID(),
           userId: ownerScope(req.principal!),
           title: req.body?.title ?? "",
+          ticketId: "",
           createdAt: now,
           updatedAt: now,
         });

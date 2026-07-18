@@ -16,6 +16,7 @@ interface SessionRow {
   id: string;
   user_id: string | null;
   title: string;
+  ticket_id: string;
   created_at: string;
   updated_at: string;
 }
@@ -36,6 +37,7 @@ function rowToSession(row: SessionRow): ChatSession {
     id: row.id,
     userId: row.user_id,
     title: row.title,
+    ticketId: row.ticket_id ?? "",
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -79,17 +81,23 @@ export class ChatRepo {
   createSession(s: ChatSession): ChatSession {
     this.db
       .prepare(
-        `INSERT INTO chat_sessions (id, user_id, title, created_at, updated_at)
-         VALUES (@id, @user_id, @title, @created_at, @updated_at)`,
+        `INSERT INTO chat_sessions (id, user_id, title, ticket_id, created_at, updated_at)
+         VALUES (@id, @user_id, @title, @ticket_id, @created_at, @updated_at)`,
       )
       .run({
         id: s.id,
         user_id: s.userId,
         title: s.title,
+        ticket_id: s.ticketId,
         created_at: s.createdAt,
         updated_at: s.updatedAt,
       });
     return s;
+  }
+
+  /** Привязывает чат к созданному CRM-обращению. */
+  setTicketId(sessionId: string, ticketId: string): void {
+    this.db.prepare(`UPDATE chat_sessions SET ticket_id = ? WHERE id = ?`).run(ticketId, sessionId);
   }
 
   /** Сессия по id в пределах владельца (чужая → null). */

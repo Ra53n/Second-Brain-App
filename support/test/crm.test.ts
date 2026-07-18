@@ -4,8 +4,9 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { CrmStore } from "../src/crm/crmStore.js";
+import { CrmStore, nextId } from "../src/crm/crmStore.js";
 import { buildCustomerContext } from "../src/crm/context.js";
+import { applyFeedback, historyToTranscript, subjectFromHistory } from "../src/crm/feedback.js";
 import { crmToolHandlers } from "../src/mcp/crm-server.js";
 import { ValidationError } from "../src/domain/errors.js";
 
@@ -115,6 +116,117 @@ describe("buildCustomerContext", () => {
     store.replaceTickets([]);
     const block = buildCustomerContext(store, "maria@example.com");
     expect(block).toContain("Открытых тикетов у клиента нет");
+  });
+});
+
+describe("nextId / createTicket / setTicketStatus / findOrCreateUser", () => {
+  it("nextId продолжает нумерацию", () => {
+    expect(nextId("t", ["t-101", "t-099", "мусор"])).toBe("t-102");
+    expect(nextId("u", [])).toBe("u-001");
+  });
+
+  it("createTicket добавляет тикет со следующим id", () => {
+    const ticket = store.createTicket({
+      userId: "u-001",
+      subject: "Новая проблема",
+      status: "open",
+      tags: ["chat"],
+      messages: [{ author: "user", text: "текст", at: "2026-07-18T12:00:00Z" }],
+      at: "2026-07-18T12:00:00Z",
+    });
+    expect(ticket.id).toBe("t-103"); // после сидов t-101, t-102
+    expect(store.getTicket("t-103")?.subject).toBe("Новая проблема");
+  });
+
+  it("setTicketStatus меняет статус и дописывает комментарий", () => {
+    const t = store.setTicketStatus("t-101", "closed", "2026-07-18T12:00:00Z", {
+      author: "user",
+      text: "решено",
+    });
+    expect(t?.status).toBe("closed");
+    expect(t?.messages.at(-1)?.text).toBe("решено");
+    expect(store.setTicketStatus("нет", "open", "2026-07-18T12:00:00Z")).toBeNull();
+  });
+
+  it("findOrCreateUserByEmail: существующий возвращается, новый создаётся", () => {
+    const existing = store.findOrCreateUserByEmail("MARIA@example.com", "х", "2026-07-18");
+    expect(existing.id).toBe("u-001");
+    const created = store.findOrCreateUserByEmail("new@example.com", "Новый", "2026-07-18");
+    expect(created.id).toBe("u-002");
+    expect(store.findUserByEmail("new@example.com")?.name).toBe("Новый");
+  });
+});
+
+describe("applyFeedback", () => {
+  const HISTORY = [
+    { role: "user" as const, content: "почему не работает авторизация при пуше" },
+    { role: "assistant" as const, content: "Обновите PAT." },
+  ];
+
+  it("не решено → новый open-тикет с транскриптом и [AI]-префиксом", () => {
+    const { ticket, created } = applyFeedback(store, {
+      resolved: false,
+      email: "guest@example.com",
+      name: "Гость",
+      ticketId: null,
+      history: HISTORY,
+      comment: "не помогло",
+      at: "2026-07-18T12:00:00Z",
+    });
+    expect(created).toBe(true);
+    expect(ticket.status).toBe("open");
+    expect(ticket.subject).toContain("авторизация");
+    expect(ticket.tags).toContain("chat");
+    expect(ticket.messages.some((m) => m.text.startsWith("[AI] "))).toBe(true);
+    expect(ticket.messages.at(-1)!.text).toContain("не помогло");
+    expect(store.findUserByEmail("guest@example.com")).not.toBeNull();
+  });
+
+  it("решено → closed-тикет (обращение зафиксировано)", () => {
+    const { ticket } = applyFeedback(store, {
+      resolved: true,
+      email: "maria@example.com",
+      name: "Мария",
+      ticketId: null,
+      history: HISTORY,
+      comment: "",
+      at: "2026-07-18T12:00:00Z",
+    });
+    expect(ticket.status).toBe("closed");
+    expect(ticket.user_id).toBe("u-001"); // существующая запись, дубликат не создан
+  });
+
+  it("повторная отметка по привязанному тикету обновляет его", () => {
+    const first = applyFeedback(store, {
+      resolved: false,
+      email: "maria@example.com",
+      name: "Мария",
+      ticketId: null,
+      history: HISTORY,
+      comment: "",
+      at: "2026-07-18T12:00:00Z",
+    });
+    const second = applyFeedback(store, {
+      resolved: true,
+      email: "maria@example.com",
+      name: "Мария",
+      ticketId: first.ticket.id,
+      history: HISTORY,
+      comment: "",
+      at: "2026-07-18T13:00:00Z",
+    });
+    expect(second.created).toBe(false);
+    expect(second.ticket.id).toBe(first.ticket.id);
+    expect(second.ticket.status).toBe("closed");
+  });
+
+  it("historyToTranscript/subjectFromHistory: лимиты", () => {
+    const long = Array.from({ length: 30 }, (_, i) => ({
+      role: (i % 2 === 0 ? "user" : "assistant") as "user" | "assistant",
+      content: `сообщение ${i}`,
+    }));
+    expect(historyToTranscript(long, "t").length).toBe(12);
+    expect(subjectFromHistory([{ role: "user", content: "х".repeat(200) }]).length).toBeLessThanOrEqual(80);
   });
 });
 

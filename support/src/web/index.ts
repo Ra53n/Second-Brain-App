@@ -89,6 +89,19 @@ button:disabled{opacity:.5;cursor:default}
   background:var(--bg);color:var(--text)}
 .dialog .err{color:var(--danger);font-size:12px;min-height:14px}
 .sources{font-size:11px;color:var(--muted);margin-top:6px}
+.fb{display:flex;gap:8px;margin-top:10px;align-items:center;flex-wrap:wrap}
+.fb input{font:inherit;padding:5px 8px;border-radius:8px;border:1px solid var(--border);
+  background:var(--bg);color:var(--text)}
+.ticket{border:1px solid var(--border);border-radius:10px;margin-bottom:10px;background:var(--panel)}
+.ticket .head{padding:10px 12px;cursor:pointer;display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.ticket .detail{display:none;padding:4px 12px 12px;border-top:1px solid var(--border)}
+.ticket.open .detail{display:block}
+.tmsg{margin:8px 0;padding:8px 10px;border-radius:8px;background:var(--assist);white-space:pre-wrap}
+.tmsg.user{background:var(--user)}
+.tmsg .who{font-size:11px;color:var(--muted);margin-bottom:2px}
+.pill.st-open{color:var(--danger)}
+.pill.st-pending{color:#d97706}
+.pill.st-closed{color:var(--ok)}
 </style>
 </head>
 <body>
@@ -176,14 +189,31 @@ button:disabled{opacity:.5;cursor:default}
     <div id="kbHits"></div>
   </div></div>
 
-  <!-- Админ: CRM -->
+  <!-- Админ: Обращения (CRM) -->
   <div id="viewCrm" class="view"><div class="admin">
-    <h2>CRM: пользователи (users.json)</h2>
-    <label><textarea id="crmUsers" class="code"></textarea></label>
-    <div class="row"><button id="crmUsersSaveBtn" class="primary">Сохранить пользователей</button><span id="crmUsersStatus" class="status"></span></div>
-    <h2>CRM: тикеты (tickets.json)</h2>
-    <label><textarea id="crmTickets" class="code"></textarea></label>
-    <div class="row"><button id="crmTicketsSaveBtn" class="primary">Сохранить тикеты</button><span id="crmTicketsStatus" class="status"></span></div>
+    <h2>Обращения</h2>
+    <div class="row">
+      <label style="flex:0;min-width:160px">Фильтр
+        <select id="ticketFilter">
+          <option value="">все</option>
+          <option value="open">открытые</option>
+          <option value="pending">в работе</option>
+          <option value="closed">закрытые</option>
+        </select>
+      </label>
+      <button id="ticketsRefreshBtn">Обновить</button>
+      <span id="ticketsStatus" class="status"></span>
+    </div>
+    <div id="ticketList"></div>
+    <details>
+      <summary class="status" style="cursor:pointer">Продвинутый режим: JSON-редакторы (users.json / tickets.json)</summary>
+      <h2>CRM: пользователи (users.json)</h2>
+      <label><textarea id="crmUsers" class="code"></textarea></label>
+      <div class="row"><button id="crmUsersSaveBtn" class="primary">Сохранить пользователей</button><span id="crmUsersStatus" class="status"></span></div>
+      <h2>CRM: тикеты (tickets.json)</h2>
+      <label><textarea id="crmTickets" class="code"></textarea></label>
+      <div class="row"><button id="crmTicketsSaveBtn" class="primary">Сохранить тикеты</button><span id="crmTicketsStatus" class="status"></span></div>
+    </details>
   </div></div>
 
   <!-- Админ: MCP -->
@@ -422,6 +452,7 @@ function send(){
         state.guest.push({role:"assistant",content:content});
         ls("guestHistory", JSON.stringify(state.guest));
       }
+      addFeedbackBar(assistant.el);
     }
   };
   var fail = function(e){ assistant.body.textContent = "⚠ "+e.message; };
@@ -436,6 +467,53 @@ function send(){
     streamChat("/guest/chat", {messages:msgs, stream:true}, assistant).then(finishOk).catch(fail).then(always);
   }
 }
+// ── Фидбек «решено/не решено» → обращение в CRM ──
+var fbCurrent=null;
+function addFeedbackBar(msgEl){
+  if(fbCurrent && fbCurrent.parentNode) fbCurrent.parentNode.removeChild(fbCurrent);
+  var bar=el("div","fb");
+  bar.appendChild(el("span","status","Ответ помог?"));
+  var yes=el("button",null,"✓ Да, решено");
+  var no=el("button",null,"Нет, передать в поддержку");
+  bar.appendChild(yes); bar.appendChild(no);
+  msgEl.appendChild(bar); fbCurrent=bar;
+  $("messages").scrollTop=$("messages").scrollHeight;
+  yes.onclick=function(){ sendFeedback(bar,true,null,null); };
+  no.onclick=function(){
+    if(state.me) sendFeedback(bar,false,null,null);
+    else showGuestFeedbackForm(bar);
+  };
+}
+function showGuestFeedbackForm(bar){
+  bar.innerHTML="";
+  bar.appendChild(el("span","status","Оставьте email — поддержка ответит:"));
+  var em=document.createElement("input"); em.placeholder="email"; em.type="email";
+  var cm=document.createElement("input"); cm.placeholder="комментарий (необязательно)"; cm.style.minWidth="200px";
+  var send=el("button","primary","Отправить в поддержку");
+  bar.appendChild(em); bar.appendChild(cm); bar.appendChild(send);
+  em.focus();
+  send.onclick=function(){ sendFeedback(bar,false,em.value.trim(),cm.value.trim()); };
+}
+function sendFeedback(bar,resolved,email,comment){
+  var body={resolved:resolved};
+  if(state.me && state.currentId){ body.chatId=state.currentId; }
+  else { body.messages=state.guest; if(email) body.email=email; if(comment) body.comment=comment; }
+  api("/feedback",{method:"POST",body:body}).then(function(r){
+    bar.innerHTML="";
+    if(r.ticketId){
+      bar.appendChild(el("span","status", resolved
+        ? ("Спасибо! Обращение "+r.ticketId+" отмечено решённым.")
+        : ("Обращение "+r.ticketId+" передано в поддержку — мы свяжемся с вами.")));
+    } else {
+      bar.appendChild(el("span","status","Спасибо за отметку!"));
+    }
+  }).catch(function(e){
+    var err=el("span","status","⚠ "+e.message);
+    bar.appendChild(err);
+    setTimeout(function(){ if(err.parentNode) err.parentNode.removeChild(err); }, 4000);
+  });
+}
+
 function ensureSession(){
   if(state.currentId) return Promise.resolve(state.currentId);
   return api("/chats",{method:"POST",body:{}}).then(function(s){
@@ -576,10 +654,76 @@ function searchKbUi(){
   });
 }
 
-// ── Админ: CRM ──
+// ── Админ: Обращения (CRM) ──
+function fmtDate(s){ return (s||"").slice(0,16).replace("T"," "); }
+function stPill(s){
+  var label = s==="open"?"открыт":(s==="pending"?"в работе":"закрыт");
+  return el("span","pill st-"+s,label);
+}
+function loadTickets(){
+  api("/admin/crm/tickets").then(function(res){
+    var filter=$("ticketFilter").value;
+    var items=(res.items||[]).filter(function(t){ return !filter || t.status===filter; });
+    var box=$("ticketList"); box.innerHTML="";
+    $("ticketsStatus").textContent = items.length ? (items.length+" обращений") : "";
+    if(!items.length){ box.appendChild(el("div","status","Обращений нет.")); return; }
+    items.forEach(function(t){ box.appendChild(renderTicket(t)); });
+  });
+}
+function renderTicket(t){
+  var card=el("div","ticket");
+  var head=el("div","head");
+  head.appendChild(el("span","pill",t.id));
+  head.appendChild(stPill(t.status));
+  var subj=el("span",null,t.subject||"(без темы)");
+  subj.style.fontWeight="600"; subj.style.flex="1"; subj.style.minWidth="180px";
+  head.appendChild(subj);
+  head.appendChild(el("span","status", t.user ? (t.user.name+" · "+t.user.email) : t.user_id));
+  head.appendChild(el("span","status",fmtDate(t.updated_at)));
+  card.appendChild(head);
+
+  var detail=el("div","detail");
+  (t.messages||[]).forEach(function(m){
+    var b=el("div","tmsg "+(m.author==="user"?"user":""));
+    b.appendChild(el("div","who",(m.author==="user"?"Клиент":"Поддержка")+" · "+fmtDate(m.at)));
+    b.appendChild(el("div",null,m.text));
+    detail.appendChild(b);
+  });
+  if(t.tags && t.tags.length) detail.appendChild(el("div","status","Теги: "+t.tags.join(", ")));
+
+  var ctl=el("div","row");
+  var lbl=el("label",null,"Статус"); lbl.style.flex="0"; lbl.style.minWidth="140px";
+  var sel=document.createElement("select");
+  [["open","открыт"],["pending","в работе"],["closed","закрыт"]].forEach(function(o){
+    var op=el("option",null,o[1]); op.value=o[0]; sel.appendChild(op);
+  });
+  sel.value=t.status;
+  sel.onchange=function(){
+    api("/admin/crm/tickets/"+t.id+"/status",{method:"POST",body:{status:sel.value}}).then(loadTickets)
+      .catch(function(e){ alert(e.message); });
+  };
+  lbl.appendChild(sel); ctl.appendChild(lbl);
+  var reply=document.createElement("input"); reply.placeholder="Ответ поддержки…"; reply.style.flex="1";
+  var send=el("button","primary","Ответить");
+  send.onclick=function(){
+    var txt=reply.value.trim(); if(!txt) return;
+    api("/admin/crm/tickets/"+t.id+"/comment",{method:"POST",body:{text:txt}}).then(loadTickets)
+      .catch(function(e){ alert(e.message); });
+  };
+  ctl.appendChild(reply); ctl.appendChild(send);
+  detail.appendChild(ctl);
+  card.appendChild(detail);
+
+  head.onclick=function(){ card.classList.toggle("open"); };
+  return card;
+}
+
 function loadCrm(){
+  loadTickets();
   api("/admin/crm/users").then(function(res){ $("crmUsers").value=JSON.stringify(res.items,null,2); });
-  api("/admin/crm/tickets").then(function(res){ $("crmTickets").value=JSON.stringify(res.items,null,2); });
+  api("/admin/crm/tickets").then(function(res){
+    $("crmTickets").value=JSON.stringify((res.items||[]).map(function(t){ var c=Object.assign({},t); delete c.user; return c; }),null,2);
+  });
 }
 function saveCrm(kind){
   var ta = kind==="users" ? $("crmUsers") : $("crmTickets");
@@ -687,6 +831,8 @@ $("kbReindexBtn").onclick=reindexKb;
 $("kbSearchBtn").onclick=searchKbUi;
 $("crmUsersSaveBtn").onclick=function(){ saveCrm("users"); };
 $("crmTicketsSaveBtn").onclick=function(){ saveCrm("tickets"); };
+$("ticketsRefreshBtn").onclick=loadTickets;
+$("ticketFilter").onchange=loadTickets;
 $("mcpRefreshBtn").onclick=refreshMcp;
 $("mcpSaveBtn").onclick=saveMcp;
 $("nuCreateBtn").onclick=createUser;
