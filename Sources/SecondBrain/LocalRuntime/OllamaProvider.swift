@@ -38,14 +38,14 @@ final class OllamaProvider: ChatProvider, EmbeddingProvider {
     }
 
     func stream(_ messages: [ChatMessageDTO],
-                settings: ChatSettings) -> AsyncThrowingStream<String, Error> {
+                settings: ChatSettings) -> AsyncThrowingStream<ChatStreamEvent, Error> {
         AsyncThrowingStream { continuation in
             let task = Task {
                 do {
                     try await manager.ensureRunning()
-                    for try await delta in client.chatStream(messages: messages,
+                    for try await event in client.chatStream(messages: messages,
                                                              settings: settings) {
-                        continuation.yield(delta)
+                        continuation.yield(event)
                     }
                     await manager.markUsed()
                     continuation.finish()
@@ -59,9 +59,9 @@ final class OllamaProvider: ChatProvider, EmbeddingProvider {
 
     // MARK: - EmbeddingProvider
 
-    func embed(_ texts: [String]) async throws -> [[Float]] {
+    func embed(_ texts: [String], model: String?) async throws -> [[Float]] {
         try await manager.ensureRunning()
-        let vectors = try await client.embed(texts: texts, model: embeddingModel)
+        let vectors = try await client.embed(texts: texts, model: model ?? embeddingModel)
         await manager.markUsed()
         return vectors
     }
@@ -77,7 +77,8 @@ enum LocalProviders {
                                displayName: "Ollama (локально)",
                                capabilities: [.chat, .embedding],
                                isLocal: true,
-                               defaultModel: "qwen3:8b"),
+                               defaultModel: "qwen3:8b",
+                               defaultEmbeddingModel: "nomic-embed-text"),
             chat: provider,
             embedding: provider,
             // Доступен, если установлен бинарь ЛИБО уже работает (в т.ч. чужой).

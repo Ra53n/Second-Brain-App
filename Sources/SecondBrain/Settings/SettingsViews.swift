@@ -2,42 +2,96 @@
 //
 // Вкладки: Общие (vault + RAG-индекс), Провайдеры (ключи), Модели (роутинг
 // функция → провайдер+модель), Встречи (промпт раскладки, папка/источник по
-// умолчанию), Локальные модели (Ollama/Whisper/idle), MCP, Синхронизация.
-// Всё «настраиваемое» сведено сюда, ничего не потеряно: локальные модели и
-// MCP переехали из бывшего раздела сайдбара, синк дублирует панель тулбара.
+// умолчанию), Локальные модели (Ollama/Whisper/idle), Инструменты (репозиторий
+// проекта + встроенные инструменты + MCP-серверы, задача 27), Синхронизация.
+// Всё «настраиваемое» сведено сюда, ничего не потеряно.
 //
 // View только читают сторы/вью-модели из AppModel; логика — в них.
 
+import AppKit
 import SwiftUI
+
+/// Вкладки окна настроек. rawValue — контракт нотификации openSettingsTab.
+enum SettingsTab: String, CaseIterable {
+    case general, providers, models, meetings, localModels, tools, sync
+}
+
+extension Notification.Name {
+    /// «Открыть настройки на вкладке» (object — SettingsTab). Шлют чипы чата,
+    /// мастер и пункт «Добавить инструменты…» (задача 27).
+    static let openSettingsTab = Notification.Name("com.local.second-brain.openSettingsTab")
+}
+
+/// Открытие окна настроек на нужной вкладке. Два канала: при ПЕРВОМ открытии
+/// окна SettingsRootView ещё не существует в момент openSettings() и
+/// нотификацию никто не слышит — pending добирается в onAppear; нотификация
+/// покрывает уже открытое окно.
+@MainActor
+enum SettingsTabRouter {
+    private(set) static var pending: SettingsTab?
+
+    /// openSettings — замыкание (а не OpenSettingsAction), чтобы роутер
+    /// тестировался без SwiftUI-окружения.
+    static func open(_ tab: SettingsTab, openSettings: () -> Void) {
+        pending = tab
+        openSettings()
+        NotificationCenter.default.post(name: .openSettingsTab, object: tab)
+    }
+
+    /// Однократный забор отложенной вкладки (SettingsRootView.onAppear).
+    static func consumePending() -> SettingsTab? {
+        defer { pending = nil }
+        return pending
+    }
+}
 
 /// Корень окна настроек: TabView со стандартными тулбар-вкладками macOS.
 struct SettingsRootView: View {
     let model: AppModel
+    @State private var selection: SettingsTab = .general
 
     var body: some View {
-        TabView {
+        TabView(selection: $selection) {
             GeneralSettingsTab(store: model.settingsStore,
                                vaultManager: model.vaultManager,
                                ragManager: model.ragIndexManager)
                 .tabItem { Label("Общие", systemImage: "gearshape") }
+                .tag(SettingsTab.general)
             ProvidersSettingsTab(registry: model.providerRegistry)
                 .tabItem { Label("Провайдеры", systemImage: "key") }
+                .tag(SettingsTab.providers)
             ModelsSettingsTab(router: model.functionRouter,
                               registry: model.providerRegistry)
                 .tabItem { Label("Модели", systemImage: "cpu") }
+                .tag(SettingsTab.models)
             MeetingsSettingsTab(meetingsViewModel: model.meetingsViewModel)
                 .tabItem { Label("Встречи", systemImage: "mic") }
+                .tag(SettingsTab.meetings)
             LocalModelsPane(viewModel: model.localModelsViewModel,
                             manager: model.ollamaManager,
                             whisperViewModel: model.whisperModelsViewModel,
                             settingsStore: model.settingsStore)
                 .tabItem { Label("Локальные модели", systemImage: "desktopcomputer") }
-            MCPSettingsTab(viewModel: model.mcpServersViewModel)
-                .tabItem { Label("MCP", systemImage: "wrench.and.screwdriver") }
+                .tag(SettingsTab.localModels)
+            ToolsSettingsTab(viewModel: model.mcpServersViewModel,
+                             settingsStore: model.settingsStore,
+                             vaultManager: model.vaultManager,
+                             projectToolsProvider: model.projectToolsProvider,
+                             knowledgeBaseStore: model.knowledgeBaseStore,
+                             knowledgeBaseManager: model.knowledgeBaseManager)
+                .tabItem { Label("Инструменты", systemImage: "wrench.and.screwdriver") }
+                .tag(SettingsTab.tools)
             SyncSettingsTab(store: model.settingsStore, syncViewModel: model.syncViewModel)
                 .tabItem { Label("Синхронизация", systemImage: "arrow.triangle.2.circlepath") }
+                .tag(SettingsTab.sync)
         }
         .frame(minWidth: 640, minHeight: 480)
+        .onAppear {
+            if let tab = SettingsTabRouter.consumePending() { selection = tab }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .openSettingsTab)) { note in
+            if let tab = note.object as? SettingsTab { selection = tab }
+        }
     }
 }
 
@@ -79,8 +133,26 @@ struct GeneralSettingsTab: View {
             }
             // RAG-индекс vault (задача 13) — переехал из бывшего раздела настроек.
             RagStatusSection(manager: ragManager)
+            // Секция «Инструменты проекта» переехала на вкладку «Инструменты»
+            // (задача 27) — единая точка настройки туллинга.
         }
         .formStyle(.grouped)
+    }
+}
+
+/// NSOpenPanel выбора корня репозитория; общий для вкладки «Инструменты»
+/// и мастера в пустом чате (задача 27).
+@MainActor
+enum ProjectRepoPicker {
+    static func pick(into store: SettingsStore) {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = false
+        panel.prompt = "Выбрать"
+        panel.message = "Выберите корень git-репозитория проекта"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        store.settings.projectRepoPath = url.path
     }
 }
 
@@ -236,7 +308,8 @@ struct ModelsSettingsTab: View {
                 }
                 // Модель — прежняя (если менялся только провайдер, обычно
                 // нужна свежая), иначе дефолтная провайдера.
-                let model = registry.descriptor(for: newID)?.defaultModel ?? ""
+                let model = registry.descriptor(for: newID)?
+                    .defaultModel(for: function.requiredCapability) ?? ""
                 router.assign(FunctionAssignment(providerID: newID, model: model), to: function)
             }
         )
@@ -314,16 +387,312 @@ struct MeetingsSettingsTab: View {
     }
 }
 
-// MARK: - MCP
+// MARK: - Инструменты
 
-struct MCPSettingsTab: View {
+/// Вкладка «Инструменты» (задача 27): единая точка настройки туллинга —
+/// репозиторий проекта (переехал из «Общих») + каталог встроенных
+/// инструментов + MCP-серверы (бывшая вкладка MCP).
+struct ToolsSettingsTab: View {
     @ObservedObject var viewModel: MCPServersViewModel
+    @ObservedObject var settingsStore: SettingsStore
+    /// Для кнопки «Текущий vault».
+    @ObservedObject var vaultManager: VaultManager
+    /// Статус RAG-индекса документации проекта (задача 28).
+    let projectToolsProvider: ProjectToolsProvider
+    /// Реестр баз знаний (задача 34): секция управления папочными базами.
+    @ObservedObject var knowledgeBaseStore: KnowledgeBaseStore
+    let knowledgeBaseManager: KnowledgeBaseManager
+
+    /// Предупреждение «выбранная папка — не git-репозиторий» (не блокирует:
+    /// list_files/read_file работают и без git).
+    @State private var projectRepoWarning: String?
+    /// Статистика индекса доков; nil — не строился или репозиторий не выбран.
+    @State private var docsStats: ProjectDocsIndexService.DocsIndexStats?
+
+    /// Каталог встроенных инструментов статичен — считается один раз.
+    private static let builtinCatalog = ToolRegistry.projectToolCatalog()
 
     var body: some View {
         Form {
-            MCPServersSection(viewModel: viewModel)
+            builtinToolsSection
+            KnowledgeBasesSection(store: knowledgeBaseStore,
+                                  folderService: knowledgeBaseManager.folderService)
+            MCPServersSection(viewModel: viewModel,
+                              projectRepoPath: settingsStore.settings.projectRepoPath)
+            GitHubTokenSection()
         }
         .formStyle(.grouped)
+        // Проверка «папка — git-репозиторий?» + статистика индекса доков
+        // при каждом изменении пути.
+        .task(id: settingsStore.settings.projectRepoPath) {
+            await refreshProjectRepoWarning()
+            docsStats = await projectToolsProvider.docsIndexStats()
+        }
+    }
+
+    /// Строка статуса RAG-индекса документации (задача 28): доки индексируются
+    /// лениво при /help — здесь только наблюдение и сброс.
+    @ViewBuilder
+    private var docsIndexRow: some View {
+        if !settingsStore.settings.projectRepoPath.isEmpty {
+            HStack {
+                if let stats = docsStats {
+                    Text(Self.docsStatsLine(stats))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Button("Сбросить индекс") {
+                        Task {
+                            await projectToolsProvider.resetDocsIndex()
+                            docsStats = await projectToolsProvider.docsIndexStats()
+                        }
+                    }
+                    .controlSize(.small)
+                    .help("Индекс перестроится при следующем /help")
+                } else {
+                    Text("RAG по документации: индекс построится при первом /help (нужна модель эмбеддингов)")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+    }
+
+    private static func docsStatsLine(_ stats: ProjectDocsIndexService.DocsIndexStats) -> String {
+        var line = "RAG по документации: \(stats.files) файлов · \(stats.chunks) чанков"
+        if let updated = stats.updatedAt {
+            line += " · обновлён " + updated.formatted(date: .abbreviated, time: .shortened)
+        }
+        return line
+    }
+
+    private var builtinToolsSection: some View {
+        Section("Встроенные инструменты проекта") {
+            HStack {
+                Text("Репозиторий")
+                Spacer()
+                Text(settingsStore.settings.projectRepoPath.isEmpty
+                     ? "не выбран" : settingsStore.settings.projectRepoPath)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .textSelection(.enabled)
+            }
+            HStack {
+                Button("Выбрать…") { ProjectRepoPicker.pick(into: settingsStore) }
+                    .help("Выбрать папку git-репозитория, по которому ассистент сможет ходить")
+                Button("Текущий vault") {
+                    settingsStore.settings.projectRepoPath = vaultManager.vaultURL?.path ?? ""
+                }
+                .disabled(vaultManager.vaultURL == nil)
+                .help("Использовать открытый vault как репозиторий проекта")
+                Button("Сбросить") { settingsStore.settings.projectRepoPath = "" }
+                    .disabled(settingsStore.settings.projectRepoPath.isEmpty)
+                    .help("Отключить инструменты проекта")
+            }
+            if let warning = projectRepoWarning {
+                Label(warning, systemImage: "exclamationmark.triangle")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+            }
+            Label(settingsStore.settings.projectRepoPath.isEmpty
+                  ? "Репозиторий не выбран — инструменты недоступны"
+                  : "Репозиторий выбран — инструменты готовы (включаются per-чат в меню «Инструменты» или чипами)",
+                  systemImage: settingsStore.settings.projectRepoPath.isEmpty
+                  ? "circle" : "checkmark.circle")
+                .font(.caption)
+                .foregroundStyle(settingsStore.settings.projectRepoPath.isEmpty
+                                 ? Color.secondary : .green)
+            docsIndexRow
+            // Каталог: что именно умеет ассистент (только чтение).
+            ForEach(Self.builtinCatalog, id: \.name) { definition in
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(definition.name)
+                        .font(.callout.monospaced())
+                    Text(definition.description)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                .padding(.vertical, 1)
+            }
+        }
+    }
+
+    private func refreshProjectRepoWarning() async {
+        let path = settingsStore.settings.projectRepoPath
+        guard !path.isEmpty else {
+            projectRepoWarning = nil
+            return
+        }
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory),
+              isDirectory.boolValue else {
+            projectRepoWarning = "Папка не найдена — инструменты проекта работать не будут."
+            return
+        }
+        let isRepo = await GitClient(repoURL: URL(fileURLWithPath: path)).isRepository()
+        projectRepoWarning = isRepo ? nil
+            : "Папка не является корнем git-репозитория: git-инструменты будут недоступны, останутся list_files и read_file."
+    }
+}
+
+// MARK: - GitHub-токен (задача 36)
+
+/// Секция токена GitHub для PR-watch пайплайнов. Паттерн providerRow:
+/// SecureField + Сохранить/Удалить, значение никогда не показывается,
+/// хранение — Keychain (запись «github-token»). Для отслеживания PR хватает
+/// read-only доступа; без токена GitHub даёт всего 60 запросов в час.
+struct GitHubTokenSection: View {
+    @State private var draft = ""
+    /// Тик перерисовки статуса «токен задан» (KeyStore — не ObservableObject).
+    @State private var keyChangeTick = 0
+
+    var body: some View {
+        Section("GitHub (PR-watch пайплайнов)") {
+            let hasKey = keyChangeTick >= 0 && KeyStore.hasKey(for: PRWatcher.githubTokenID)
+            VStack(alignment: .leading, spacing: 6) {
+                HStack {
+                    Text("Personal access token")
+                        .fontWeight(.medium)
+                    Spacer()
+                    Label(hasKey ? "токен задан" : "токена нет",
+                          systemImage: hasKey ? "checkmark.circle" : "circle")
+                        .font(.caption)
+                        .foregroundStyle(hasKey ? .green : .secondary)
+                }
+                HStack {
+                    SecureField("Новый токен", text: $draft)
+                        .textFieldStyle(.roundedBorder)
+                    Button("Сохранить") {
+                        KeyStore.setKey(draft, for: PRWatcher.githubTokenID)
+                        draft = ""
+                        keyChangeTick += 1
+                    }
+                    .disabled(draft.trimmingCharacters(in: .whitespaces).isEmpty)
+                    if hasKey {
+                        Button("Удалить", role: .destructive) {
+                            KeyStore.setKey("", for: PRWatcher.githubTokenID)
+                            keyChangeTick += 1
+                        }
+                    }
+                }
+                HStack(spacing: 4) {
+                    Link("Как выпустить токен",
+                         destination: URL(string: "https://github.com/settings/tokens")!)
+                    Text("— достаточно read-only (Public repos / repo:read). Без токена лимит GitHub — 60 запросов в час.")
+                        .foregroundStyle(.secondary)
+                }
+                .font(.caption)
+            }
+            .padding(.vertical, 2)
+        }
+    }
+}
+
+// MARK: - Базы знаний (задача 34)
+
+/// Секция реестра баз знаний: глобальные тумблеры встроенных баз (vault,
+/// проект) и управление папочными базами — добавить/переименовать не даём
+/// (имя = имя папки), статистика индекса, сброс, удаление. Per-чат выбор —
+/// чип «База» в чате; здесь настраивается, что вообще доступно.
+struct KnowledgeBasesSection: View {
+    @ObservedObject var store: KnowledgeBaseStore
+    /// Индексы папочных баз: статистика и сброс.
+    let folderService: FolderIndexService
+
+    /// Статистика индексов папочных баз по id; nil в значении — не строился.
+    @State private var folderStats: [String: FolderIndexService.Stats] = [:]
+
+    var body: some View {
+        Section("Базы знаний (RAG)") {
+            ForEach(store.bases) { base in
+                baseRow(base)
+            }
+            Button("Добавить папку…") { pickFolder() }
+                .help("Добавить папку с .md-заметками как отдельную базу знаний (индексируется при первом вопросе)")
+            Text("Включённые базы доступны в чатах: чип «База» выбирает, где ищет конкретный чат; модель с function calling ищет сама через rag_search.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+        .task(id: store.bases.filter { $0.kind == .folder }.map(\.id)) {
+            await refreshStats()
+        }
+    }
+
+    @ViewBuilder
+    private func baseRow(_ base: KnowledgeBase) -> some View {
+        HStack(spacing: 8) {
+            Toggle("", isOn: Binding(
+                get: { base.enabled },
+                set: { store.setEnabled(id: base.id, $0) }
+            ))
+            .labelsHidden()
+            .toggleStyle(.switch)
+            .controlSize(.mini)
+            .help(base.enabled ? "Выключить базу во всех чатах" : "Включить базу")
+            VStack(alignment: .leading, spacing: 1) {
+                Text(base.name)
+                Text(baseDetail(base))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+            Spacer()
+            if base.kind == .folder {
+                Button("Сбросить индекс") {
+                    Task {
+                        await folderService.reset(root: URL(fileURLWithPath: base.path))
+                        await refreshStats()
+                    }
+                }
+                .controlSize(.small)
+                .help("Индекс перестроится при следующем вопросе")
+                Button(role: .destructive) {
+                    store.removeBase(id: base.id)
+                } label: {
+                    Image(systemName: "trash")
+                }
+                .buttonStyle(.plain)
+                .help("Удалить базу из реестра (файлы папки не трогаются)")
+            }
+        }
+    }
+
+    /// Подпись базы: у встроенных — откуда путь, у папок — путь + статистика.
+    private func baseDetail(_ base: KnowledgeBase) -> String {
+        switch base.kind {
+        case .vault:
+            return "Заметки открытого vault (индекс — в «Общих»)"
+        case .project:
+            return "README и docs/ репозитория проекта (выбирается выше)"
+        case .folder:
+            guard let stats = folderStats[base.id] else {
+                return "\(base.path) · индекс построится при первом вопросе"
+            }
+            return "\(base.path) · \(stats.files) файлов · \(stats.chunks) чанков"
+        }
+    }
+
+    private func pickFolder() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = false
+        panel.prompt = "Добавить"
+        panel.message = "Выберите папку с .md-заметками для базы знаний"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        store.addFolder(url: url)
+    }
+
+    private func refreshStats() async {
+        var stats: [String: FolderIndexService.Stats] = [:]
+        for base in store.bases where base.kind == .folder {
+            if let s = await folderService.stats(root: URL(fileURLWithPath: base.path)) {
+                stats[base.id] = s
+            }
+        }
+        folderStats = stats
     }
 }
 

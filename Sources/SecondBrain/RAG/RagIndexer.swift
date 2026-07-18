@@ -108,6 +108,7 @@ enum RagIndexer {
     static func sync(vaultURL: URL,
                      index: RagIndex,
                      embedder: EmbeddingProvider,
+                     embeddingModel: String? = nil,
                      embeddingTag: String,
                      ignore: [String] = [],
                      progress: (@Sendable (RagIndexProgress) -> Void)? = nil) async throws -> RagSyncResult {
@@ -146,7 +147,7 @@ enum RagIndexer {
                 try Task.checkCancellation()
                 let end = min(start + embedBatchSize, chunks.count)
                 let batch = Array(chunks[start..<end])
-                let vectors = try await embedder.embed(batch.map(\.text))
+                let vectors = try await embedder.embed(batch.map(\.text), model: embeddingModel)
                 guard vectors.count == batch.count else {
                     throw LLMError.emptyResponse
                 }

@@ -73,6 +73,8 @@ final class MCPServersViewModel: ObservableObject {
 
 struct MCPServersSection: View {
     @ObservedObject var viewModel: MCPServersViewModel
+    /// Путь репозитория проекта (задача 21) — предзаполнение шаблона git.
+    var projectRepoPath: String = ""
 
     var body: some View {
         Section("MCP-серверы (инструменты для чата)") {
@@ -88,12 +90,20 @@ struct MCPServersSection: View {
                 Button("Новый") {
                     viewModel.editingServer = MCPServer()
                 }
+                .help("Добавить MCP-сервер вручную (команда, аргументы, окружение)")
                 Button("Atlassian (шаблон)") {
                     viewModel.editingServer = MCPServer.atlassianTemplate()
                 }
+                .help("Заготовка Jira/Confluence через официальный mcp-remote (OAuth в браузере)")
+                Button("Git (шаблон)") {
+                    viewModel.editingServer = MCPServer.gitTemplate(
+                        repositoryPath: projectRepoPath)
+                }
+                .help("Заготовка mcp-server-git (uvx) — внешняя альтернатива встроенным git-инструментам")
                 Button("Импорт из Claude…") {
                     viewModel.showsImport = true
                 }
+                .help("Вставить блок mcpServers из конфига Claude Desktop")
             }
             Text("Секреты в env: значение «keychain:имя» подставляется из Keychain при запуске (токен не лежит в конфиге). Рекомендуемые модели для инструментов: GPT-4o+, qwen3+ (локально).")
                 .font(.caption)
@@ -126,6 +136,7 @@ struct MCPServersSection: View {
             } else {
                 Button("Тест") { viewModel.test(server) }
                     .controlSize(.small)
+                    .help("Проверить запуск сервера и получить список инструментов")
             }
             Button {
                 viewModel.editingServer = server
@@ -133,12 +144,14 @@ struct MCPServersSection: View {
                 Image(systemName: "pencil")
             }
             .buttonStyle(.plain)
+            .help("Редактировать сервер")
             Button(role: .destructive) {
                 viewModel.remove(server.id)
             } label: {
                 Image(systemName: "trash")
             }
             .buttonStyle(.plain)
+            .help("Удалить сервер")
         }
     }
 

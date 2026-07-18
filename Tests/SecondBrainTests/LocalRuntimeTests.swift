@@ -6,6 +6,21 @@
 import XCTest
 @testable import SecondBrain
 
+
+// MARK: - Возможности моделей из /api/tags (задача 32)
+
+final class OllamaTagsCapabilitiesTests: XCTestCase {
+
+    func testParseTagsReadsCapabilitiesAndChatFilter() throws {
+        let json = #"{"models":[{"name":"qwen2.5:7b","size":1,"details":{},"capabilities":["completion","tools"]},{"name":"bge-m3:latest","size":1,"details":{},"capabilities":["embedding"]},{"name":"old-model","size":1,"details":{}}]}"#
+        let models = try OllamaParsing.parseTags(Data(json.utf8))
+        XCTAssertEqual(models.count, 3)
+        XCTAssertTrue(models[0].supportsChat)
+        XCTAssertFalse(models[1].supportsChat, "эмбеддинг-модели не место в пикере чата")
+        XCTAssertTrue(models[2].supportsChat, "старый сервер без capabilities — считаем чатовой")
+    }
+}
+
 // MARK: - Мок процесса
 
 private final class MockProcess: ManagedProcess {
@@ -142,6 +157,18 @@ final class OllamaManagerTests: XCTestCase {
             binaryLocator: { binary },
             healthRetryDelay: 0)
         return (manager, spawned, registry)
+    }
+
+    /// Задача 30: живой внешний сервер виден сразу после создания менеджера
+    /// (без ensureRunning/открытия вкладки) — иначе Ollama, запущенный руками
+    /// из нестандартной папки, выглядел недоступным.
+    func testExternalServerDetectedAtInit() async throws {
+        let (manager, _, _) = makeManager(healthy: { true })
+        // init запускает refreshStatus асинхронно — дренируем MainActor.
+        for _ in 0..<50 where manager.status == .stopped {
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        XCTAssertEqual(manager.status, .runningExternal)
     }
 
     func testExternalServerIsUsedAndNeverStopped() async throws {
@@ -315,6 +342,12 @@ final class OllamaParsingTests: XCTestCase {
         let final = OllamaParsing.parseChatStreamLine(
             #"{"message":{"content":""},"done":true,"eval_count":10}"#)
         XCTAssertEqual(final?.done, true)
+        // Только eval_count без prompt_eval_count → usage nil (задача 29).
+        XCTAssertNil(final?.usage)
+        let withUsage = OllamaParsing.parseChatStreamLine(
+            #"{"message":{"content":""},"done":true,"prompt_eval_count":12,"eval_count":10}"#)
+        XCTAssertEqual(withUsage?.usage,
+                       ChatUsage(promptTokens: 12, completionTokens: 10, totalTokens: 22))
         XCTAssertNil(OllamaParsing.parseChatStreamLine("мусор"))
     }
 }

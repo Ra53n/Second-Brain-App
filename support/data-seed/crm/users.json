@@ -1,0 +1,38 @@
+[
+  {
+    "id": "u-001",
+    "name": "Мария Соколова",
+    "email": "maria@example.com",
+    "app_version": "1.2",
+    "macos_version": "14.5",
+    "registered_at": "2026-05-02",
+    "notes": "Vault в Obsidian, синхронизация через GitHub (private repo)."
+  },
+  {
+    "id": "u-002",
+    "name": "Игорь Ватутин",
+    "email": "igor@example.com",
+    "app_version": "1.2",
+    "macos_version": "14.2",
+    "registered_at": "2026-05-14",
+    "notes": "Записывает встречи в Zoom, транскрипция локально через WhisperKit."
+  },
+  {
+    "id": "u-003",
+    "name": "Анна Крылова",
+    "email": "anna@example.com",
+    "app_version": "1.1",
+    "macos_version": "15.0",
+    "registered_at": "2026-06-01",
+    "notes": "Пользуется чатом по базе знаний с облачными моделями (OpenAI)."
+  },
+  {
+    "id": "u-004",
+    "name": "Пётр Ильин",
+    "email": "petr@example.com",
+    "app_version": "1.2",
+    "macos_version": "14.6",
+    "registered_at": "2026-06-20",
+    "notes": "Ollama установлена в нестандартный путь (~/ollama-dist)."
+  }
+]

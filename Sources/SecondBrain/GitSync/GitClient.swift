@@ -165,6 +165,45 @@ enum GitStatusParser {
     }
 }
 
+// MARK: - Парсер веток
+
+/// Ветки репозитория из `git for-each-ref` (задача 21).
+struct GitBranches: Equatable {
+    /// Текущая ветка; nil при detached HEAD или пустом репозитории.
+    var current: String?
+    var local: [String] = []
+    /// Remote-ветки в коротком виде («origin/main»), без origin/HEAD.
+    var remote: [String] = []
+}
+
+/// Чистый парсер `git for-each-ref --format=<format> refs/heads refs/remotes`.
+/// Формат: маркер HEAD + короткое имя + полный refname (по нему надёжно
+/// различаются локальные и remote-ветки — короткое имя может содержать «/»
+/// и у локальной ветки вида «feature/x»).
+enum GitBranchParser {
+    static let format = "%(HEAD)%09%(refname:short)%09%(refname)"
+
+    static func parse(_ text: String) -> GitBranches {
+        var branches = GitBranches()
+        for line in text.split(separator: "\n", omittingEmptySubsequences: true) {
+            let fields = line.split(separator: "\t", omittingEmptySubsequences: false)
+            guard fields.count == 3 else { continue }
+            let isHead = fields[0] == "*"
+            let short = String(fields[1])
+            let full = fields[2]
+            if full.hasPrefix("refs/heads/") {
+                branches.local.append(short)
+                if isHead { branches.current = short }
+            } else if full.hasPrefix("refs/remotes/") {
+                // origin/HEAD — символическая ссылка на дефолтную ветку, не ветка.
+                guard !full.hasSuffix("/HEAD") else { continue }
+                branches.remote.append(short)
+            }
+        }
+        return branches
+    }
+}
+
 // MARK: - Парсер log
 
 /// Парсер `git log --pretty=format:%H<US>%an<US>%aI<US>%s<RS>`.
@@ -349,6 +388,36 @@ actor GitClient {
         guard let out = try? await run(["log", "-n", "\(limit)",
                                         "--pretty=format:\(GitLogParser.format)"]) else { return [] }
         return GitLogParser.parse(out)
+    }
+
+    /// Локальные и remote-ветки; текущая помечена (задача 21).
+    func branches() async throws -> GitBranches {
+        GitBranchParser.parse(try await run(["for-each-ref",
+                                             "--format=\(GitBranchParser.format)",
+                                             "refs/heads", "refs/remotes"]))
+    }
+
+    /// Отслеживаемые git файлы (`ls-files`), пути относительно корня (задача 21).
+    func trackedFiles() async throws -> [String] {
+        try await run(["ls-files"])
+            .split(separator: "\n", omittingEmptySubsequences: true)
+            .map(String.init)
+    }
+
+    /// Diff незакоммиченных изменений: рабочее дерево против HEAD (задача 25).
+    /// path — опциональный фильтр. Пустой репозиторий без HEAD → diff против
+    /// пустого индекса (обычный `git diff`).
+    func diff(path: String? = nil) async throws -> String {
+        var args = ["diff", "HEAD"]
+        if let path { args += ["--", path] }
+        do {
+            return try await run(args)
+        } catch let error as GitError {
+            guard case .commandFailed = error else { throw error }
+            var fallback = ["diff"]
+            if let path { fallback += ["--", path] }
+            return try await run(fallback)
+        }
     }
 
     /// Remotes из `git remote -v` (по одному на имя, URL — fetch-вариант).

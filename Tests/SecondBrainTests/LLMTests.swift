@@ -143,35 +143,49 @@ final class FunctionRoutingConfigTests: XCTestCase {
 
 final class FunctionRoutingStoreTests: XCTestCase {
 
+    // ВАЖНО (задача 33): только temp-файлы. Прежние версии этих тестов
+    // удаляли/перезаписывали НАСТОЯЩИЙ routing.json пользователя при каждом
+    // прогоне swift test — пользователь терял выбор модели эмбеддинга.
+    private var tempURL: URL!
+
+    override func setUpWithError() throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("routing-tests-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        tempURL = dir.appendingPathComponent("routing.json")
+    }
+
+    override func tearDownWithError() throws {
+        try? FileManager.default.removeItem(at: tempURL.deletingLastPathComponent())
+    }
+
     func testSaveAndLoadRoundTrip() throws {
         var config = FunctionRoutingConfig()
         config[.chat] = FunctionAssignment(providerID: "openai", model: "gpt-4o-mini")
 
-        FunctionRoutingStore.save(config)
-        defer { try? FileManager.default.removeItem(at: FunctionRoutingStore.fileURL) }
+        FunctionRoutingStore.save(config, to: tempURL)
 
-        XCTAssertEqual(FunctionRoutingStore.load(), config)
+        XCTAssertEqual(FunctionRoutingStore.load(from: tempURL), config)
     }
 
     func testLoadMissingFileGivesEmptyConfig() {
-        try? FileManager.default.removeItem(at: FunctionRoutingStore.fileURL)
-        XCTAssertEqual(FunctionRoutingStore.load(), FunctionRoutingConfig())
+        XCTAssertEqual(FunctionRoutingStore.load(from: tempURL), FunctionRoutingConfig())
     }
 
     func testCorruptFileMovedAsideAndEmptyConfigReturned() throws {
-        let dir = FunctionRoutingStore.fileURL.deletingLastPathComponent()
-        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        try Data("гарантированно битый json {{{".utf8).write(to: FunctionRoutingStore.fileURL)
-        let backup = FunctionRoutingStore.fileURL.deletingPathExtension().appendingPathExtension("corrupt.json")
-        defer {
-            try? FileManager.default.removeItem(at: FunctionRoutingStore.fileURL)
-            try? FileManager.default.removeItem(at: backup)
-        }
+        try Data("гарантированно битый json {{{".utf8).write(to: tempURL)
+        let backup = tempURL.deletingPathExtension().appendingPathExtension("corrupt.json")
 
-        let config = FunctionRoutingStore.load()
+        let config = FunctionRoutingStore.load(from: tempURL)
 
         XCTAssertEqual(config, FunctionRoutingConfig())
         XCTAssertTrue(FileManager.default.fileExists(atPath: backup.path))
+    }
+
+    /// Регресс задачи 33: дефолтный путь стора — реальный файл, тесты роутера
+    /// обязаны получать temp-URL (see makeRouter в FunctionRouterTests).
+    func testDefaultFileURLPointsToAppSupport() {
+        XCTAssertTrue(FunctionRoutingStore.fileURL.path.contains("SecondBrain/routing.json"))
     }
 }
 
@@ -182,7 +196,13 @@ final class FunctionRouterTests: XCTestCase {
 
     private func makeRouter() -> (FunctionRouter, ProviderRegistry) {
         let registry = ProviderRegistry()
-        let router = FunctionRouter(registry: registry, config: FunctionRoutingConfig())
+        // temp-URL обязателен (задача 33): assign() сохраняет конфиг, и без
+        // подмены тесты перезаписывали реальный routing.json пользователя.
+        let storeURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("router-\(UUID().uuidString).json")
+        let router = FunctionRouter(registry: registry,
+                                    config: FunctionRoutingConfig(),
+                                    storeURL: storeURL)
         return (router, registry)
     }
 
@@ -196,6 +216,24 @@ final class FunctionRouterTests: XCTestCase {
 
         XCTAssertTrue((resolved?.provider as AnyObject?) === mock)
         XCTAssertEqual(resolved?.model, "model-a")
+    }
+
+    /// Задача 29: резолв несёт providerID/displayName для метрик и «Авто → …».
+    func testResolvedProviderCarriesIDAndDisplayName() {
+        let (router, registry) = makeRouter()
+        registry.register(
+            ProviderDescriptor(id: "named", displayName: "Красивое имя",
+                               capabilities: [.chat], isLocal: true, defaultModel: "m"),
+            chat: MockChatProvider())
+        let auto = router.resolveChatProvider(for: .chat)
+        XCTAssertEqual(auto?.providerID, "named")
+        XCTAssertEqual(auto?.displayName, "Красивое имя")
+
+        router.assign(FunctionAssignment(providerID: "named", model: "custom"), to: .chat)
+        let assigned = router.resolveChatProvider(for: .chat)
+        XCTAssertEqual(assigned?.providerID, "named")
+        XCTAssertEqual(assigned?.displayName, "Красивое имя")
+        XCTAssertEqual(assigned?.model, "custom")
     }
 
     func testFallsBackToDefaultWhenNoAssignment() {
@@ -302,6 +340,45 @@ final class FunctionRouterTests: XCTestCase {
 
 // MARK: - KeyStore (тестовый Keychain-сервис)
 
+// MARK: - Роутинг RAG (задача 28)
+
+final class RagRoutingTests: XCTestCase {
+
+    @MainActor
+    func testRagRerankFunctionRequiresChatAndResolves() {
+        XCTAssertEqual(AppFunction.ragRerank.requiredCapability, .chat)
+        XCTAssertFalse(AppFunction.ragRerank.displayName.isEmpty)
+
+        let registry = ProviderRegistry()
+        let router = FunctionRouter(registry: registry, config: FunctionRoutingConfig())
+        let mock = MockChatProvider()
+        registry.register(
+            ProviderDescriptor(id: "chatty", displayName: "Chatty",
+                               capabilities: [.chat], isLocal: true, defaultModel: "m"),
+            chat: mock)
+        // Автодефолт: без явного назначения реранк получает первый chat-провайдер.
+        XCTAssertEqual(router.resolveChatProvider(for: .ragRerank)?.model, "m")
+    }
+
+    /// Задача 28: автодефолт эмбеддингов берёт defaultEmbeddingModel —
+    /// у Ollama чат-модель qwen3 не должна попадать в embed-вызовы.
+    @MainActor
+    func testEmbeddingAutoDefaultUsesEmbeddingModel() {
+        let registry = ProviderRegistry()
+        let router = FunctionRouter(registry: registry, config: FunctionRoutingConfig())
+        registry.register(
+            ProviderDescriptor(id: "local", displayName: "Local",
+                               capabilities: [.chat, .embedding], isLocal: true,
+                               defaultModel: "qwen3:8b",
+                               defaultEmbeddingModel: "nomic-embed-text"),
+            chat: MockChatProvider(),
+            embedding: HashingEmbedder())
+        XCTAssertEqual(router.resolveEmbeddingProvider(for: .embedding)?.model,
+                       "nomic-embed-text")
+        XCTAssertEqual(router.resolveChatProvider(for: .chat)?.model, "qwen3:8b")
+    }
+}
+
 final class KeyStoreTests: XCTestCase {
     private let originalService = KeyStore.service
 
@@ -347,6 +424,12 @@ final class KeyStoreTests: XCTestCase {
         XCTAssertEqual(KeyStore.envVar(for: id), "SECONDBRAIN_ENVTEST_KEY")
         // Без переменной — ключ приходит из Keychain (проверяет фолбэк-ветку).
         XCTAssertEqual(KeyStore.key(for: id), "из-keychain")
+    }
+
+    func testEnvVarSanitizesDash() {
+        // Запись «github-token» (задача 36): дефис невалиден в env-имени.
+        XCTAssertEqual(KeyStore.envVar(for: "github-token"),
+                       "SECONDBRAIN_GITHUB_TOKEN_KEY")
     }
 
     func testDeletingNonExistentKeyIsNoOp() {
@@ -412,11 +495,17 @@ final class MockChatProviderTests: XCTestCase {
 
     func testStreamYieldsChunksThenFinishes() async throws {
         let provider = MockChatProvider(responses: ["раз два три"])
+        provider.streamUsage = ChatUsage(promptTokens: 3, completionTokens: 4, totalTokens: 7)
         var collected: [String] = []
-        for try await chunk in provider.stream([], settings: ChatSettings(model: "any")) {
-            collected.append(chunk)
+        var usage: ChatUsage?
+        for try await event in provider.stream([], settings: ChatSettings(model: "any")) {
+            switch event {
+            case .text(let chunk): collected.append(chunk)
+            case .usage(let u): usage = u
+            }
         }
         XCTAssertEqual(collected.joined(), "раз два три ")
+        XCTAssertEqual(usage?.totalTokens, 7)
     }
 
     func testStreamPropagatesConfiguredError() async {

@@ -29,13 +29,16 @@ enum AppFunction: String, Codable, CaseIterable {
     case chat
     case embedding
     case noteFiling
+    /// Переранжирование и переписывание запроса RAG (задача 28): раньше
+    /// молча использовалась модель функции «чат» — теперь настраивается явно.
+    case ragRerank
 
     /// Протокол провайдера, обязательный для этой функции — им валидируется
     /// назначение (нельзя поставить embedding-провайдер на транскрипцию).
     var requiredCapability: ProviderCapability {
         switch self {
         case .transcription: return .transcription
-        case .meetingSummary, .chat, .noteFiling: return .chat
+        case .meetingSummary, .chat, .noteFiling, .ragRerank: return .chat
         case .embedding: return .embedding
         }
     }
@@ -47,6 +50,7 @@ enum AppFunction: String, Codable, CaseIterable {
         case .chat: return "Чат"
         case .embedding: return "Эмбеддинги"
         case .noteFiling: return "Раскладка заметок"
+        case .ragRerank: return "RAG: переранжирование и переписывание запроса"
         }
     }
 }
@@ -96,28 +100,37 @@ enum FunctionRoutingStore {
         Config.appSupportDirectory.appendingPathComponent("routing.json")
     }
 
-    static func load() -> FunctionRoutingConfig {
-        guard let data = try? Data(contentsOf: fileURL) else { return FunctionRoutingConfig() }
+    /// url параметризован (задача 33): тесты обязаны работать с temp-файлом —
+    /// раньше они удаляли/перезаписывали НАСТОЯЩИЙ routing.json пользователя
+    /// при каждом прогоне swift test.
+    static func load(from url: URL = fileURL) -> FunctionRoutingConfig {
+        guard let data = try? Data(contentsOf: url) else { return FunctionRoutingConfig() }
         do {
             return try JSONDecoder().decode(FunctionRoutingConfig.self, from: data)
         } catch {
-            let backup = fileURL.deletingPathExtension().appendingPathExtension("corrupt.json")
+            let backup = url.deletingPathExtension().appendingPathExtension("corrupt.json")
             try? FileManager.default.removeItem(at: backup)
-            try? FileManager.default.moveItem(at: fileURL, to: backup)
+            try? FileManager.default.moveItem(at: url, to: backup)
             return FunctionRoutingConfig()
         }
     }
 
-    static func save(_ config: FunctionRoutingConfig) {
-        let dir = fileURL.deletingLastPathComponent()
+    static func save(_ config: FunctionRoutingConfig, to url: URL = fileURL) {
+        let dir = url.deletingLastPathComponent()
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         guard let data = try? JSONEncoder().encode(config) else { return }
-        try? data.write(to: fileURL, options: .atomic)
+        try? data.write(to: url, options: .atomic)
     }
 }
 
-/// Провайдер+модель, отданные роутером на конкретный вызов.
-struct ResolvedChatProvider { let provider: ChatProvider; let model: String }
+/// Провайдер+модель, отданные роутером на конкретный вызов. providerID и
+/// displayName — для метрик сообщения и «Авто → …» (задача 29).
+struct ResolvedChatProvider {
+    let provider: ChatProvider
+    let model: String
+    let providerID: ProviderID
+    let displayName: String
+}
 struct ResolvedTranscriptionProvider { let provider: TranscriptionProvider; let model: String }
 struct ResolvedEmbeddingProvider { let provider: EmbeddingProvider; let model: String }
 
@@ -130,10 +143,16 @@ struct ResolvedEmbeddingProvider { let provider: EmbeddingProvider; let model: S
 final class FunctionRouter: ObservableObject {
     @Published private(set) var config: FunctionRoutingConfig
     let registry: ProviderRegistry
+    /// Куда сохранять конфиг (задача 33): тесты подставляют temp-файл,
+    /// чтобы assign() не перезаписывал реальный routing.json пользователя.
+    private let storeURL: URL
 
-    init(registry: ProviderRegistry, config: FunctionRoutingConfig = FunctionRoutingStore.load()) {
+    init(registry: ProviderRegistry,
+         config: FunctionRoutingConfig = FunctionRoutingStore.load(),
+         storeURL: URL = FunctionRoutingStore.fileURL) {
         self.registry = registry
         self.config = config
+        self.storeURL = storeURL
     }
 
     /// Явное назначение пользователя для функции, чтобы показать в UI настроек
@@ -145,24 +164,30 @@ final class FunctionRouter: ObservableObject {
     /// Назначает функцию на провайдер+модель и сохраняет немедленно.
     func assign(_ assignment: FunctionAssignment, to function: AppFunction) {
         config[function] = assignment
-        FunctionRoutingStore.save(config)
+        FunctionRoutingStore.save(config, to: storeURL)
     }
 
     /// Снимает назначение — функция вернётся к автодефолту.
     func clearAssignment(for function: AppFunction) {
         config[function] = nil
-        FunctionRoutingStore.save(config)
+        FunctionRoutingStore.save(config, to: storeURL)
     }
 
     func resolveChatProvider(for function: AppFunction) -> ResolvedChatProvider? {
         guard function.requiredCapability == .chat else { return nil }
         if let assignment = validAssignment(for: function),
            let provider = registry.chatProvider(for: assignment.providerID) {
-            return ResolvedChatProvider(provider: provider, model: assignment.model)
+            return ResolvedChatProvider(
+                provider: provider, model: assignment.model,
+                providerID: assignment.providerID,
+                displayName: registry.descriptor(for: assignment.providerID)?.displayName
+                    ?? assignment.providerID.rawValue)
         }
         guard let (id, model) = defaultAssignment(for: .chat),
               let provider = registry.chatProvider(for: id) else { return nil }
-        return ResolvedChatProvider(provider: provider, model: model)
+        return ResolvedChatProvider(
+            provider: provider, model: model, providerID: id,
+            displayName: registry.descriptor(for: id)?.displayName ?? id.rawValue)
     }
 
     func resolveTranscriptionProvider(for function: AppFunction) -> ResolvedTranscriptionProvider? {
@@ -203,9 +228,10 @@ final class FunctionRouter: ObservableObject {
 
     /// Первый доступный провайдер способности с известной моделью по умолчанию
     /// (провайдеры без defaultModel не участвуют в автодефолте — их нечем вызвать).
+    /// Модель берётся per-capability (задача 28): у Ollama эмбеддинги — не qwen3.
     private func defaultAssignment(for capability: ProviderCapability) -> (ProviderID, String)? {
         for descriptor in registry.descriptors(supporting: capability) where registry.isAvailable(descriptor.id) {
-            if let model = descriptor.defaultModel {
+            if let model = descriptor.defaultModel(for: capability) {
                 return (descriptor.id, model)
             }
         }

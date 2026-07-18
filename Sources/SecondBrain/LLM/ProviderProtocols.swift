@@ -53,15 +53,22 @@ struct ChatResult: Equatable {
     let usage: ChatUsage?
 }
 
+/// Событие потокового ответа чата (задача 29): кусок текста либо расход
+/// токенов (обычно одно usage-событие в конце стрима; последнее выигрывает).
+enum ChatStreamEvent: Equatable {
+    case text(String)
+    case usage(ChatUsage)
+}
+
 /// Провайдер чата: обычный и потоковый ответ. Оба метода получают ПОЛНУЮ
 /// историю сообщений — стратегии обрезки контекста (если появятся) живут
 /// выше, в вызывающем коде (Chat, задача 12), а не в провайдере.
 protocol ChatProvider {
     func send(_ messages: [ChatMessageDTO], settings: ChatSettings) async throws -> ChatResult
 
-    /// Токены ответа по мере готовности. Ошибка сети/API — через `finish(throwing:)`
-    /// потока, не через throws самого метода (метод синхронно возвращает поток).
-    func stream(_ messages: [ChatMessageDTO], settings: ChatSettings) -> AsyncThrowingStream<String, Error>
+    /// События ответа по мере готовности. Ошибка сети/API — через
+    /// `finish(throwing:)` потока, не через throws самого метода.
+    func stream(_ messages: [ChatMessageDTO], settings: ChatSettings) -> AsyncThrowingStream<ChatStreamEvent, Error>
 }
 
 // MARK: - Транскрипция
@@ -96,13 +103,20 @@ protocol TranscriptionProvider {
 /// конкретного экземпляра (проверяется при инвалидации RAG-индекса, задача 13).
 protocol EmbeddingProvider {
     var dimension: Int { get }
-    func embed(_ texts: [String]) async throws -> [[Float]]
+    /// model — конкретная модель эмбеддинга из роутера (задача 28: выбор в
+    /// «Моделях» должен реально действовать); nil — дефолт провайдера.
+    func embed(_ texts: [String], model: String?) async throws -> [[Float]]
 }
 
 extension EmbeddingProvider {
+    /// Старая форма без модели — дефолт провайдера (вызовы, где выбор не важен).
+    func embed(_ texts: [String]) async throws -> [[Float]] {
+        try await embed(texts, model: nil)
+    }
+
     /// Удобный вызов для одного текста.
-    func embedOne(_ text: String) async throws -> [Float] {
-        let vectors = try await embed([text])
+    func embedOne(_ text: String, model: String? = nil) async throws -> [Float] {
+        let vectors = try await embed([text], model: model)
         guard let first = vectors.first else { throw LLMError.emptyResponse }
         return first
     }

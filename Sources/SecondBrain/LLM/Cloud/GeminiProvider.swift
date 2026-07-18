@@ -69,7 +69,7 @@ struct GeminiProvider: ChatProvider, TranscriptionProvider, EmbeddingProvider {
         return ChatResult(text: text, usage: usage)
     }
 
-    func stream(_ messages: [ChatMessageDTO], settings: ChatSettings) -> AsyncThrowingStream<String, Error> {
+    func stream(_ messages: [ChatMessageDTO], settings: ChatSettings) -> AsyncThrowingStream<ChatStreamEvent, Error> {
         AsyncThrowingStream { continuation in
             let task = Task {
                 do {
@@ -96,10 +96,20 @@ struct GeminiProvider: ChatProvider, TranscriptionProvider, EmbeddingProvider {
 
                     for try await payload in SSEStream.payloads(from: bytes.lines) {
                         guard let chunkData = payload.data(using: .utf8),
-                              let chunk = try? JSONDecoder().decode(GenerateContentResponse.self, from: chunkData),
-                              let text = chunk.candidates?.first?.content?.parts?.first?.text,
-                              !text.isEmpty else { continue }
-                        continuation.yield(text)
+                              let chunk = try? JSONDecoder().decode(GenerateContentResponse.self, from: chunkData)
+                        else { continue }
+                        // usage растёт по чанкам — последнее событие выигрывает
+                        // (задача 29, consumer хранит последний usage).
+                        if let meta = chunk.usageMetadata {
+                            continuation.yield(.usage(ChatUsage(
+                                promptTokens: meta.promptTokenCount,
+                                completionTokens: meta.candidatesTokenCount ?? 0,
+                                totalTokens: meta.totalTokenCount)))
+                        }
+                        if let text = chunk.candidates?.first?.content?.parts?.first?.text,
+                           !text.isEmpty {
+                            continuation.yield(.text(text))
+                        }
                     }
                     continuation.finish()
                 } catch {
@@ -201,14 +211,15 @@ struct GeminiProvider: ChatProvider, TranscriptionProvider, EmbeddingProvider {
 
     // MARK: - EmbeddingProvider
 
-    func embed(_ texts: [String]) async throws -> [[Float]] {
+    func embed(_ texts: [String], model: String?) async throws -> [[Float]] {
         guard !texts.isEmpty else { return [] }
         let key = try apiKey()
+        let effectiveModel = model ?? embeddingModel
         let body = BatchEmbedRequest(requests: texts.map {
-            BatchEmbedRequest.Request(model: "models/\(embeddingModel)", content: Content(role: nil, parts: [.text($0)]))
+            BatchEmbedRequest.Request(model: "models/\(effectiveModel)", content: Content(role: nil, parts: [.text($0)]))
         })
         let url = baseURL
-            .appendingPathComponent("models/\(embeddingModel):batchEmbedContents")
+            .appendingPathComponent("models/\(effectiveModel):batchEmbedContents")
             .appending(queryItems: [URLQueryItem(name: "key", value: key)])
 
         var request = URLRequest(url: url)

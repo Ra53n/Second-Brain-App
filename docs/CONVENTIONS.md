@@ -64,7 +64,8 @@
 
 | Подсистема | Файлы MA | Используется в задаче |
 |---|---|---|
-| FSM (таблица переходов, guarded transitions, TaskContext) | `Sources/ManagerAssistant/Models.swift` (TaskFSM/TaskState/TaskContext), `Tests/ManagerAssistantTests/FSMTests.swift` | 11 |
+| FSM (таблица переходов, guarded transitions, TaskContext) | `Sources/ManagerAssistant/Models.swift` (TaskFSM/TaskState/TaskContext), `Tests/ManagerAssistantTests/FSMTests.swift` | 11, 35 |
+| FSM-оркестратор чата (runStateMachine: гейты, ретраи, pipelineGen, pauseAt) | `Sources/ManagerAssistant/ChatViewModel.swift:698-1052`, `Models.swift` (PipelinePrompts) | 35 |
 | Персистентность | `Sources/ManagerAssistant/ChatStore.swift`, `MemoryStore.swift`, `Tests/.../MigrationTests.swift` | 02+, все сторы |
 | PromptBuilder / PipelinePrompts (структурные маркеры `[STATE]`, `[RAG_CONTEXT]`…) | `Sources/ManagerAssistant/Models.swift` | 11, 12, 14 |
 | HTTP-клиент LLM (OpenAI-совместимый, DTO, ошибки) | `Sources/ManagerAssistant/DeepSeekClient.swift`, `Providers.swift`, `Config.swift` | 07, 08 |

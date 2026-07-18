@@ -40,11 +40,15 @@ final class MockChatProvider: ChatProvider {
         )
     }
 
-    func stream(_ messages: [ChatMessageDTO], settings: ChatSettings) -> AsyncThrowingStream<String, Error> {
+    /// usage финального события стрима; nil — не отправлять (задача 29).
+    var streamUsage: ChatUsage?
+
+    func stream(_ messages: [ChatMessageDTO], settings: ChatSettings) -> AsyncThrowingStream<ChatStreamEvent, Error> {
         receivedMessages.append(messages)
         let text = nextResponse()
         let error = errorToThrow
         let delaySeconds = delay
+        let usage = streamUsage
         return AsyncThrowingStream { continuation in
             Task {
                 if delaySeconds > 0 {
@@ -55,8 +59,9 @@ final class MockChatProvider: ChatProvider {
                     return
                 }
                 for word in text.split(separator: " ") {
-                    continuation.yield(String(word) + " ")
+                    continuation.yield(.text(String(word) + " "))
                 }
+                if let usage { continuation.yield(.usage(usage)) }
                 continuation.finish()
             }
         }
@@ -90,7 +95,8 @@ struct HashingEmbedder: EmbeddingProvider {
         self.dimension = max(8, dimension)
     }
 
-    func embed(_ texts: [String]) async throws -> [[Float]] {
+    func embed(_ texts: [String], model: String?) async throws -> [[Float]] {
+        // Модель не влияет: детерминированные хеш-векторы.
         texts.map(vector(for:))
     }
 

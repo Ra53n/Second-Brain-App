@@ -72,7 +72,7 @@ final class RagIndexManager: ObservableObject {
                          configuration: ChatConfiguration,
                          chatProvider: ResolvedChatProvider?) async -> RagRetrievalOutcome? {
         guard let index = ensureIndex(), chunkCount > 0 else { return nil }
-        guard let (embedder, tag) = currentEmbeddingTag(),
+        guard let (embedder, model, tag) = currentEmbeddingTag(),
               index.embeddingTag == tag else { return nil }
         let options = RagRetriever.Options(topK: configuration.ragTopK,
                                            minScore: configuration.ragMinScore,
@@ -80,6 +80,7 @@ final class RagIndexManager: ObservableObject {
                                            rerank: configuration.ragRerankEnabled)
         return await RagRetriever.retrieve(index: index,
                                            embedder: embedder,
+                                           model: model,
                                            query: query,
                                            history: history,
                                            options: options,
@@ -87,9 +88,14 @@ final class RagIndexManager: ObservableObject {
     }
 
     /// Тег текущей модели эмбеддинга роутера («model|dim»); nil — нет провайдера.
-    func currentEmbeddingTag() -> (embedder: EmbeddingProvider, tag: String)? {
+    /// Модель теперь реально уходит в embed-вызовы (задача 28). Компонент dim
+    /// в теге — от дефолта провайдера: кастомная модель с другой размерностью
+    /// честно даст пустой поиск (guard в RagRetriever.search), а инвалидацию
+    /// покрывает компонент model.
+    func currentEmbeddingTag() -> (embedder: EmbeddingProvider, model: String, tag: String)? {
         guard let resolved = router.resolveEmbeddingProvider(for: .embedding) else { return nil }
-        return (resolved.provider, "\(resolved.model)|\(resolved.provider.dimension)")
+        return (resolved.provider, resolved.model,
+                "\(resolved.model)|\(resolved.provider.dimension)")
     }
 
     // MARK: - Индексация
@@ -101,7 +107,7 @@ final class RagIndexManager: ObservableObject {
             lastError = RagError.vaultUnavailable.errorDescription
             return
         }
-        guard let (embedder, tag) = currentEmbeddingTag() else {
+        guard let (embedder, model, tag) = currentEmbeddingTag() else {
             lastError = RagError.noEmbeddingProvider.errorDescription
             return
         }
@@ -125,6 +131,7 @@ final class RagIndexManager: ObservableObject {
                     vaultURL: vaultURL,
                     index: index,
                     embedder: embedder,
+                    embeddingModel: model,
                     embeddingTag: tag,
                     ignore: ignore,
                     progress: publish)

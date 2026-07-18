@@ -90,6 +90,20 @@ final class ChatModelsTests: XCTestCase {
 
 // MARK: - PromptBuilder
 
+final class MessageMetricsMigrationTests: XCTestCase {
+
+    /// Старый history.json с метриками без полей задачи 29 обязан загружаться.
+    func testOldMetricsJSONLoadsWithNilProviderFields() throws {
+        let json = #"{"duration":1.5,"totalTokens":100}"#
+        let metrics = try JSONDecoder().decode(MessageMetrics.self, from: Data(json.utf8))
+        XCTAssertEqual(metrics.duration, 1.5)
+        XCTAssertEqual(metrics.totalTokens, 100)
+        XCTAssertNil(metrics.providerID)
+        XCTAssertNil(metrics.providerName)
+        XCTAssertNil(metrics.model)
+    }
+}
+
 final class ChatPromptBuilderTests: XCTestCase {
 
     func testSystemPromptWithoutSectionsIsBaseOnly() {
@@ -130,7 +144,7 @@ final class ChatPromptBuilderTests: XCTestCase {
 
 /// Провайдер с управляемым стримом: тест сам решает, когда выдать кусок/ошибку.
 private final class ScriptedChatProvider: ChatProvider {
-    var continuation: AsyncThrowingStream<String, Error>.Continuation?
+    var continuation: AsyncThrowingStream<ChatStreamEvent, Error>.Continuation?
     private(set) var receivedMessages: [[ChatMessageDTO]] = []
 
     func send(_ messages: [ChatMessageDTO], settings: ChatSettings) async throws -> ChatResult {
@@ -139,7 +153,7 @@ private final class ScriptedChatProvider: ChatProvider {
     }
 
     func stream(_ messages: [ChatMessageDTO],
-                settings: ChatSettings) -> AsyncThrowingStream<String, Error> {
+                settings: ChatSettings) -> AsyncThrowingStream<ChatStreamEvent, Error> {
         receivedMessages.append(messages)
         return AsyncThrowingStream { continuation in
             self.continuation = continuation
@@ -197,17 +211,28 @@ final class ChatViewModelTests: XCTestCase {
         XCTAssertEqual(vm.selectedChat?.isLoading, true)
 
         // Стриминг по кускам.
-        provider.continuation?.yield("Здрав")
+        provider.continuation?.yield(.text("Здрав"))
         await drainMainQueue()
         XCTAssertEqual(vm.selectedChat?.messages.last?.content, "Здрав")
-        provider.continuation?.yield("ствуйте!")
+        provider.continuation?.yield(.text("ствуйте!"))
         await drainMainQueue()
         XCTAssertEqual(vm.selectedChat?.messages.last?.content, "Здравствуйте!")
 
+        // usage-событие перед финишем (задача 29).
+        provider.continuation?.yield(.usage(ChatUsage(promptTokens: 10,
+                                                      completionTokens: 5,
+                                                      totalTokens: 15)))
         provider.continuation?.finish()
         await drainMainQueue()
         XCTAssertEqual(vm.selectedChat?.isLoading, false)
-        XCTAssertNotNil(vm.selectedChat?.messages.last?.metrics, "метрики после завершения")
+        let metrics = vm.selectedChat?.messages.last?.metrics
+        XCTAssertNotNil(metrics, "метрики после завершения")
+        // Задача 29: токены и фактическая модель ответа в метриках.
+        XCTAssertEqual(metrics?.totalTokens, 15)
+        XCTAssertEqual(metrics?.promptTokens, 10)
+        XCTAssertEqual(metrics?.providerID, "mock")
+        XCTAssertEqual(metrics?.providerName, "Mock")
+        XCTAssertEqual(metrics?.model, "m-1")
         // Финальное состояние записано на диск немедленно.
         let onDisk = ChatPersistence.load(from: fileURL)
         XCTAssertEqual(onDisk.first?.messages.last?.content, "Здравствуйте!")
@@ -220,7 +245,7 @@ final class ChatViewModelTests: XCTestCase {
         vm.input = "вопрос"
         vm.send()
         await drainMainQueue()
-        provider.continuation?.yield("Частичный отв")
+        provider.continuation?.yield(.text("Частичный отв"))
         await drainMainQueue()
 
         vm.cancelGeneration(chatID: vm.selectedChatID!)

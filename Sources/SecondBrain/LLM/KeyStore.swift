@@ -20,8 +20,10 @@ enum KeyStore {
     static var service = "\(Config.bundleID).apikeys"
 
     /// Имя переменной окружения для провайдера, напр. SECONDBRAIN_OPENAI_KEY.
+    /// Дефис в id (запись «github-token», задача 36) невалиден в именах env —
+    /// заменяется на подчёркивание: SECONDBRAIN_GITHUB_TOKEN_KEY.
     static func envVar(for id: ProviderID) -> String {
-        "SECONDBRAIN_\(id.rawValue.uppercased())_KEY"
+        "SECONDBRAIN_\(id.rawValue.uppercased().replacingOccurrences(of: "-", with: "_"))_KEY"
     }
 
     /// Ключ провайдера: сначала env (приоритет), затем Keychain. nil — ключа нет нигде.

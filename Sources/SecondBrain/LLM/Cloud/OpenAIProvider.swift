@@ -19,6 +19,9 @@ struct OpenAIProvider: ChatProvider, TranscriptionProvider, EmbeddingProvider {
     static let id: ProviderID = "openai"
 
     let baseURL: URL
+    /// Под каким id искать ключ в KeyStore и подписывать ошибки (задача 26):
+    /// тот же клиент обслуживает OpenRouter/DeepSeek со своими ключами.
+    let keyID: ProviderID
     /// Модель транскрипции «зашита» в экземпляр (протокол TranscriptionProvider
     /// не принимает модель параметром — см. LLM/ProviderProtocols.swift).
     let transcriptionModel: String
@@ -28,11 +31,13 @@ struct OpenAIProvider: ChatProvider, TranscriptionProvider, EmbeddingProvider {
 
     init(
         baseURL: URL = URL(string: "https://api.openai.com/v1")!,
+        keyID: ProviderID = OpenAIProvider.id,
         transcriptionModel: String = "whisper-1",
         dimension: Int = 1536, // text-embedding-3-small
         maxAudioBytes: Int = 25 * 1024 * 1024
     ) {
         self.baseURL = baseURL
+        self.keyID = keyID
         self.transcriptionModel = transcriptionModel
         self.dimension = dimension
         self.maxAudioBytes = maxAudioBytes
@@ -62,7 +67,7 @@ struct OpenAIProvider: ChatProvider, TranscriptionProvider, EmbeddingProvider {
         return ChatResult(text: text, usage: usage)
     }
 
-    func stream(_ messages: [ChatMessageDTO], settings: ChatSettings) -> AsyncThrowingStream<String, Error> {
+    func stream(_ messages: [ChatMessageDTO], settings: ChatSettings) -> AsyncThrowingStream<ChatStreamEvent, Error> {
         AsyncThrowingStream { continuation in
             let task = Task {
                 do {
@@ -78,7 +83,9 @@ struct OpenAIProvider: ChatProvider, TranscriptionProvider, EmbeddingProvider {
                         top_p: settings.topP,
                         max_tokens: settings.maxTokens,
                         stop: settings.stop.isEmpty ? nil : settings.stop,
-                        stream: true
+                        stream: true,
+                        // Задача 29: usage приходит финальным чанком стрима.
+                        stream_options: ChatRequestBody.StreamOptions(include_usage: true)
                     ))
                     request.timeoutInterval = 300
 
@@ -90,10 +97,19 @@ struct OpenAIProvider: ChatProvider, TranscriptionProvider, EmbeddingProvider {
 
                     for try await payload in SSEStream.payloads(from: bytes.lines) {
                         guard let chunkData = payload.data(using: .utf8),
-                              let chunk = try? JSONDecoder().decode(ChatCompletionChunk.self, from: chunkData),
-                              let delta = chunk.choices.first?.delta.content,
-                              !delta.isEmpty else { continue }
-                        continuation.yield(delta)
+                              let chunk = try? JSONDecoder().decode(ChatCompletionChunk.self, from: chunkData)
+                        else { continue }
+                        // ВАЖНО: usage-чанк приходит с choices: [] — разбираем
+                        // usage ДО guard'а на дельту текста.
+                        if let usage = chunk.usage {
+                            continuation.yield(.usage(ChatUsage(
+                                promptTokens: usage.prompt_tokens,
+                                completionTokens: usage.completion_tokens,
+                                totalTokens: usage.total_tokens)))
+                        }
+                        if let delta = chunk.choices.first?.delta.content, !delta.isEmpty {
+                            continuation.yield(.text(delta))
+                        }
                     }
                     continuation.finish()
                 } catch {
@@ -183,10 +199,13 @@ struct OpenAIProvider: ChatProvider, TranscriptionProvider, EmbeddingProvider {
 
     // MARK: - EmbeddingProvider
 
-    func embed(_ texts: [String]) async throws -> [[Float]] {
+    /// Модель эмбеддинга по умолчанию (роутер может переопределить, задача 28).
+    static let defaultEmbeddingModel = "text-embedding-3-small"
+
+    func embed(_ texts: [String], model: String?) async throws -> [[Float]] {
         guard !texts.isEmpty else { return [] }
         let key = try apiKey()
-        let body = EmbeddingRequestBody(model: "text-embedding-3-small", input: texts)
+        let body = EmbeddingRequestBody(model: model ?? Self.defaultEmbeddingModel, input: texts)
         let data = try await post(path: "embeddings", body: body, apiKey: key)
         let decoded = try JSONDecoder().decode(EmbeddingResponse.self, from: data)
         return decoded.data
@@ -197,7 +216,7 @@ struct OpenAIProvider: ChatProvider, TranscriptionProvider, EmbeddingProvider {
     // MARK: - Внутреннее
 
     func apiKey() throws -> String {
-        guard let key = KeyStore.key(for: Self.id) else { throw LLMError.missingAPIKey(Self.id) }
+        guard let key = KeyStore.key(for: keyID) else { throw LLMError.missingAPIKey(keyID) }
         return key
     }
 
@@ -223,6 +242,12 @@ struct OpenAIProvider: ChatProvider, TranscriptionProvider, EmbeddingProvider {
 // MARK: - DTO запроса чата
 
 struct ChatRequestBody: Encodable {
+    /// stream_options.include_usage=true → финальный SSE-чанк несёт usage
+    /// (задача 29). nil — ключ не сериализуется (обычные запросы).
+    struct StreamOptions: Encodable {
+        let include_usage: Bool
+    }
+
     let model: String
     let messages: [RequestMessage]
     let temperature: Double
@@ -230,6 +255,7 @@ struct ChatRequestBody: Encodable {
     let max_tokens: Int
     let stop: [String]?
     let stream: Bool
+    var stream_options: StreamOptions? = nil
 }
 
 struct RequestMessage: Encodable {
@@ -257,6 +283,8 @@ struct ChatCompletionResponse: Decodable {
 
 struct ChatCompletionChunk: Decodable {
     let choices: [Choice]
+    /// Финальный чанк при include_usage (choices пустой).
+    let usage: ChatCompletionResponse.Usage?
     struct Choice: Decodable { let delta: Delta }
     struct Delta: Decodable { let content: String? }
 }

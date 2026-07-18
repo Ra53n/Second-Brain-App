@@ -188,6 +188,11 @@ enum ToolUseLoop {
         var transcript: [ToolCallDisplay] = []
         var promptTokens = 0, completionTokens = 0, totalTokens = 0
         var sawUsage = false
+        // Последний непустой текст ассистента по ходу цикла: модель может дать
+        // текст вместе с tool-вызовами, а на форс-финале вернуть пустоту —
+        // раньше это выбрасывало emptyResponse и терялся ВЕСЬ ход вместе с
+        // транскриптом инструментов (задача 35).
+        var lastAssistantText = ""
 
         for iteration in 0..<max(1, maxIterations) {
             let isLast = iteration == max(1, maxIterations) - 1
@@ -201,10 +206,19 @@ enum ToolUseLoop {
                 completionTokens += usage.completionTokens
                 totalTokens += usage.totalTokens
             }
+            if let stepText = step.text,
+               !stepText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                lastAssistantText = stepText
+            }
 
             if step.toolCalls.isEmpty || isLast {
-                let text = step.text ?? ""
-                guard !text.isEmpty else { throw LLMError.emptyResponse }
+                var text = step.text ?? ""
+                if text.isEmpty { text = lastAssistantText }
+                // Совсем пусто (ни текста, ни вызовов за весь цикл) — ошибка;
+                // пустой текст при непустом транскрипте отдаём вызывающему.
+                guard !text.isEmpty || !transcript.isEmpty else {
+                    throw LLMError.emptyResponse
+                }
                 let usage = sawUsage
                     ? ChatUsage(promptTokens: promptTokens,
                                 completionTokens: completionTokens,

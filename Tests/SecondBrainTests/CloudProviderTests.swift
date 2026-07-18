@@ -76,13 +76,18 @@ final class SSEStreamTests: XCTestCase {
         let lines = AsyncLineArray(lines: raw.components(separatedBy: "\n"))
 
         var text = ""
+        var usage: ChatCompletionResponse.Usage?
         for try await payload in SSEStream.payloads(from: lines) {
             guard let data = payload.data(using: .utf8),
-                  let chunk = try? JSONDecoder().decode(ChatCompletionChunk.self, from: data),
-                  let delta = chunk.choices.first?.delta.content else { continue }
-            text += delta
+                  let chunk = try? JSONDecoder().decode(ChatCompletionChunk.self, from: data)
+            else { continue }
+            // usage-чанк приходит с choices: [] — как в проде (задача 29).
+            if let u = chunk.usage { usage = u }
+            if let delta = chunk.choices.first?.delta.content { text += delta }
         }
         XCTAssertEqual(text, "Привет, мир")
+        XCTAssertEqual(usage?.total_tokens, 14)
+        XCTAssertEqual(usage?.prompt_tokens, 10)
     }
 
     func testGeminiFixtureStreamAccumulatesText() async throws {
@@ -182,6 +187,20 @@ final class OpenAIProviderTests: XCTestCase {
         let messages = json?["messages"] as? [[String: Any]]
         XCTAssertEqual(messages?.first?["role"] as? String, "user")
         XCTAssertNil(json?["stop"]) // nil stop не должен попасть в JSON
+        XCTAssertNil(json?["stream_options"]) // без запроса usage ключа нет
+    }
+
+    /// Задача 29: stream_options.include_usage сериализуется при запросе.
+    func testEncodesStreamOptionsWhenRequested() throws {
+        let body = ChatRequestBody(
+            model: "m",
+            messages: [RequestMessage(ChatMessageDTO(role: .user, content: "hi"))],
+            temperature: 1, top_p: 1, max_tokens: 10, stop: nil, stream: true,
+            stream_options: ChatRequestBody.StreamOptions(include_usage: true)
+        )
+        let json = try JSONSerialization.jsonObject(with: JSONEncoder().encode(body)) as? [String: Any]
+        let options = json?["stream_options"] as? [String: Any]
+        XCTAssertEqual(options?["include_usage"] as? Bool, true)
     }
 
     func testDecodesWhisperVerboseFixtureWithSegments() throws {
@@ -358,11 +377,12 @@ final class AssemblyAIProviderTests: XCTestCase {
 @MainActor
 final class CloudProvidersRegistrationTests: XCTestCase {
 
-    func testRegisterAllPopulatesFourProviders() {
+    func testRegisterAllPopulatesAllCloudProviders() {
         let registry = ProviderRegistry()
         CloudProviders.registerAll(in: registry)
 
-        XCTAssertEqual(registry.descriptors.count, 4)
+        // 4 исходных (задача 08) + OpenRouter и DeepSeek (задача 26).
+        XCTAssertEqual(registry.descriptors.count, 6)
         XCTAssertEqual(registry.descriptor(for: OpenAIProvider.id)?.capabilities, [.chat, .transcription, .embedding])
         XCTAssertEqual(registry.descriptor(for: GeminiProvider.id)?.capabilities, [.chat, .transcription, .embedding])
         XCTAssertEqual(registry.descriptor(for: DeepgramProvider.id)?.capabilities, [.transcription])
@@ -380,5 +400,50 @@ final class CloudProvidersRegistrationTests: XCTestCase {
             XCTAssertTrue(descriptor.requiresKey, "\(descriptor.id) облачный — обязан требовать ключ")
             XCTAssertNotNil(descriptor.defaultModel, "\(descriptor.id) обязан иметь модель по умолчанию")
         }
+    }
+
+    /// Задача 26: OpenRouter и DeepSeek — чат-провайдеры на общем
+    /// OpenAI-совместимом клиенте с function calling.
+    func testOpenRouterAndDeepSeekRegistered() {
+        let registry = ProviderRegistry()
+        CloudProviders.registerAll(in: registry)
+
+        for (id, model) in [(CloudProviders.openRouterID, "deepseek/deepseek-chat"),
+                            (CloudProviders.deepSeekID, "deepseek-chat")] {
+            let descriptor = registry.descriptor(for: id)
+            XCTAssertEqual(descriptor?.capabilities, [.chat], "\(id): только чат")
+            XCTAssertEqual(descriptor?.defaultModel, model)
+            let provider = registry.chatProvider(for: id)
+            XCTAssertNotNil(provider, "\(id): чат-клиент зарегистрирован")
+            XCTAssertTrue(provider is ToolCapableChatProvider,
+                          "\(id): function calling обязателен для инструментов")
+        }
+    }
+
+    /// Ключ ищется под id провайдера, а не под «openai» (инстансный keyID).
+    /// НЕ дёргаем KeyStore: реальный Keychain пользователя может содержать
+    /// ключ (тест падал, когда пользователь сохранил ключ DeepSeek) —
+    /// проверяем сам keyID зарегистрированных экземпляров.
+    func testRegisteredInstancesCarryOwnKeyID() {
+        let registry = ProviderRegistry()
+        CloudProviders.registerAll(in: registry)
+
+        let openrouter = registry.chatProvider(for: CloudProviders.openRouterID) as? OpenAIProvider
+        XCTAssertEqual(openrouter?.keyID, CloudProviders.openRouterID)
+        let deepseek = registry.chatProvider(for: CloudProviders.deepSeekID) as? OpenAIProvider
+        XCTAssertEqual(deepseek?.keyID, CloudProviders.deepSeekID)
+        let openai = registry.chatProvider(for: OpenAIProvider.id) as? OpenAIProvider
+        XCTAssertEqual(openai?.keyID, OpenAIProvider.id)
+    }
+
+    /// KeyVerifier умеет проверять ключи новых провайдеров (Bearer + верный URL).
+    func testKeyVerifierRequestsForNewProviders() {
+        let openrouter = KeyVerifier.request(for: CloudProviders.openRouterID, key: "k1")
+        XCTAssertEqual(openrouter?.url?.absoluteString, "https://openrouter.ai/api/v1/key")
+        XCTAssertEqual(openrouter?.value(forHTTPHeaderField: "Authorization"), "Bearer k1")
+
+        let deepseek = KeyVerifier.request(for: CloudProviders.deepSeekID, key: "k2")
+        XCTAssertEqual(deepseek?.url?.absoluteString, "https://api.deepseek.com/v1/models")
+        XCTAssertEqual(deepseek?.value(forHTTPHeaderField: "Authorization"), "Bearer k2")
     }
 }

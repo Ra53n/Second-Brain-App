@@ -12,6 +12,7 @@ enum AppSection: String, CaseIterable, Identifiable {
     case notes = "Заметки"
     case meetings = "Встречи"
     case chat = "Чат"
+    case pipelines = "Пайплайны"
     case settings = "Настройки"
 
     var id: String { rawValue }
@@ -22,6 +23,7 @@ enum AppSection: String, CaseIterable, Identifiable {
         case .notes: return "doc.text"
         case .meetings: return "mic"
         case .chat: return "bubble.left.and.bubble.right"
+        case .pipelines: return "gearshape.arrow.triangle.2.circlepath"
         case .settings: return "gearshape"
         }
     }
@@ -36,12 +38,15 @@ struct ContentView: View {
     /// (дерево/выбор vault — detail, ошибки поиска — alert).
     @ObservedObject private var vaultManager: VaultManager
     @ObservedObject private var searchViewModel: SearchViewModel
+    /// Панель синка показывается отсюда (стабильный якорь окна, задача 24).
+    @ObservedObject private var syncViewModel: SyncViewModel
     @State private var showsQuickSwitcher = false
 
     init(model: AppModel) {
         self.model = model
         _vaultManager = ObservedObject(wrappedValue: model.vaultManager)
         _searchViewModel = ObservedObject(wrappedValue: model.searchViewModel)
+        _syncViewModel = ObservedObject(wrappedValue: model.syncViewModel)
     }
 
     var body: some View {
@@ -64,6 +69,14 @@ struct ContentView: View {
                 SyncStatusButton(viewModel: model.syncViewModel)
             }
         }
+        // Панель синка прикреплена к корню окна, а НЕ к кнопке тулбара:
+        // ToolbarItem пересоздаётся при обновлении статуса (refresh при
+        // открытии), и поповер с якорем-кнопкой закрывался сразу (задача 24).
+        .popover(isPresented: $syncViewModel.showsPanel,
+                 attachmentAnchor: .point(.topTrailing),
+                 arrowEdge: .bottom) {
+            GitSyncPanel(viewModel: syncViewModel)
+        }
         // Quick switcher: команда меню (Cmd+P, App.swift) шлёт нотификацию.
         .onReceive(NotificationCenter.default.publisher(for: .showQuickSwitcher)) { _ in
             showsQuickSwitcher = true
@@ -74,6 +87,12 @@ struct ContentView: View {
             selection = .notes
             vaultManager.rebuild() // свежесозданная заметка могла ещё не попасть в дерево
             vaultManager.selection = url
+        }
+        // «Открыть чат» из истории прогонов пайплайна (задача 36).
+        .onReceive(NotificationCenter.default.publisher(for: .openPipelineChat)) { notification in
+            guard let chatID = notification.object as? UUID else { return }
+            selection = .chat
+            model.chatViewModel.selectedChatID = chatID
         }
         .sheet(isPresented: $showsQuickSwitcher) {
             QuickSwitcherView(vaultManager: vaultManager)
@@ -100,6 +119,10 @@ struct ContentView: View {
             MeetingsPane(viewModel: model.meetingsViewModel)
         case .chat:
             ChatListPane(viewModel: model.chatViewModel)
+        case .pipelines:
+            PipelinesPane(store: model.pipelineStore,
+                          engine: model.pipelineEngine,
+                          watcher: model.prWatcher)
         case .settings:
             // Настройки живут в стандартном окне Settings (задача 17).
             ContentUnavailableView {
@@ -120,38 +143,6 @@ struct ContentView: View {
         }
     }
 
-    /// Связка чата с RAG (задача 14): ретрив идёт через менеджер индекса;
-    /// rewrite/rerank используют тот же чат-роутер. Однократно, лениво.
-    private func wireRagProvider() {
-        let chatViewModel = model.chatViewModel
-        guard chatViewModel.ragProvider == nil else { return }
-        chatViewModel.ragProvider = { [weak ragIndexManager = model.ragIndexManager,
-                                       weak functionRouter = model.functionRouter] chat, query in
-            guard let manager = ragIndexManager else { return nil }
-            let needsLLM = chat.configuration.ragQueryRewrite || chat.configuration.ragRerankEnabled
-            let chatProvider = needsLLM ? functionRouter?.resolveChatProvider(for: .chat) : nil
-            return await manager.retrieveForChat(query: query,
-                                                 history: chat.messages,
-                                                 configuration: chat.configuration,
-                                                 chatProvider: chatProvider)
-        }
-    }
-
-    /// Связка чата с MCP (задача 15): инструменты включённых серверов и
-    /// исполнитель вызовов. Однократно, лениво.
-    private func wireMCPBridge() {
-        let chatViewModel = model.chatViewModel
-        guard chatViewModel.mcpBridge == nil else { return }
-        let manager = model.mcpServersViewModel.manager
-        chatViewModel.mcpBridge = ChatViewModel.MCPBridge(
-            tools: { [weak mcpServersViewModel = model.mcpServersViewModel] serverIDs in
-                await mcpServersViewModel?.tools(for: serverIDs) ?? []
-            },
-            execute: { name, args in
-                await manager.call(qualifiedName: name, argumentsJSON: args)
-            })
-    }
-
     /// Расширения файлов, которые открываются в markdown-редакторе.
     private static let editableExtensions: Set<String> = ["md", "markdown", "txt"]
 
@@ -160,12 +151,20 @@ struct ContentView: View {
     private var sectionDetail: some View {
         if selection == .chat {
             ChatDetailView(viewModel: model.chatViewModel,
-                           resolveWikilink: { vaultManager.linkIndex?.resolve($0) },
-                           mcpServers: model.mcpServersViewModel.servers)
-                .onAppear {
-                    wireRagProvider()
-                    wireMCPBridge()
-                }
+                           settingsStore: model.settingsStore,
+                           mcpViewModel: model.mcpServersViewModel,
+                           ragIndexManager: model.ragIndexManager,
+                           projectToolsProvider: model.projectToolsProvider,
+                           knowledgeBaseStore: model.knowledgeBaseStore,
+                           knowledgeBaseManager: model.knowledgeBaseManager,
+                           resolveWikilink: { vaultManager.linkIndex?.resolve($0) })
+        } else if selection == .pipelines {
+            PipelineDetailView(store: model.pipelineStore,
+                               engine: model.pipelineEngine,
+                               watcher: model.prWatcher,
+                               chatViewModel: model.chatViewModel,
+                               mcpViewModel: model.mcpServersViewModel,
+                               knowledgeBaseStore: model.knowledgeBaseStore)
         } else if selection == .notes {
             if let url = vaultManager.selection,
                let node = vaultManager.root?.find(url) {

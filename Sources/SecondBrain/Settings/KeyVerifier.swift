@@ -37,6 +37,11 @@ struct KeyVerifier {
             endpoint = ("https://api.deepgram.com/v1/projects", "Authorization", "Token \(key)")
         case AssemblyAIProvider.id:
             endpoint = ("https://api.assemblyai.com/v2/transcript?limit=1", "authorization", key)
+        case CloudProviders.openRouterID:
+            // /key — информация о ключе; публичный /models ключ не проверяет.
+            endpoint = ("https://openrouter.ai/api/v1/key", "Authorization", "Bearer \(key)")
+        case CloudProviders.deepSeekID:
+            endpoint = ("https://api.deepseek.com/v1/models", "Authorization", "Bearer \(key)")
         default:
             return nil
         }
