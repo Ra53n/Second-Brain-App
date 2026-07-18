@@ -72,6 +72,17 @@ final class ChatViewModel: ObservableObject {
     /// Тик обновления статистики баз для чипа «База» (перечитывает .task).
     @Published var ragBasesTick = 0
 
+    /// Мост вкладки «Изменения» к git-каталогу чата (задача 40): обзор
+    /// (ветка/статус/diff), коммит и пуш. Первый параметр — projectRootPath
+    /// чата (nil = глобальная настройка). commit/push возвращают текст
+    /// ошибки; nil — успех.
+    struct ChatGitBridge {
+        var overview: (String?) async -> GitChangesOverview?
+        var commit: (String?, String) async -> String?
+        var push: (String?) async -> String?
+    }
+    var chatGitBridge: ChatGitBridge?
+
     /// Раннер code review (задача 37) — обработчик /review. weak: раннер
     /// держит ChatViewModel строго, владелец обоих — AppModel.
     weak var codeReviewRunner: CodeReviewRunner?

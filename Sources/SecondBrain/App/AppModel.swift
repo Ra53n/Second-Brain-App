@@ -262,5 +262,37 @@ final class AppModel: ObservableObject {
                                                   model: resolved.model,
                                                   tag: tag)?.chunks
         }
+        // Вкладка «Изменения» (задача 40): git-обзор каталога чата, коммит,
+        // пуш. GitClient создаётся на вызов — операции редкие и короткие,
+        // а его FIFO-очередь важна лишь внутри одного вызова.
+        chatViewModel.chatGitBridge = ChatViewModel.ChatGitBridge(
+            overview: { rootOverride in
+                guard let root = provider.effectiveRootURL(override: rootOverride)
+                else { return nil }
+                return await GitChangesOverview.load(git: GitClient(repoURL: root))
+            },
+            commit: { rootOverride, message in
+                guard let root = provider.effectiveRootURL(override: rootOverride)
+                else { return "каталог не задан" }
+                do {
+                    let committed = try await GitClient(repoURL: root)
+                        .commitAll(message: message)
+                    return committed ? nil : "нет изменений для коммита"
+                } catch {
+                    return (error as? LocalizedError)?.errorDescription
+                        ?? error.localizedDescription
+                }
+            },
+            push: { rootOverride in
+                guard let root = provider.effectiveRootURL(override: rootOverride)
+                else { return "каталог не задан" }
+                do {
+                    try await GitClient(repoURL: root).push()
+                    return nil
+                } catch {
+                    return (error as? LocalizedError)?.errorDescription
+                        ?? error.localizedDescription
+                }
+            })
     }
 }

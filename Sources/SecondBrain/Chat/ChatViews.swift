@@ -94,6 +94,8 @@ struct ChatDetailView: View {
     /// detail, НЕ к тулбар-кнопке: смена модели перерисовывает тайтл пикера
     /// и убила бы якорь (урок панели синка, задача 24).
     @State private var showsModelEditor = false
+    /// Вкладка «Изменения» вместо ленты сообщений (задача 40).
+    @State private var showsChangesPanel = false
     /// Резолвер [[wikilink]] → URL заметки (LinkIndex задачи 04); nil — vault закрыт.
     var resolveWikilink: (String) -> URL? = { _ in nil }
 
@@ -204,7 +206,14 @@ struct ChatDetailView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            messagesList
+            // Вкладка «Изменения» (задача 40) заменяет ленту сообщений;
+            // нижняя панель и поле ввода остаются на месте.
+            if showsChangesPanel {
+                ChatChangesPanel(viewModel: viewModel,
+                                 onClose: { showsChangesPanel = false })
+            } else {
+                messagesList
+            }
             Divider()
             agentStatusBar
             approvalBar
@@ -212,6 +221,7 @@ struct ChatDetailView: View {
             errorBar
             inputBar
         }
+        .onChange(of: chat?.id) { showsChangesPanel = false }
         .navigationTitle(chat?.title ?? "Чат")
         // Настройки чата переехали из тулбара в нижнюю панель под полем
         // ввода (settingsBar, стиль статус-строки Claude Code) — каталог,
@@ -525,12 +535,25 @@ struct ChatDetailView: View {
             ragToggle
             ragTuningButton
             Spacer()
+            changesToggle
         }
         .font(.caption)
         .controlSize(.small)
         .buttonStyle(.accessoryBar)
         .toggleStyle(.button)
         .padding(.top, 2)
+    }
+
+    /// Вкладка «Изменения» (задача 40): diff'ы операций агента + git-статус
+    /// каталога с коммитом. Счётчик — операции агента в этом чате.
+    private var changesToggle: some View {
+        Toggle(isOn: $showsChangesPanel) {
+            let count = ChatChangesAggregator
+                .agentChanges(messages: chat?.messages ?? []).count
+            Label(count > 0 ? "Изменения · \(count)" : "Изменения",
+                  systemImage: "plusminus.circle")
+        }
+        .help("Diff'ы всех правок агента в этом чате и git-состояние каталога (коммит/пуш)")
     }
 
     /// Каталог этого чата переопределён (иначе действует глобальный).

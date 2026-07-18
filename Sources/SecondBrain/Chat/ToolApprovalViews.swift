@@ -9,32 +9,47 @@ import SwiftUI
 
 // MARK: - Раскрашенный diff
 
-/// Построчный рендер unified diff: + зелёным, − красным, @@ синим,
-/// моноширинный шрифт. Текст выделяемый (скопировать diff можно).
+/// Построчный рендер unified diff в стиле Claude Code: подсветка фоном на
+/// всю строку (+ зелёным, − красным, @@ синим), моноширинный шрифт, длинные
+/// строки переносятся. Текст выделяемый (скопировать diff можно).
 struct DiffTextView: View {
     let diff: String
 
     var body: some View {
-        ScrollView(.horizontal) {
-            VStack(alignment: .leading, spacing: 0) {
-                ForEach(Array(diff.components(separatedBy: "\n").enumerated()),
-                        id: \.offset) { _, line in
-                    Text(line.isEmpty ? " " : line)
-                        .font(.caption2.monospaced())
-                        .foregroundStyle(color(for: line))
-                        .textSelection(.enabled)
-                }
+        VStack(alignment: .leading, spacing: 0) {
+            ForEach(Array(diff.components(separatedBy: "\n").enumerated()),
+                    id: \.offset) { _, line in
+                Text(line.isEmpty ? " " : line)
+                    .font(.caption.monospaced())
+                    .foregroundStyle(foreground(for: line))
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 0.5)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(background(for: line))
+                    .textSelection(.enabled)
             }
         }
-        .scrollIndicators(.hidden)
+        .clipShape(RoundedRectangle(cornerRadius: 4))
     }
 
-    private func color(for line: String) -> Color {
-        if line.hasPrefix("+++") || line.hasPrefix("---") { return .secondary }
-        if line.hasPrefix("+") { return .green }
-        if line.hasPrefix("-") { return .red }
+    private func isServiceLine(_ line: String) -> Bool {
+        line.hasPrefix("+++") || line.hasPrefix("---") || line.hasPrefix("diff --git")
+            || line.hasPrefix("index ") || line.hasPrefix("new file mode")
+            || line.hasPrefix("deleted file mode") || line.hasPrefix("\\ No newline")
+    }
+
+    private func foreground(for line: String) -> Color {
+        if isServiceLine(line) { return .secondary }
         if line.hasPrefix("@@") { return .blue }
         return .primary
+    }
+
+    private func background(for line: String) -> Color {
+        if isServiceLine(line) { return .clear }
+        if line.hasPrefix("+") { return .green.opacity(0.14) }
+        if line.hasPrefix("-") { return .red.opacity(0.14) }
+        if line.hasPrefix("@@") { return .blue.opacity(0.08) }
+        return .clear
     }
 }
 
