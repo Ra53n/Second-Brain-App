@@ -1,0 +1,37 @@
+# systemd-юнит саппорт-ассистента. deploy.sh ставит копию в
+# /etc/systemd/system/support-assistant.service. Зеркалит manager-agent.service.
+# Сервис слушает 127.0.0.1:3200; наружу — только через Caddy (/support/*).
+
+[Unit]
+Description=Second Brain — саппорт-ассистент (чат поддержки с RAG и CRM-контекстом)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=supportassistant
+Group=supportassistant
+EnvironmentFile=/etc/support-assistant.env
+WorkingDirectory=/opt/support-assistant
+# HOME/кэш для дочерних процессов (MCP-серверы спавнятся как node/npx-дети;
+# без записываемого HOME/npm-кэша npx падает → «Connection closed»).
+Environment=HOME=/opt/support-assistant
+Environment=XDG_CACHE_HOME=/opt/support-assistant/.cache
+Environment=npm_config_cache=/opt/support-assistant/.npm
+ExecStart=/usr/bin/node /opt/support-assistant/dist/index.js
+Restart=on-failure
+RestartSec=5
+
+# Усиление безопасности (как у manager-agent.service)
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectHome=true
+PrivateTmp=true
+ProtectControlGroups=true
+ProtectKernelTunables=true
+RestrictSUIDSGID=true
+# БД/KB/CRM — единственный путь на запись
+ReadWritePaths=/opt/support-assistant/data
+
+[Install]
+WantedBy=multi-user.target
