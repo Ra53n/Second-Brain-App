@@ -157,6 +157,18 @@ final class FolderDocsLoaderTests: XCTestCase {
         XCTAssertEqual(files.map(\.name), ["note.md"])
     }
 
+    /// Задача 39: служебные каталоги зависимостей/сборки исключаются целиком —
+    /// кодовый репозиторий тащил сотни README из node_modules в индекс.
+    func testDependencyFoldersSkipped() throws {
+        try write("docs/note.md")
+        try write("support/node_modules/pkg/README.md")
+        try write("support/node_modules/deep/nested/CHANGELOG.md")
+        try write("vendor/lib/README.md")
+        try write("Pods/Alamofire/README.md")
+        let files = FolderDocsLoader.loadFiles(root: root)
+        XCTAssertEqual(files.map(\.name), ["docs/note.md"])
+    }
+
     func testOversizedFileSkipped() throws {
         try write("small.md", "нормальная заметка")
         try write("huge.md", String(repeating: "x", count: FolderDocsLoader.maxFileBytes + 1))

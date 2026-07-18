@@ -12,13 +12,22 @@
 import Foundation
 
 /// Рекурсивный сбор .md-файлов папочной базы. Dot-элементы (в т.ч. .obsidian,
-/// .git) пропускаются целиком.
+/// .git) пропускаются целиком, служебные каталоги зависимостей/сборки — тоже:
+/// каталог кодового проекта тащит сотни README из node_modules (реальный
+/// случай задачи 39: 356 из 410 .md — мусор npm-пакетов), они жгут эмбеддинги
+/// и засоряют поиск нерелевантным хламом.
 enum FolderDocsLoader {
     /// Файл больше этого размера пропускается (это не заметка, а свалка).
     static let maxFileBytes = 1024 * 1024
     /// Максимум файлов на базу; лишние отбрасываются с сортировкой по пути —
     /// детерминированно, а не «какие успели».
     static let maxFiles = 2000
+    /// Служебные каталоги, целиком исключаемые из индексации (набор
+    /// ListFilesTool + типовые каталоги зависимостей других экосистем).
+    static let skippedDirectories: Set<String> = [
+        "node_modules", ".build", ".git", "dist", "build", "vendor",
+        "Pods", "DerivedData"
+    ]
 
     /// (относительный путь, содержимое) в алфавитном порядке путей.
     static func loadFiles(root: URL) -> [(name: String, content: String)] {
@@ -28,6 +37,14 @@ enum FolderDocsLoader {
                                              options: [.skipsHiddenFiles]) else { return [] }
         var paths: [String] = []
         for case let url as URL in enumerator {
+            let isDirectory = (try? url.resourceValues(forKeys: [.isDirectoryKey]))?
+                .isDirectory ?? false
+            if isDirectory {
+                if skippedDirectories.contains(url.lastPathComponent) {
+                    enumerator.skipDescendants()
+                }
+                continue
+            }
             guard url.pathExtension.lowercased() == "md" else { continue }
             let relative = relativePath(of: url, under: root)
             guard !relative.isEmpty else { continue }
