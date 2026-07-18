@@ -250,5 +250,17 @@ final class AppModel: ObservableObject {
         chatViewModel.addFolderKnowledgeBase = { [weak knowledgeBaseStore] url in
             knowledgeBaseStore?.addFolder(url: url).id ?? ""
         }
+        // Немедленная индексация добавленной базы (отклик UI): тот же
+        // инкрементальный sync, что и при ленивом ретриве. nil — эмбеддера нет.
+        let folderService = knowledgeBaseManager.folderService
+        chatViewModel.indexFolderKnowledgeBase = { [weak functionRouter] url in
+            guard let resolved = functionRouter?.resolveEmbeddingProvider(for: .embedding)
+            else { return nil }
+            let tag = "\(resolved.model)|\(resolved.provider.dimension)"
+            return await folderService.buildIndex(root: url,
+                                                  embedder: resolved.provider,
+                                                  model: resolved.model,
+                                                  tag: tag)?.chunks
+        }
     }
 }

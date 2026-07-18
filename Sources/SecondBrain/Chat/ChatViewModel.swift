@@ -61,6 +61,16 @@ final class ChatViewModel: ObservableObject {
     /// Мост «каталог чата → папочная база знаний» (задача 39, подвязывает
     /// AppModel к KnowledgeBaseStore.addFolder). Возвращает id базы.
     var addFolderKnowledgeBase: ((URL) -> String)?
+    /// Немедленная индексация папочной базы (задача 39, отклик UI): число
+    /// фрагментов; nil — нет эмбеддера или ошибка.
+    var indexFolderKnowledgeBase: ((URL) async -> Int?)?
+    /// Транзиентный инфо-баннер над полем ввода (отклик действий UI:
+    /// «база добавлена», «индексация…», «готово: N фрагментов»).
+    @Published var noticeText: String?
+    /// Автоскрытие баннера; новый показ отменяет предыдущий таймер.
+    var noticeDismissTask: Task<Void, Never>?
+    /// Тик обновления статистики баз для чипа «База» (перечитывает .task).
+    @Published var ragBasesTick = 0
 
     /// Раннер code review (задача 37) — обработчик /review. weak: раннер
     /// держит ChatViewModel строго, владелец обоих — AppModel.

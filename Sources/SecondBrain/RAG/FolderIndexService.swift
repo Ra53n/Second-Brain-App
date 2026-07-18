@@ -109,6 +109,26 @@ actor FolderIndexService {
         }
     }
 
+    /// Явная (eager) индексация папки (задача 39, кнопка «Сделать базой
+    /// знаний»): та же инкрементальная синхронизация, что и при ленивом
+    /// ретриве, но запускается сразу — пользователь видит результат, а не
+    /// ждёт первого поиска. nil — ошибка (БД/эмбеддер).
+    func buildIndex(root: URL,
+                    embedder: EmbeddingProvider,
+                    model: String?,
+                    tag: String) async -> Stats? {
+        do {
+            let index = try openIndex(root: root)
+            try await sync(index: index, root: root,
+                           embedder: embedder, model: model, tag: tag)
+            let stats = try index.stats()
+            return Stats(files: stats.files, chunks: stats.chunks,
+                         updatedAt: index.updatedAt)
+        } catch {
+            return nil
+        }
+    }
+
     /// nil — индекс ещё не строился (файла БД нет). Пустую БД НЕ создаёт.
     func stats(root: URL) -> Stats? {
         guard FileManager.default.fileExists(atPath: Self.indexFileURL(root: root).path),

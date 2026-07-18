@@ -208,6 +208,7 @@ struct ChatDetailView: View {
             Divider()
             agentStatusBar
             approvalBar
+            noticeBar
             errorBar
             inputBar
         }
@@ -237,7 +238,7 @@ struct ChatDetailView: View {
         // Число чанков индекса доков для чипа «База: Проект» (задача 31)
         // и список доступных моделей (задача 32); обновляется при смене
         // репо/чата/фокуса окна (availabilityTick ловит новые ключи/рантайм).
-        .task(id: "\(availabilityTick)|\(settingsStore.settings.projectRepoPath)|\(chat?.id.uuidString ?? "")") {
+        .task(id: "\(availabilityTick)|\(viewModel.ragBasesTick)|\(settingsStore.settings.projectRepoPath)|\(chat?.id.uuidString ?? "")") {
             projectDocsChunks = await projectToolsProvider.docsChunkCount()
             modelChoices = await viewModel.availableModelChoices()
             // Чанки папочных баз для чипа (задача 34): ленивая статистика,
@@ -452,6 +453,32 @@ struct ChatDetailView: View {
                              })
                 .padding(.horizontal)
                 .padding(.vertical, 6)
+        }
+    }
+
+    /// Транзиентный инфо-баннер (задача 39): отклик действий UI —
+    /// «база добавлена», «индексирую…», «готово: N фрагментов».
+    @ViewBuilder
+    private var noticeBar: some View {
+        if let notice = viewModel.noticeText {
+            HStack(alignment: .top, spacing: 6) {
+                Image(systemName: "info.circle.fill")
+                    .foregroundStyle(.blue)
+                Text(notice)
+                    .fixedSize(horizontal: false, vertical: true)
+                Spacer()
+                Button {
+                    viewModel.dismissNotice()
+                } label: {
+                    Image(systemName: "xmark")
+                }
+                .buttonStyle(.plain)
+                .help("Скрыть")
+            }
+            .font(.caption)
+            .padding(.horizontal)
+            .padding(.vertical, 6)
+            .background(Color.blue.opacity(0.08))
         }
     }
 

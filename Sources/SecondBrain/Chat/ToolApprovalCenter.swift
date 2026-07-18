@@ -108,17 +108,56 @@ extension ChatViewModel {
     }
 
     /// «Сделать базой знаний» (задача 39): каталог чата → папочная база
-    /// реестра (задача 34) + включение в этом чате. Мост addFolderKnowledgeBase
-    /// подвязывает AppModel. Возвращает имя базы; nil — каталог не задан.
+    /// реестра (задача 34) + включение в этом чате + НЕМЕДЛЕННАЯ индексация
+    /// с откликом в баннере (иначе кнопка выглядит «ничего не произошло»:
+    /// ленивый индекс строился только при первом поиске).
     @discardableResult
     func makeKnowledgeBaseFromChatRoot() -> String? {
         guard let index = chats.firstIndex(where: { $0.id == selectedChatID }),
               let root = projectToolsBridge?.rootURL(
-                chats[index].configuration.projectRootPath),
-              let baseID = addFolderKnowledgeBase?(root), !baseID.isEmpty else { return nil }
+                chats[index].configuration.projectRootPath) else {
+            showNotice("Сначала выберите рабочий каталог (меню «Каталог» внизу).")
+            return nil
+        }
+        guard let baseID = addFolderKnowledgeBase?(root), !baseID.isEmpty else {
+            showNotice("Не удалось добавить базу знаний — реестр баз недоступен.")
+            return nil
+        }
         chats[index].configuration.enabledKnowledgeBaseIDs.insert(baseID)
         chats[index].configuration.ragEnabled = true
+        let name = root.lastPathComponent
+        showNotice("База «\(name)» добавлена и включена в этом чате. Индексирую .md-файлы…",
+                   autoDismissAfter: nil)
+        Task { [weak self] in
+            guard let self else { return }
+            guard let chunks = await self.indexFolderKnowledgeBase?(root) else {
+                self.showNotice("База «\(name)» добавлена, но индексация отложена: нет модели эмбеддингов (Настройки → «Локальные модели» или ключ OpenAI/Gemini). Индекс построится при первом поиске.")
+                return
+            }
+            self.ragBasesTick += 1
+            self.showNotice(chunks == 0
+                ? "База «\(name)» проиндексирована, но .md-файлов в каталоге не нашлось — искать пока нечего."
+                : "База «\(name)» готова: \(chunks) фрагментов. rag_search в этом чате ищет по ней.")
+        }
         return baseID
+    }
+
+    /// Показ транзиентного баннера; autoDismissAfter nil — висит до замены
+    /// (например, «Индексирую…» до итога).
+    func showNotice(_ text: String, autoDismissAfter seconds: TimeInterval? = 8) {
+        noticeDismissTask?.cancel()
+        noticeText = text
+        guard let seconds else { return }
+        noticeDismissTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+            guard !Task.isCancelled else { return }
+            self?.noticeText = nil
+        }
+    }
+
+    func dismissNotice() {
+        noticeDismissTask?.cancel()
+        noticeText = nil
     }
 
     /// Компактные аргументы вызова для карточки approve (MCP и фолбэк).
