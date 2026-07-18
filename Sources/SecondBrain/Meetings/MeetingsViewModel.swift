@@ -54,6 +54,9 @@ final class MeetingsViewModel: ObservableObject {
         }
     }
     let meetingStore: MeetingStore
+    /// Роутер функций: пайплайну — для вызовов, статус-строке раздела — для
+    /// показа и переключения провайдера транскрипции.
+    let functionRouter: FunctionRouter
     private(set) var pipeline: MeetingPipeline!
 
     /// Поддерживает ли эта macOS запись системного звука (process tap, 14.4+).
@@ -70,10 +73,13 @@ final class MeetingsViewModel: ObservableObject {
     init(vaultManager: VaultManager, functionRouter: FunctionRouter) {
         self.vaultManager = vaultManager
         self.meetingStore = MeetingStore()
+        self.functionRouter = functionRouter
         let settings = MeetingSettingsStore.load()
         self.filingRules = settings.filingRules
-        // Источник записи по умолчанию — из настроек (задача 17).
-        self.sourceChoice = settings.defaultSource ?? .microphone
+        // Источник записи по умолчанию — из настроек (задача 17); не задан —
+        // оба входа (задача 41), с деградацией на macOS без системного звука.
+        self.sourceChoice = settings.resolvedDefaultSource(
+            systemAudioSupported: Self.systemAudioSupported)
         self.pipeline = MeetingPipeline(
             router: functionRouter,
             store: meetingStore,

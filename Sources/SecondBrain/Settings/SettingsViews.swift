@@ -377,12 +377,29 @@ struct MeetingsSettingsTab: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
+            // Полные статусы разрешений переехали сюда из раздела «Встречи»
+            // (задача 41): в разделе — только предупреждения, когда что-то
+            // реально мешает записи.
+            Section("Разрешения") {
+                PermissionRow(
+                    granted: meetingsViewModel.micAuthorized,
+                    grantedText: "Микрофон: разрешён",
+                    deniedText: "Микрофон: запрещён (Системные настройки → Конфиденциальность)",
+                    unknownText: "Микрофон: разрешение запросим при первой записи")
+                PermissionRow(
+                    granted: MeetingsViewModel.systemAudioSupported ? nil : false,
+                    grantedText: "",
+                    deniedText: "Системный звук: требуется macOS 14.4+",
+                    unknownText: "Системный звук: разрешение запросит macOS при первой записи")
+            }
         }
         .formStyle(.grouped)
         .onAppear {
             let settings = MeetingSettingsStore.load()
             defaultFolder = settings.defaultFolder
-            defaultSource = settings.defaultSource ?? .microphone
+            // Не задан — «оба входа» (задача 41), с деградацией на старых macOS.
+            defaultSource = settings.resolvedDefaultSource(
+                systemAudioSupported: MeetingsViewModel.systemAudioSupported)
         }
     }
 }

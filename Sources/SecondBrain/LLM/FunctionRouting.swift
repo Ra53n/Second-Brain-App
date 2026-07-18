@@ -229,7 +229,8 @@ final class FunctionRouter: ObservableObject {
     /// Первый доступный провайдер способности с известной моделью по умолчанию
     /// (провайдеры без defaultModel не участвуют в автодефолте — их нечем вызвать).
     /// Модель берётся per-capability (задача 28): у Ollama эмбеддинги — не qwen3.
-    private func defaultAssignment(for capability: ProviderCapability) -> (ProviderID, String)? {
+    /// Internal (задача 41): статус-строка «Встреч» показывает «Авто → X».
+    func defaultAssignment(for capability: ProviderCapability) -> (ProviderID, String)? {
         for descriptor in registry.descriptors(supporting: capability) where registry.isAvailable(descriptor.id) {
             if let model = descriptor.defaultModel(for: capability) {
                 return (descriptor.id, model)

@@ -1,12 +1,30 @@
-// MeetingsPane.swift — UI раздела «Встречи» (задачи 06 + 11): панель записи
-// (источник, название до записи, кнопка, таймер, уровни, разрешения), правила
-// раскладки, список записей с плеером и статусом пайплайна «запись → заметка»
-// (кнопки Транскрибировать/Продолжить/Повторить, диалог названия/папки).
+// MeetingsPane.swift — UI раздела «Встречи» (задачи 06 + 11, редизайн 41):
+// компактная панель записи (кнопка + меню источника + название), список
+// записей с плеером и статусом пайплайна «запись → заметка», нижняя
+// статус-строка (стиль Claude Code, как в чате): провайдер транскрипции
+// и переход к настройкам встреч. Правила раскладки и полные статусы
+// разрешений переехали в Settings → «Встречи»; здесь остаются только
+// предупреждения, когда что-то реально мешает записи/транскрипции.
 
 import SwiftUI
 
 struct MeetingsPane: View {
     @ObservedObject var viewModel: MeetingsViewModel
+    /// Роутер — ObservableObject: смена назначения обновляет чип провайдера.
+    @ObservedObject var functionRouter: FunctionRouter
+    @Environment(\.openSettings) private var openSettings
+    /// Тик пересчёта доступности провайдеров: ключи/модели меняются в окне
+    /// настроек — перечитываем при возврате фокуса (паттерн чата).
+    @State private var availabilityTick = 0
+
+    init(viewModel: MeetingsViewModel) {
+        self.viewModel = viewModel
+        self.functionRouter = viewModel.functionRouter
+    }
+
+    private var routePresenter: TranscriptionRoutePresenter {
+        TranscriptionRoutePresenter(router: viewModel.functionRouter)
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -14,8 +32,14 @@ struct MeetingsPane: View {
                 .padding()
             Divider()
             recordingList
+            Divider()
+            statusBar
         }
         .onAppear { viewModel.reloadAfterVaultChange() }
+        .onReceive(NotificationCenter.default.publisher(
+            for: NSWindow.didBecomeKeyNotification)) { _ in
+            availabilityTick &+= 1
+        }
         .alert(
             "Запись",
             isPresented: Binding(
@@ -31,7 +55,18 @@ struct MeetingsPane: View {
                 get: { viewModel.pipelineError != nil },
                 set: { if !$0 { viewModel.pipelineError = nil } }
             ),
-            actions: { Button("OK", role: .cancel) {} },
+            actions: {
+                // Ошибка про отсутствие провайдера — ведём чинить в настройки,
+                // а не бросаем в тупике с одним «OK» (задача 41).
+                if let tab = MeetingErrorNavigation.settingsTab(
+                    forErrorText: viewModel.pipelineError ?? "") {
+                    Button("Открыть настройки") {
+                        viewModel.pipelineError = nil
+                        SettingsTabRouter.open(tab, openSettings: { openSettings() })
+                    }
+                }
+                Button("OK", role: .cancel) {}
+            },
             message: { Text(viewModel.pipelineError ?? "") }
         )
         .sheet(item: $viewModel.titleDialog) { context in
@@ -43,7 +78,7 @@ struct MeetingsPane: View {
 
     @ViewBuilder
     private var recordingControls: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: 8) {
             if let session = viewModel.session {
                 ActiveRecordingView(session: session, viewModel: viewModel)
             } else {
@@ -52,23 +87,11 @@ struct MeetingsPane: View {
         }
     }
 
-    /// Панель до старта: выбор источника, название, кнопка записи, разрешения.
+    /// Панель до старта: одна строка «Записать + источник + название»;
+    /// ниже — только реальные предупреждения (разрешения, нет провайдера).
     @ViewBuilder
     private var idleControls: some View {
-        Picker("Источник", selection: $viewModel.sourceChoice) {
-            ForEach(RecordingSource.allCases) { source in
-                Text(source.title).tag(source)
-            }
-        }
-        .pickerStyle(.segmented)
-        .labelsHidden()
-
-        // Название до записи: пайплайн пройдёт без диалога подтверждения.
-        TextField("Название встречи (можно оставить пустым — предложит ИИ)",
-                  text: $viewModel.presetTitle)
-            .textFieldStyle(.roundedBorder)
-
-        HStack(spacing: 12) {
+        HStack(spacing: 8) {
             Button {
                 Task { await viewModel.startRecording() }
             } label: {
@@ -76,48 +99,74 @@ struct MeetingsPane: View {
                     .foregroundStyle(.red)
             }
             .keyboardShortcut("r", modifiers: [.command, .shift])
-            Spacer()
-        }
 
-        permissionStatus
-
-        DisclosureGroup("Правила раскладки (для ИИ)") {
-            TextEditor(text: $viewModel.filingRules)
-                .font(.callout)
-                .frame(minHeight: 48, maxHeight: 96)
-                .overlay(alignment: .topLeading) {
-                    if viewModel.filingRules.isEmpty {
-                        Text("Например: встречи 1:1 клади в «Управление командой/1на1»")
-                            .foregroundStyle(.tertiary)
-                            .padding(.top, 8).padding(.leading, 5)
-                            .allowsHitTesting(false)
+            // Компактное меню источника вместо сегментед-пикера на всю ширину:
+            // дефолт настраивается в Settings → «Встречи», здесь — разовый выбор.
+            Menu {
+                Picker("Источник", selection: $viewModel.sourceChoice) {
+                    ForEach(RecordingSource.allCases) { source in
+                        Label(source.title, systemImage: source.systemImage).tag(source)
                     }
                 }
+                .pickerStyle(.inline)
+                .labelsHidden()
+            } label: {
+                Label(viewModel.sourceChoice.title,
+                      systemImage: viewModel.sourceChoice.systemImage)
+            }
+            .fixedSize()
+            .help("Источник этой записи: микрофон, системный звук или оба (две дорожки)")
+
+            // Название до записи: пайплайн пройдёт без диалога подтверждения.
+            TextField("Название (пусто — предложит ИИ)", text: $viewModel.presetTitle)
+                .textFieldStyle(.roundedBorder)
         }
-        .font(.caption)
+
+        permissionWarnings
+        providerBanner
     }
 
-    /// Статусы разрешений — видны до записи, чтобы сюрпризов не было.
+    /// Предупреждения о разрешениях — ТОЛЬКО когда выбранный источник их
+    /// требует и они реально не выданы/не поддержаны. Полные статусы —
+    /// в Settings → «Встречи» (задача 41).
     @ViewBuilder
-    private var permissionStatus: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            if viewModel.sourceChoice.needsMicrophone {
-                PermissionRow(
-                    granted: viewModel.micAuthorized,
-                    grantedText: "Микрофон: разрешён",
-                    deniedText: "Микрофон: запрещён (Системные настройки → Конфиденциальность)",
-                    unknownText: "Микрофон: разрешение запросим при первой записи")
-            }
-            if viewModel.sourceChoice.needsSystemAudio {
-                PermissionRow(
-                    granted: MeetingsViewModel.systemAudioSupported ? nil : false,
-                    grantedText: "",
-                    deniedText: "Системный звук: требуется macOS 14.4+",
-                    unknownText: "Системный звук: разрешение запросит macOS при первой записи")
-            }
+    private var permissionWarnings: some View {
+        if viewModel.sourceChoice.needsMicrophone && viewModel.micAuthorized == false {
+            Label("Микрофон запрещён — разрешите в Системных настройках → Конфиденциальность",
+                  systemImage: "mic.slash")
+                .font(.caption)
+                .foregroundStyle(.orange)
         }
-        .font(.caption)
-        .foregroundStyle(.secondary)
+        if viewModel.sourceChoice.needsSystemAudio && !MeetingsViewModel.systemAudioSupported {
+            Label("Запись системного звука требует macOS 14.4+ — выберите «Микрофон»",
+                  systemImage: "speaker.slash")
+                .font(.caption)
+                .foregroundStyle(.orange)
+        }
+    }
+
+    /// Баннер «нечем транскрибировать»: записать можно, но пайплайн упрётся.
+    /// Кнопки ведут в оба места, где это чинится.
+    @ViewBuilder
+    private var providerBanner: some View {
+        // availabilityTick форсит пересчёт при возврате из окна настроек.
+        if availabilityTick >= 0 && !routePresenter.hasAvailableProvider {
+            VStack(alignment: .leading, spacing: 6) {
+                Label("Нет провайдера транскрипции: скачайте локальную модель Whisper или добавьте API-ключ.",
+                      systemImage: "waveform.badge.exclamationmark")
+                    .foregroundStyle(.orange)
+                HStack(spacing: 8) {
+                    Button("Локальные модели…") {
+                        SettingsTabRouter.open(.localModels, openSettings: { openSettings() })
+                    }
+                    Button("API-ключи…") {
+                        SettingsTabRouter.open(.providers, openSettings: { openSettings() })
+                    }
+                }
+            }
+            .font(.caption)
+            .controlSize(.small)
+        }
     }
 
     // MARK: - Список записей
@@ -142,6 +191,73 @@ struct MeetingsPane: View {
             }
             .listStyle(.inset)
         }
+    }
+
+    // MARK: - Статус-строка (задача 41, стиль settingsBar чата)
+
+    /// Нижняя строка раздела: чип провайдера транскрипции (меню переключения)
+    /// и переход к настройкам встреч (правила раскладки, папка, дефолт-источник).
+    private var statusBar: some View {
+        HStack(spacing: 4) {
+            transcriptionMenu
+            Divider().frame(height: 12)
+            Button {
+                SettingsTabRouter.open(.meetings, openSettings: { openSettings() })
+            } label: {
+                Label("Правила и папка…", systemImage: "gearshape")
+                    .foregroundStyle(.secondary)
+            }
+            .help("Настройки встреч: правила раскладки для ИИ, папка заметок, источник по умолчанию")
+            Spacer()
+        }
+        .font(.caption)
+        .controlSize(.small)
+        .buttonStyle(.accessoryBar)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 4)
+    }
+
+    /// Меню провайдера транскрипции: «Авто» + все провайдеры со способностью
+    /// transcription (недоступные видны, но задизейблены) + точки входа
+    /// в настройку ключей/локальных моделей.
+    private var transcriptionMenu: some View {
+        let presenter = routePresenter
+        let isAuto = viewModel.functionRouter.assignment(for: .transcription) == nil
+        return Menu {
+            Button {
+                presenter.selectAuto()
+            } label: {
+                if isAuto {
+                    Label("Авто (первый доступный)", systemImage: "checkmark")
+                } else {
+                    Text("Авто (первый доступный)")
+                }
+            }
+            Divider()
+            ForEach(presenter.choices) { choice in
+                Button {
+                    presenter.select(choice.id)
+                } label: {
+                    if choice.isSelected {
+                        Label(choice.title, systemImage: "checkmark")
+                    } else {
+                        Text(choice.title)
+                    }
+                }
+                .disabled(!choice.isAvailable)
+            }
+            Divider()
+            Button("API-ключи…") {
+                SettingsTabRouter.open(.providers, openSettings: { openSettings() })
+            }
+            Button("Локальные модели…") {
+                SettingsTabRouter.open(.localModels, openSettings: { openSettings() })
+            }
+        } label: {
+            Label(presenter.chipTitle, systemImage: "waveform")
+                .foregroundStyle(presenter.hasAvailableProvider ? Color.secondary : .orange)
+        }
+        .help("Каким провайдером транскрибировать встречи; «Авто» — первый доступный")
     }
 }
 
@@ -328,8 +444,9 @@ private struct LevelMeter: View {
     }
 }
 
-/// Строка статуса разрешения: галка/крест/вопрос + текст.
-private struct PermissionRow: View {
+/// Строка статуса разрешения: галка/крест/вопрос + текст. Internal (задача 41):
+/// полные статусы разрешений показывает Settings → «Встречи».
+struct PermissionRow: View {
     let granted: Bool?  // nil — ещё не известно
     let grantedText: String
     let deniedText: String
@@ -389,6 +506,9 @@ private struct RecordingRow: View {
                 }
                 .font(.caption)
                 .foregroundStyle(.secondary)
+                // В узкой колонке HStack давал каждому тексту минимум ширины
+                // и они заворачивались в столбики — обрезаем в одну строку.
+                .lineLimit(1)
             }
             Spacer()
             PipelineStatusView(item: item,

@@ -31,6 +31,15 @@ enum RecordingSource: String, Codable, CaseIterable, Identifiable {
         }
     }
 
+    /// Иконка режима для компактного меню источника (задача 41).
+    var systemImage: String {
+        switch self {
+        case .microphone: return "mic"
+        case .system: return "speaker.wave.2"
+        case .both: return "mic.badge.plus"
+        }
+    }
+
     var needsMicrophone: Bool { self != .system }
     var needsSystemAudio: Bool { self != .microphone }
 }

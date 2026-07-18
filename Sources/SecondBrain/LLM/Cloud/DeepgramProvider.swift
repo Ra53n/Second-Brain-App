@@ -17,13 +17,23 @@ import Foundation
 struct DeepgramProvider: TranscriptionProvider {
     static let id: ProviderID = "deepgram"
 
+    /// Модель транскрипции по умолчанию — она же в дескрипторе регистрации.
+    static let defaultModel = "nova-2"
+
     let baseURL: URL
+    /// Модель «зашита» в экземпляр (протокол TranscriptionProvider не принимает
+    /// модель параметром). Без явного model= в query Deepgram использовал БАЗОВУЮ
+    /// модель — заметно хуже nova-2 на русской речи.
+    let model: String
     /// Язык по умолчанию, если вызывающий не указал (задача 11 сравнивает
     /// провайдеров на русской речи — разумный дефолт для этого приложения).
     let defaultLanguage: String
 
-    init(baseURL: URL = URL(string: "https://api.deepgram.com/v1")!, defaultLanguage: String = "ru") {
+    init(baseURL: URL = URL(string: "https://api.deepgram.com/v1")!,
+         model: String = DeepgramProvider.defaultModel,
+         defaultLanguage: String = "ru") {
         self.baseURL = baseURL
+        self.model = model
         self.defaultLanguage = defaultLanguage
     }
 
@@ -31,19 +41,8 @@ struct DeepgramProvider: TranscriptionProvider {
         guard let key = KeyStore.key(for: Self.id) else { throw LLMError.missingAPIKey(Self.id) }
         let audioData = try Data(contentsOf: audioURL)
         let resolvedLanguage = language ?? defaultLanguage
-
-        var queryItems = [
-            URLQueryItem(name: "language", value: resolvedLanguage),
-            URLQueryItem(name: "diarize", value: "true"),
-            URLQueryItem(name: "smart_format", value: "true"),
-            URLQueryItem(name: "punctuate", value: "true")
-        ]
-        if let hints, !hints.isEmpty {
-            // Deepgram использует keyterms/keywords для подсказки словаря;
-            // склеиваем через запятую в один параметр (простое, документированное поведение).
-            queryItems.append(URLQueryItem(name: "keywords", value: hints))
-        }
-        let url = baseURL.appendingPathComponent("listen").appending(queryItems: queryItems)
+        let url = baseURL.appendingPathComponent("listen")
+            .appending(queryItems: Self.queryItems(model: model, language: resolvedLanguage, hints: hints))
 
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
@@ -64,6 +63,23 @@ struct DeepgramProvider: TranscriptionProvider {
             segments: Self.groupBySpeaker(alternative.words ?? []),
             language: resolvedLanguage
         )
+    }
+
+    /// Параметры запроса /listen — чистая функция для тестируемости.
+    static func queryItems(model: String, language: String, hints: String?) -> [URLQueryItem] {
+        var queryItems = [
+            URLQueryItem(name: "model", value: model),
+            URLQueryItem(name: "language", value: language),
+            URLQueryItem(name: "diarize", value: "true"),
+            URLQueryItem(name: "smart_format", value: "true"),
+            URLQueryItem(name: "punctuate", value: "true")
+        ]
+        if let hints, !hints.isEmpty {
+            // Deepgram использует keyterms/keywords для подсказки словаря;
+            // склеиваем через запятую в один параметр (простое, документированное поведение).
+            queryItems.append(URLQueryItem(name: "keywords", value: hints))
+        }
+        return queryItems
     }
 
     /// Склеивает подряд идущие слова одного speaker'а в один сегмент с меткой.

@@ -54,7 +54,7 @@ enum CloudProviders {
                 displayName: "Deepgram",
                 capabilities: [.transcription],
                 isLocal: false,
-                defaultModel: "nova-2"
+                defaultModel: DeepgramProvider.defaultModel
             ),
             transcription: DeepgramProvider()
         )

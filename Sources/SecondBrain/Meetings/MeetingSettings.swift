@@ -15,7 +15,8 @@ struct MeetingSettings: Codable, Equatable {
     /// Папка по умолчанию для заметок встреч (фолбэк, когда LLM не предложил
     /// валидную); пустая строка — Meetings/YYYY-MM.
     var defaultFolder: String = ""
-    /// Источник записи, предвыбранный при запуске; nil — микрофон.
+    /// Источник записи, предвыбранный при запуске; nil — оба входа
+    /// (микрофон + системный звук), см. resolvedDefaultSource.
     var defaultSource: RecordingSource?
 
     enum CodingKeys: String, CodingKey { case filingRules, defaultFolder, defaultSource }
@@ -27,6 +28,16 @@ struct MeetingSettings: Codable, Equatable {
         filingRules = try c.decodeIfPresent(String.self, forKey: .filingRules) ?? ""
         defaultFolder = try c.decodeIfPresent(String.self, forKey: .defaultFolder) ?? ""
         defaultSource = try c.decodeIfPresent(RecordingSource.self, forKey: .defaultSource)
+    }
+
+    /// Источник записи, который реально предвыбираем: не задан — «оба входа»
+    /// (встречи в Zoom/Meet — основной сценарий). Если выбранный источник
+    /// требует системный звук, а macOS его не умеет (< 14.4), деградируем в
+    /// микрофон — иначе дефолт сразу упирался бы в systemAudioUnsupported.
+    func resolvedDefaultSource(systemAudioSupported: Bool) -> RecordingSource {
+        let source = defaultSource ?? .both
+        if source.needsSystemAudio && !systemAudioSupported { return .microphone }
+        return source
     }
 }
 

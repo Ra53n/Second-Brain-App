@@ -93,6 +93,14 @@ struct TrackTranscript: Codable, Equatable {
     var label: String {
         fileName.contains(RecordingNamer.systemTrackSuffix) ? "Собеседники (система)" : "Микрофон"
     }
+
+    /// Текст дорожки для промпта: из сегментов, если они есть, — у Deepgram/
+    /// AssemblyAI метки «Speaker N:» живут ТОЛЬКО в сегментах, и сборка из
+    /// fullText теряла диаризацию для саммари. Без сегментов — fullText.
+    var promptText: String {
+        guard !transcript.segments.isEmpty else { return transcript.fullText }
+        return transcript.segments.map(\.text).joined(separator: "\n")
+    }
 }
 
 /// Персистентная сущность встречи — контекст автомата.
@@ -136,11 +144,12 @@ struct MeetingContext: Codable, Identifiable, Equatable {
         confirmedFolder ?? suggestedFolder
     }
 
-    /// Полный текст всех дорожек для summary-промпта.
+    /// Полный текст всех дорожек для summary-промпта (с метками спикеров,
+    /// когда провайдер их дал, — см. TrackTranscript.promptText).
     var combinedTranscriptText: String {
-        guard transcripts.count > 1 else { return transcripts.first?.transcript.fullText ?? "" }
+        guard transcripts.count > 1 else { return transcripts.first?.promptText ?? "" }
         return transcripts
-            .map { "[\($0.label)]\n\($0.transcript.fullText)" }
+            .map { "[\($0.label)]\n\($0.promptText)" }
             .joined(separator: "\n\n")
     }
 

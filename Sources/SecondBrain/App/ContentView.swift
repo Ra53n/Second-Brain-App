@@ -116,7 +116,11 @@ struct ContentView: View {
         case .notes:
             VaultPane(manager: vaultManager, searchViewModel: searchViewModel)
         case .meetings:
+            // Панели записи нужна ширина (кнопка + источник + название в одну
+            // строку, строки списка с действиями) — дефолтная колонка ~250 pt
+            // превращала её в вертикальную кашу (задача 41).
             MeetingsPane(viewModel: model.meetingsViewModel)
+                .navigationSplitViewColumnWidth(min: 360, ideal: 480, max: 720)
         case .chat:
             ChatListPane(viewModel: model.chatViewModel)
         case .pipelines:
