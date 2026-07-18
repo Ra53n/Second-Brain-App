@@ -212,13 +212,10 @@ struct ChatDetailView: View {
             inputBar
         }
         .navigationTitle(chat?.title ?? "Чат")
-        .toolbar {
-            ToolbarItem(placement: .primaryAction) { agentModeToggle }
-            ToolbarItem(placement: .primaryAction) { mcpMenu }
-            ToolbarItem(placement: .primaryAction) { ragToggle }
-            ToolbarItem(placement: .primaryAction) { ragTuningButton }
-            ToolbarItem(placement: .primaryAction) { modelPicker }
-        }
+        // Настройки чата переехали из тулбара в нижнюю панель под полем
+        // ввода (settingsBar, стиль статус-строки Claude Code) — каталог,
+        // режим разрешений, модель, агент, RAG и инструменты видны и
+        // переключаются в одном месте, без охоты по поповерам.
         // Превью постинга ревью в PR (задача 37): write-операция — только
         // после явного подтверждения в шите (правило бэклога №16).
         .sheet(item: $viewModel.reviewPostDialog) { context in
@@ -479,8 +476,127 @@ struct ChatDetailView: View {
             toolChipsRow
             slashCommandHint
             inputRow
+            settingsBar
         }
         .padding(10)
+    }
+
+    // MARK: - Нижняя панель настроек чата (задача 39, стиль Claude Code)
+
+    /// Статус-строка под полем ввода: рабочий каталог, режим разрешений,
+    /// модель, FSM-агент, RAG и инструменты. Всё, что влияет на следующий
+    /// ход, — видно и переключается здесь.
+    private var settingsBar: some View {
+        HStack(spacing: 4) {
+            directoryMenu
+            permissionModeMenu
+            Divider().frame(height: 12)
+            modelPicker
+            mcpMenu
+            Divider().frame(height: 12)
+            agentModeToggle
+            ragToggle
+            ragTuningButton
+            Spacer()
+        }
+        .font(.caption)
+        .controlSize(.small)
+        .buttonStyle(.accessoryBar)
+        .toggleStyle(.button)
+        .padding(.top, 2)
+    }
+
+    /// Каталог этого чата переопределён (иначе действует глобальный).
+    private var isChatRootOverride: Bool {
+        !(chat?.configuration.projectRootPath ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    /// Подпись кнопки каталога: имя папки (+ «чат» при override).
+    private var directoryTitle: String {
+        let path = effectiveProjectPath.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !path.isEmpty else { return "Каталог не задан" }
+        let name = URL(fileURLWithPath: path).lastPathComponent
+        return isChatRootOverride ? "\(name) · чат" : name
+    }
+
+    /// Рабочий каталог агента: видно всегда, меню — выбрать для чата,
+    /// вернуть глобальный, сделать базой знаний, включить инструменты.
+    private var directoryMenu: some View {
+        Menu {
+            Button("Выбрать каталог для этого чата…") { pickChatProjectRoot() }
+            if isChatRootOverride {
+                Button("Вернуть глобальный каталог") { viewModel.setChatProjectRoot(nil) }
+            }
+            Button("Глобальный каталог в настройках…") {
+                SettingsTabRouter.open(.tools, openSettings: { openSettings() })
+            }
+            Divider()
+            if !(chat?.configuration.projectToolsEnabled ?? false) {
+                Button("Включить инструменты проекта в этом чате") {
+                    viewModel.toggleProjectTools()
+                }
+                .disabled(effectiveProjectPath
+                    .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+            Button("Сделать базой знаний (RAG)") {
+                _ = viewModel.makeKnowledgeBaseFromChatRoot()
+            }
+            .disabled(effectiveProjectPath
+                .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+        } label: {
+            Label(directoryTitle, systemImage: "folder")
+                .foregroundStyle(effectiveProjectPath
+                    .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    ? Color.orange : Color.secondary)
+        }
+        .help(effectiveProjectPath.isEmpty
+              ? "Рабочий каталог агента не задан — выберите репозиторий, папку или vault"
+              : "Рабочий каталог агента: \(effectiveProjectPath)"
+                + (isChatRootOverride ? " (переопределён для этого чата)" : " (глобальный)"))
+    }
+
+    /// Иконка и цвет режима разрешений: чем автономнее, тем тревожнее.
+    private var permissionModeIcon: String {
+        switch viewModel.permissionModeBinding {
+        case .ask: return "hand.raised"
+        case .auto: return "bolt"
+        case .autoDanger: return "bolt.trianglebadge.exclamationmark"
+        }
+    }
+
+    private var permissionModeColor: Color {
+        switch viewModel.permissionModeBinding {
+        case .ask: return .secondary
+        case .auto: return .blue
+        case .autoDanger: return .red
+        }
+    }
+
+    /// Режим разрешений операций (задача 39): всегда виден внизу, как
+    /// permission mode в Claude Code.
+    private var permissionModeMenu: some View {
+        Menu {
+            ForEach(AgentPermissionMode.allCases, id: \.self) { mode in
+                Button {
+                    viewModel.permissionModeBinding = mode
+                } label: {
+                    if viewModel.permissionModeBinding == mode {
+                        Label(mode.label, systemImage: "checkmark")
+                    } else {
+                        Text(mode.label)
+                    }
+                }
+                .help(mode.help)
+            }
+            Divider()
+            Text(viewModel.permissionModeBinding.help)
+        } label: {
+            Label(viewModel.permissionModeBinding.label, systemImage: permissionModeIcon)
+                .foregroundStyle(permissionModeColor)
+        }
+        .help("Режим разрешений операций агента: "
+              + viewModel.permissionModeBinding.help)
     }
 
     /// Чипы источников контекста (задачи 27, 28): «База» (RAG) первым, затем
