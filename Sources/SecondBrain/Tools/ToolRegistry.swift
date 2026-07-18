@@ -43,10 +43,11 @@ final class ToolRegistry: Sendable {
         projectTools(repoRoot: URL(fileURLWithPath: "/")).definitions()
     }
 
-    /// Штатный набор инструментов проекта: обзор git-репозитория и файлов.
+    /// Штатный набор инструментов проекта: обзор git-репозитория, чтение,
+    /// поиск, а с задачи 39 — запись/правка/удаление файлов и запуск команд
+    /// (разрешение на write/dangerous даёт слой ToolPermissions + approve).
     /// GitClient создаётся один на корень — его FIFO-очередь сериализует
-    /// параллельные вызовы (второй GitClient на том же репо у SyncViewModel
-    /// безопасен: все инструменты здесь read-only).
+    /// параллельные вызовы.
     static func projectTools(repoRoot: URL) -> ToolRegistry {
         let git = GitClient(repoURL: repoRoot)
         return ToolRegistry(tools: [
@@ -55,7 +56,12 @@ final class ToolRegistry: Sendable {
             GitLogTool(git: git),
             GitDiffTool(git: git),
             ListFilesTool(git: git),
-            ReadFileTool()
+            ReadFileTool(),
+            SearchFilesTool(git: git),
+            WriteFileTool(),
+            EditFileTool(),
+            DeleteFileTool(),
+            RunCommandTool()
         ])
     }
 }

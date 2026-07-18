@@ -75,19 +75,25 @@ struct ToolSourceSummary: Identifiable, Equatable {
         var result: [ToolSourceSummary] = []
 
         if configuration.projectToolsEnabled {
+            // Задача 39: каталог может быть переопределён для этого чата,
+            // режим разрешений — в подписи (видно без клика).
+            let isOverride = !(configuration.projectRootPath ?? "")
+                .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            let title = isOverride ? "Проект (чат)" : "Проект"
+            let mode = " · режим: \(configuration.permissionMode.label)"
             switch projectRepo {
             case .ready(let path):
                 result.append(ToolSourceSummary(
-                    kind: .project, title: "Проект", count: projectToolCount, state: .ok,
-                    detail: "Встроенные git-инструменты (только чтение) · \(path)"))
+                    kind: .project, title: title, count: projectToolCount, state: .ok,
+                    detail: "Файловые и git-инструменты · \(path)\(mode)"))
             case .notConfigured:
                 result.append(ToolSourceSummary(
-                    kind: .project, title: "Проект", count: nil, state: .warning,
-                    detail: "Репозиторий не выбран — инструменты не работают. Настройки → «Инструменты»."))
+                    kind: .project, title: title, count: nil, state: .warning,
+                    detail: "Каталог не выбран — инструменты не работают. Чип «Проект» → «Выбрать…» или Настройки → «Инструменты»."))
             case .broken(let path):
                 result.append(ToolSourceSummary(
-                    kind: .project, title: "Проект", count: nil, state: .warning,
-                    detail: "Папка репозитория не найдена: \(path)"))
+                    kind: .project, title: title, count: nil, state: .warning,
+                    detail: "Папка не найдена: \(path)\(mode)"))
             }
         }
 

@@ -90,6 +90,9 @@ struct ChatMessage: Identifiable, Codable, Equatable {
     var reviewTarget: ReviewTarget?
     /// Когда ревью отправлено комментарием в PR («Отправлено ✓» персистентно).
     var reviewPostedAt: Date?
+    /// Применённые файловые операции хода (задача 39): diff по каждому
+    /// файлу остаётся в истории — отчёт и воспроизводимость.
+    var fileChanges: [FileChangeDisplay]?
     var createdAt: Date = Date()
 
     init(role: ChatRole, content: String, metrics: MessageMetrics? = nil) {
@@ -102,6 +105,7 @@ struct ChatMessage: Identifiable, Codable, Equatable {
         case id, role, content, metrics, sources, toolCalls, createdAt
         case agentState, agentStep, agentTotal
         case reviewTarget, reviewPostedAt
+        case fileChanges
     }
 
     init(from decoder: Decoder) throws {
@@ -117,6 +121,7 @@ struct ChatMessage: Identifiable, Codable, Equatable {
         agentTotal = try c.decodeIfPresent(Int.self, forKey: .agentTotal)
         reviewTarget = try c.decodeIfPresent(ReviewTarget.self, forKey: .reviewTarget)
         reviewPostedAt = try c.decodeIfPresent(Date.self, forKey: .reviewPostedAt)
+        fileChanges = try c.decodeIfPresent([FileChangeDisplay].self, forKey: .fileChanges)
         createdAt = try c.decodeIfPresent(Date.self, forKey: .createdAt) ?? Date()
     }
 }
@@ -172,9 +177,14 @@ struct ChatConfiguration: Equatable, Codable {
     /// Включённые для этого чата MCP-серверы (как enabledMCPServerIDs в MA).
     var enabledMCPServerIDs: Set<UUID> = []
 
-    // --- Инструменты проекта (задача 21) ---
+    // --- Инструменты проекта (задачи 21, 39) ---
     /// Встроенные git-инструменты проекта в этом чате (репозиторий — в настройках).
     var projectToolsEnabled: Bool = false
+    /// Рабочий каталог ЭТОГО чата (задача 39): любой репозиторий/папка/vault.
+    /// nil — глобальный projectRepoPath из настроек.
+    var projectRootPath: String?
+    /// Режим разрешений операций (задача 39): спрашивать / авто / авто-опасный.
+    var permissionMode: AgentPermissionMode = .ask
 
     // --- FSM-прогон (задача 35) ---
     /// «Полный проход (FSM)»: planning → execution → validation → answer.
@@ -194,6 +204,7 @@ struct ChatConfiguration: Equatable, Codable {
         case enabledKnowledgeBaseIDs, ragAsTool
         case enabledMCPServerIDs
         case projectToolsEnabled
+        case projectRootPath, permissionMode
         case agentModeEnabled
     }
 
@@ -226,6 +237,9 @@ struct ChatConfiguration: Equatable, Codable {
             ?? d.enabledMCPServerIDs
         projectToolsEnabled = try c.decodeIfPresent(Bool.self, forKey: .projectToolsEnabled)
             ?? d.projectToolsEnabled
+        projectRootPath = try c.decodeIfPresent(String.self, forKey: .projectRootPath)
+        permissionMode = try c.decodeIfPresent(AgentPermissionMode.self,
+                                               forKey: .permissionMode) ?? d.permissionMode
         agentModeEnabled = try c.decodeIfPresent(Bool.self, forKey: .agentModeEnabled)
             ?? d.agentModeEnabled
     }
@@ -248,6 +262,8 @@ struct ChatConfiguration: Equatable, Codable {
         try c.encode(ragQueryRewrite, forKey: .ragQueryRewrite)
         try c.encode(enabledMCPServerIDs, forKey: .enabledMCPServerIDs)
         try c.encode(projectToolsEnabled, forKey: .projectToolsEnabled)
+        try c.encodeIfPresent(projectRootPath, forKey: .projectRootPath)
+        try c.encode(permissionMode, forKey: .permissionMode)
         try c.encode(agentModeEnabled, forKey: .agentModeEnabled)
     }
 }

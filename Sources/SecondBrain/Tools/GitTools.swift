@@ -209,7 +209,8 @@ final class ListFilesTool: BuiltinTool {
     }
 
     /// Обход ФС для папки без git: пропускаем скрытое и служебные каталоги.
-    private static func walkFileSystem(root: URL) -> [String] {
+    /// Не private: search_files (задача 39) обходит файлы тем же способом.
+    static func walkFileSystem(root: URL) -> [String] {
         let fm = FileManager.default
         guard let enumerator = fm.enumerator(at: root,
                                              includingPropertiesForKeys: [.isDirectoryKey],
@@ -282,6 +283,12 @@ final class ReadFileTool: BuiltinTool {
         }
         if truncated {
             text += "\n…(файл обрезан до \(cap) байт)"
+        } else {
+            // Полное чтение регистрируется в контексте чата (задача 39):
+            // mtime-guard разрешит последующую перезапись write_file/edit_file.
+            // Обрезанное чтение НЕ регистрируется — модель видела не весь файл.
+            await ctx.fileOps?.noteRead(path: path,
+                                        mtime: FileToolSupport.modificationDate(of: url))
         }
         return .ok(text)
     }

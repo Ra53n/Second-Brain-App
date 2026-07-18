@@ -237,10 +237,11 @@ final class SlashHelpViewModelTests: XCTestCase {
         let viewModel = makeViewModel(provider: provider)
         viewModel.projectDocsProvider = { _ in "=== README.md ===\nЭто проект." }
         viewModel.projectToolsBridge = ChatViewModel.ProjectToolsBridge(
-            available: { true },
-            tools: { [ToolDefinition(name: "git_status", description: "статус",
-                                     schema: ToolSchemas.empty)] },
-            execute: { _, _ in "ок" })
+            available: { _ in true },
+            tools: { _ in [ToolDefinition(name: "git_status", description: "статус",
+                                          schema: ToolSchemas.empty)] },
+            rootURL: { _ in FileManager.default.temporaryDirectory },
+            execute: { _, _, _, _ in "ок" })
         // projectToolsEnabled НЕ включён: /help форсирует инструменты сам.
 
         viewModel.input = "/help где хранятся чаты?"
@@ -305,10 +306,11 @@ final class SlashHelpViewModelTests: XCTestCase {
         let viewModel = makeViewModel(provider: provider)
         viewModel.projectDocsProvider = { _ in "=== README.md ===\nДоки." }
         viewModel.projectToolsBridge = ChatViewModel.ProjectToolsBridge(
-            available: { true },
-            tools: { [ToolDefinition(name: "git_status", description: "с",
-                                     schema: ToolSchemas.empty)] },
-            execute: { _, _ in "ок" })
+            available: { _ in true },
+            tools: { _ in [ToolDefinition(name: "git_status", description: "с",
+                                          schema: ToolSchemas.empty)] },
+            rootURL: { _ in FileManager.default.temporaryDirectory },
+            execute: { _, _, _, _ in "ок" })
 
         viewModel.input = "/help вопрос"
         viewModel.send()

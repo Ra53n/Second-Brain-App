@@ -99,15 +99,50 @@ struct ChatDetailView: View {
 
     private var chat: Chat? { viewModel.selectedChat }
 
+    /// Эффективный каталог проекта текущего чата (задача 39): override
+    /// чата → глобальная настройка.
+    private var effectiveProjectPath: String {
+        let override = (chat?.configuration.projectRootPath ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return override.isEmpty ? settingsStore.settings.projectRepoPath : override
+    }
+
     /// Сводки чипов текущего чата (чистый билдер — покрыт тестами).
     private var toolSourceSummaries: [ToolSourceSummary] {
         guard let chat else { return [] }
         return ToolSourceSummary.make(
             configuration: chat.configuration,
-            projectRepo: ProjectRepoState.evaluate(path: settingsStore.settings.projectRepoPath),
+            projectRepo: ProjectRepoState.evaluate(path: effectiveProjectPath),
             projectToolCount: ToolRegistry.projectToolCatalog().count,
             servers: mcpViewModel.servers,
             statuses: mcpViewModel.statuses)
+    }
+
+    /// Контролы чипа «Проект» (задача 39): каталог чата, режим разрешений,
+    /// «Сделать базой знаний».
+    private var projectChipControls: ProjectChipControls {
+        let path = effectiveProjectPath.trimmingCharacters(in: .whitespacesAndNewlines)
+        return ProjectChipControls(
+            effectivePath: path.isEmpty ? nil : path,
+            isOverride: !(chat?.configuration.projectRootPath ?? "")
+                .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+            mode: viewModel.permissionModeBinding,
+            onPickChatRoot: { pickChatProjectRoot() },
+            onResetChatRoot: { viewModel.setChatProjectRoot(nil) },
+            onSetMode: { viewModel.permissionModeBinding = $0 },
+            onMakeKnowledgeBase: { _ = viewModel.makeKnowledgeBaseFromChatRoot() })
+    }
+
+    /// NSOpenPanel выбора каталога ЭТОГО чата (паттерн ProjectRepoPicker).
+    private func pickChatProjectRoot() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = false
+        panel.prompt = "Выбрать"
+        panel.message = "Выберите рабочий каталог для этого чата (репозиторий, папка, vault)"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        viewModel.setChatProjectRoot(url.path)
     }
 
     /// Сводка чипа «База» (задачи 28, 31, 34): строки по глобально включённым
@@ -172,6 +207,7 @@ struct ChatDetailView: View {
             messagesList
             Divider()
             agentStatusBar
+            approvalBar
             errorBar
             inputBar
         }
@@ -407,6 +443,21 @@ struct ChatDetailView: View {
         }
     }
 
+    /// Карточка ожидающих подтверждения операций (задача 39): пока видна —
+    /// tool-цикл ждёт решения пользователя.
+    @ViewBuilder
+    private var approvalBar: some View {
+        let approvals = viewModel.pendingToolApprovals.filter { $0.chatID == chat?.id }
+        if !approvals.isEmpty {
+            ToolApprovalCard(approvals: approvals,
+                             onDecision: { id, decision in
+                                 viewModel.resolveToolApproval(id: id, decision: decision)
+                             })
+                .padding(.horizontal)
+                .padding(.vertical, 6)
+        }
+    }
+
     @ViewBuilder
     private var errorBar: some View {
         if let error = chat?.errorText {
@@ -457,7 +508,8 @@ struct ChatDetailView: View {
                     },
                     onConfigure: {
                         SettingsTabRouter.open(.tools, openSettings: { openSettings() })
-                    })
+                    },
+                    projectControls: projectChipControls)
             }
         }
     }
@@ -709,6 +761,7 @@ struct MessageBubble: View {
             Markdown(renderedContent)
                 .markdownTheme(.docC)
                 .textSelection(.enabled)
+            fileChangesBlock
             sourcesBlock
             if let metrics = message.metrics {
                 Text(metricsLine(metrics))
@@ -864,6 +917,15 @@ struct MessageBubble: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
+        }
+    }
+
+    /// Применённые файловые операции хода (задача 39): свёрнутый блок с
+    /// diff'ами по файлам — отчёт и история изменений.
+    @ViewBuilder
+    private var fileChangesBlock: some View {
+        if let changes = message.fileChanges, !changes.isEmpty {
+            FileChangesBlock(changes: changes)
         }
     }
 

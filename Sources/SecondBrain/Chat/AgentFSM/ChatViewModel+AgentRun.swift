@@ -180,14 +180,26 @@ extension ChatViewModel {
                 persistNow()
             }
 
+            // Директива файловых инструментов (задача 39): корень и режим
+            // разрешений чата — модель знает, что правки могут ждать approve.
+            let fileDirective: String? = {
+                guard configuration.projectToolsEnabled,
+                      let bridge = projectToolsBridge,
+                      let root = bridge.rootURL(configuration.projectRootPath)
+                else { return nil }
+                return ChatPromptBuilder.fileToolsDirective(
+                    mode: configuration.permissionMode, rootPath: root.path)
+            }()
             let sys = AgentPrompts.systemPrompt(for: ready.state)
                 + (ragToolDefinition != nil ? "\n\n" + ChatPromptBuilder.ragToolDirective : "")
+                + (fileDirective.map { "\n\n" + $0 } ?? "")
             let user = AgentPrompts.buildPrompt(query: ready.task, ctx: ready,
                                                 rag: ragBlock, dialog: dialog)
 
             let phaseStart = Date()
             do {
                 let phase = try await runAgentPhase(
+                    chatID: chatID,
                     system: sys, user: user, settings: settings, resolved: resolved,
                     configuration: configuration, ragToolDefinition: ragToolDefinition)
                 guard agentGen[chatID] == gen else { return }
@@ -221,6 +233,9 @@ extension ChatViewModel {
                 message.agentTotal = outcome.display.total
                 if !phase.transcript.isEmpty { message.toolCalls = phase.transcript }
                 if !phase.sources.isEmpty { message.sources = phase.sources }
+                // Применённые файловые операции фазы (задача 39) — diff'ы в
+                // сообщение этапа: видно, ЧТО агент сделал на каждом шаге.
+                if !phase.fileChanges.isEmpty { message.fileChanges = phase.fileChanges }
                 // Источники статического ретрива — на финальном ответе (цитаты).
                 if outcome.isTerminal, !ragSources.isEmpty {
                     message.sources = (message.sources ?? []) + ragSources
@@ -258,19 +273,22 @@ extension ChatViewModel {
 
     // MARK: - Одна фаза
 
-    /// Итог фазы: текст модели + транскрипт вызовов + источники rag_search.
+    /// Итог фазы: текст модели + транскрипт вызовов + источники rag_search
+    /// + применённые файловые операции (задача 39).
     private struct AgentPhaseOutcome {
         var text: String
         var usage: ChatUsage?
         var transcript: [ToolCallDisplay] = []
         var sources: [RagSource] = []
+        var fileChanges: [FileChangeDisplay] = []
     }
 
     /// Один запрос модели: с инструментами (MCP + проект + rag_search, общий
     /// ToolUseLoop) либо без (send). Провайдер без function calling при
     /// включённых инструментах НЕ ошибка — фаза идёт без инструментов
     /// (деградация как у /help), FSM работает с любым провайдером.
-    private func runAgentPhase(system: String, user: String,
+    private func runAgentPhase(chatID: UUID,
+                               system: String, user: String,
                                settings: ChatSettings,
                                resolved: ResolvedChatProvider,
                                configuration: ChatConfiguration,
@@ -279,6 +297,7 @@ extension ChatViewModel {
         // источники rag_search копятся в исход фазы.
         var collectedSources: [RagSource] = []
         let tooling = await assembleTooling(
+            chatID: chatID,
             configuration: configuration,
             ragToolDefinition: ragToolDefinition,
             onRagSources: { collectedSources += $0 })
@@ -290,15 +309,19 @@ extension ChatViewModel {
 
         if !tooling.tools.isEmpty,
            let toolProvider = resolved.provider as? ToolCapableChatProvider {
+            // При ошибке/паузе фазы применённые операции остаются в
+            // FileOpsContext чата — их вычерпает сообщение следующей фазы.
             let outcome = try await ToolUseLoop.run(
                 provider: toolProvider,
                 settings: settings,
                 messages: messages,
                 tools: tooling.tools,
                 execute: tooling.execute)
+            let changes = await tooling.fileOps?.drainChanges() ?? []
             return AgentPhaseOutcome(text: outcome.text, usage: outcome.usage,
                                      transcript: outcome.transcript,
-                                     sources: collectedSources)
+                                     sources: collectedSources,
+                                     fileChanges: changes)
         }
 
         let result = try await resolved.provider.send(

@@ -146,7 +146,9 @@ final class ToolRegistryTests: XCTestCase {
         let defs = registry.definitions()
         XCTAssertEqual(Set(defs.map(\.name)),
                        ["git_branches", "git_status", "git_log", "git_diff",
-                        "list_files", "read_file"])
+                        "list_files", "read_file",
+                        "search_files", "write_file", "edit_file",
+                        "delete_file", "run_command"])
         for def in defs {
             XCTAssertFalse(def.name.contains("__"),
                            "\(def.name): коллизия с qualified-именами MCP")
@@ -371,10 +373,11 @@ final class ProjectToolsRoutingTests: XCTestCase {
         var projectCalls: [String] = []
         var mcpCalls: [String] = []
         viewModel.projectToolsBridge = ChatViewModel.ProjectToolsBridge(
-            available: { true },
-            tools: { [ToolDefinition(name: "git_status", description: "статус",
-                                     schema: ToolSchemas.empty)] },
-            execute: { name, _ in projectCalls.append(name); return "статус ок" })
+            available: { _ in true },
+            tools: { _ in [ToolDefinition(name: "git_status", description: "статус",
+                                          schema: ToolSchemas.empty)] },
+            rootURL: { _ in FileManager.default.temporaryDirectory },
+            execute: { _, name, _, _ in projectCalls.append(name); return "статус ок" })
         viewModel.mcpBridge = ChatViewModel.MCPBridge(
             tools: { _ in [ToolDefinition(name: "srv__tool", description: "mcp",
                                           schema: ToolSchemas.empty)] },
@@ -387,6 +390,9 @@ final class ProjectToolsRoutingTests: XCTestCase {
         viewModel.chats[index].configuration.providerID = "scripted"
         viewModel.chats[index].configuration.projectToolsEnabled = true
         viewModel.chats[index].configuration.enabledMCPServerIDs = [UUID()]
+        // Задача 39: MCP-вызов — write-уровень; «Авто» пропускает без approve
+        // (в дефолтном «Спрашивать» тест ждал бы решения пользователя).
+        viewModel.chats[index].configuration.permissionMode = .auto
 
         viewModel.input = "проверь статус"
         viewModel.send()
@@ -420,10 +426,11 @@ final class ProjectToolsRoutingTests: XCTestCase {
         let viewModel = ChatViewModel(router: router, registry: registry, fileURL: fileURL)
 
         viewModel.projectToolsBridge = ChatViewModel.ProjectToolsBridge(
-            available: { true },
-            tools: { [ToolDefinition(name: "git_status", description: "статус",
-                                     schema: ToolSchemas.empty)] },
-            execute: { _, _ in "ок" })
+            available: { _ in true },
+            tools: { _ in [ToolDefinition(name: "git_status", description: "статус",
+                                          schema: ToolSchemas.empty)] },
+            rootURL: { _ in FileManager.default.temporaryDirectory },
+            execute: { _, _, _, _ in "ок" })
         // mcpBridge отсутствует; вызов srv__tool получит ERROR, цикл продолжится.
 
         guard let chatID = viewModel.selectedChatID,
@@ -432,6 +439,7 @@ final class ProjectToolsRoutingTests: XCTestCase {
         }
         viewModel.chats[index].configuration.providerID = "scripted"
         viewModel.chats[index].configuration.projectToolsEnabled = true
+        viewModel.chats[index].configuration.permissionMode = .auto
 
         viewModel.input = "статус?"
         viewModel.send()
@@ -514,5 +522,100 @@ final class ProjectToolsConfigMigrationTests: XCTestCase {
 
         let withPath = MCPServer.gitTemplate(repositoryPath: "/tmp/repo")
         XCTAssertEqual(withPath.args, ["mcp-server-git", "--repository", "/tmp/repo"])
+    }
+
+    /// Шаблон filesystem MCP-сервера (задача 39): npx server-filesystem,
+    /// выключен по умолчанию.
+    func testFilesystemTemplate() {
+        let bare = MCPServer.filesystemTemplate()
+        XCTAssertEqual(bare.command, "npx")
+        XCTAssertEqual(bare.args, ["-y", "@modelcontextprotocol/server-filesystem"])
+        XCTAssertFalse(bare.enabled)
+
+        let withPath = MCPServer.filesystemTemplate(rootPath: "/tmp/repo")
+        XCTAssertEqual(withPath.args,
+                       ["-y", "@modelcontextprotocol/server-filesystem", "/tmp/repo"])
+    }
+
+    /// Задача 39: старый chats.json без новых полей грузится с дефолтами
+    /// (глобальный каталог, режим «Спрашивать»), round-trip сохраняет их.
+    func testTask39ConfigurationMigrationAndRoundTrip() throws {
+        let old = try JSONDecoder().decode(ChatConfiguration.self,
+                                           from: Data(#"{"ragEnabled":true}"#.utf8))
+        XCTAssertNil(old.projectRootPath)
+        XCTAssertEqual(old.permissionMode, .ask)
+
+        var config = ChatConfiguration()
+        config.projectRootPath = "/tmp/мой-проект"
+        config.permissionMode = .autoDanger
+        let data = try JSONEncoder().encode(config)
+        let loaded = try JSONDecoder().decode(ChatConfiguration.self, from: data)
+        XCTAssertEqual(loaded.projectRootPath, "/tmp/мой-проект")
+        XCTAssertEqual(loaded.permissionMode, .autoDanger)
+    }
+
+    /// Задача 39: сообщение с fileChanges переживает encode/decode; старое
+    /// сообщение без поля грузится с nil.
+    func testFileChangesPersistenceRoundTrip() throws {
+        var message = ChatMessage(role: .assistant, content: "готово")
+        message.fileChanges = [FileChangeDisplay(relativePath: "a.md", kind: .created,
+                                                 diff: "+строка")]
+        let data = try JSONEncoder().encode(message)
+        let loaded = try JSONDecoder().decode(ChatMessage.self, from: data)
+        XCTAssertEqual(loaded.fileChanges?.count, 1)
+        XCTAssertEqual(loaded.fileChanges?.first?.kind, .created)
+
+        let old = try JSONDecoder().decode(
+            ChatMessage.self,
+            from: Data(#"{"role":"assistant","content":"x"}"#.utf8))
+        XCTAssertNil(old.fileChanges)
+    }
+}
+
+// MARK: - Per-root кэш провайдера (задача 39)
+
+@MainActor
+final class ProjectToolsProviderRootTests: XCTestCase {
+
+    private var tempDir: URL!
+
+    override func setUpWithError() throws {
+        tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("provider-root-tests-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+    }
+
+    override func tearDownWithError() throws {
+        if let tempDir { try? FileManager.default.removeItem(at: tempDir) }
+    }
+
+    func testEffectiveRootOverrideAndFallback() {
+        let store = SettingsStore(fileURL: tempDir.appendingPathComponent("settings.json"))
+        let provider = ProjectToolsProvider(settingsStore: store)
+
+        // Ничего не задано → nil.
+        XCTAssertNil(provider.effectiveRootURL(override: nil))
+        XCTAssertNil(provider.toolset(rootOverride: "  "))
+
+        // Глобальный путь — фолбэк; override чата — приоритет.
+        store.settings.projectRepoPath = "/tmp/global"
+        XCTAssertEqual(provider.effectiveRootURL(override: nil)?.path, "/tmp/global")
+        XCTAssertEqual(provider.effectiveRootURL(override: "/tmp/chat")?.path, "/tmp/chat")
+    }
+
+    /// Два разных корня → два исполнителя; тот же корень → кэш.
+    func testToolsetCachePerRoot() {
+        let store = SettingsStore(fileURL: tempDir.appendingPathComponent("settings.json"))
+        store.settings.projectRepoPath = tempDir.path
+        let provider = ProjectToolsProvider(settingsStore: store)
+
+        let global = provider.toolset(rootOverride: nil)
+        let globalAgain = provider.toolset(rootOverride: nil)
+        XCTAssertNotNil(global)
+        XCTAssertTrue(global?.executor === globalAgain?.executor, "кэш по корню")
+
+        let other = provider.toolset(rootOverride: tempDir.appendingPathComponent("x").path)
+        XCTAssertNotNil(other)
+        XCTAssertFalse(global?.executor === other?.executor, "разные корни — разные исполнители")
     }
 }

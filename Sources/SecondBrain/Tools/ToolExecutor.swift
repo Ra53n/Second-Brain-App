@@ -18,7 +18,10 @@ actor ToolExecutor {
     }
 
     /// Выполняет вызов модели: имя инструмента + JSON-строка аргументов.
-    func execute(name: String, argumentsJSON: String) async -> String {
+    /// fileOps — контекст файловых операций чата (задача 39); nil — вызов
+    /// вне чата, write-инструменты откажут.
+    func execute(name: String, argumentsJSON: String,
+                 fileOps: FileOpsContext? = nil) async -> String {
         guard let tool = registry.findByName(name) else {
             return "ERROR: неизвестный инструмент «\(name)»"
         }
@@ -31,7 +34,8 @@ actor ToolExecutor {
         } else {
             return "ERROR: аргументы «\(name)» не являются корректным JSON"
         }
-        let context = ToolContext(repoRoot: repoRoot, arguments: arguments)
+        let context = ToolContext(repoRoot: repoRoot, arguments: arguments,
+                                  fileOps: fileOps)
         return await tool.execute(context).text
     }
 }

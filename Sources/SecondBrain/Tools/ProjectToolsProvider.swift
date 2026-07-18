@@ -15,7 +15,10 @@ final class ProjectToolsProvider {
     private let router: FunctionRouter?
     /// RAG-индекс доков репозитория (задача 25).
     private let docsIndex = ProjectDocsIndexService()
-    private var cached: (path: String, registry: ToolRegistry, executor: ToolExecutor)?
+    /// Кэш исполнителей по корню (задача 39): у каждого чата может быть свой
+    /// каталог (projectRootPath), глобальный путь настроек — дефолт. Кэш не
+    /// чистится: ключей столько, сколько разных корней открывал пользователь.
+    private var cacheByRoot: [String: (registry: ToolRegistry, executor: ToolExecutor)] = [:]
 
     init(settingsStore: SettingsStore, router: FunctionRouter? = nil) {
         self.settingsStore = settingsStore
@@ -94,26 +97,37 @@ final class ProjectToolsProvider {
 
     /// Корень выбранного репозитория; nil — путь не задан (для /help, задача 22).
     func currentRepoRoot() -> URL? {
-        let path = settingsStore.settings.projectRepoPath
+        effectiveRootURL(override: nil)
+    }
+
+    /// Эффективный корень: непустой override чата → он, иначе глобальный
+    /// путь настроек; nil — не задан ни тот ни другой (задача 39).
+    func effectiveRootURL(override: String?) -> URL? {
+        let overridden = (override ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        if !overridden.isEmpty { return URL(fileURLWithPath: overridden) }
+        let global = settingsStore.settings.projectRepoPath
             .trimmingCharacters(in: .whitespacesAndNewlines)
-        return path.isEmpty ? nil : URL(fileURLWithPath: path)
+        return global.isEmpty ? nil : URL(fileURLWithPath: global)
     }
 
     /// Регистратор+исполнитель для текущего пути настроек; nil — путь не задан.
     func current() -> (registry: ToolRegistry, executor: ToolExecutor)? {
-        let path = settingsStore.settings.projectRepoPath
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !path.isEmpty else {
-            cached = nil
-            return nil
+        toolset(rootOverride: nil).map { ($0.registry, $0.executor) }
+    }
+
+    /// Регистратор+исполнитель для эффективного корня чата (задача 39):
+    /// per-root кэш — два чата с разными каталогами получают два исполнителя.
+    func toolset(rootOverride: String?) -> (registry: ToolRegistry,
+                                            executor: ToolExecutor,
+                                            root: URL)? {
+        guard let root = effectiveRootURL(override: rootOverride) else { return nil }
+        let key = root.standardizedFileURL.path
+        if let cached = cacheByRoot[key] {
+            return (cached.registry, cached.executor, root)
         }
-        if let cached, cached.path == path {
-            return (cached.registry, cached.executor)
-        }
-        let root = URL(fileURLWithPath: path)
         let registry = ToolRegistry.projectTools(repoRoot: root)
         let executor = ToolExecutor(registry: registry, repoRoot: root)
-        cached = (path, registry, executor)
-        return (registry, executor)
+        cacheByRoot[key] = (registry, executor)
+        return (registry, executor, root)
     }
 }

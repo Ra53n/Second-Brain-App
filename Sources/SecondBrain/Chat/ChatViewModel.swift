@@ -33,16 +33,34 @@ final class ChatViewModel: ObservableObject {
     }
     var mcpBridge: MCPBridge?
 
-    /// Мост встроенных инструментов проекта (задача 21). Маршрутизация в
+    /// Мост встроенных инструментов проекта (задачи 21, 39). Маршрутизация в
     /// send(): вызовы с именами из tools() идут сюда, остальные — в MCP
-    /// (имена не пересекаются: MCP-имена всегда содержат «__»).
+    /// (имена не пересекаются: MCP-имена всегда содержат «__»). Первый
+    /// параметр всюду — projectRootPath чата (nil = глобальная настройка).
     struct ProjectToolsBridge {
-        /// Репозиторий выбран в настройках (для видимости пункта меню).
-        var available: () -> Bool
-        var tools: () -> [ToolDefinition]
-        var execute: (String, String) async -> String
+        /// Каталог задан (override чата либо настройки) — видимость меню.
+        var available: (String?) -> Bool
+        var tools: (String?) -> [ToolDefinition]
+        /// Эффективный корень (для превью diff'ов и директивы промпта).
+        var rootURL: (String?) -> URL?
+        /// (rootOverride, имя, аргументы, файловый контекст чата) → результат.
+        var execute: (String?, String, String, FileOpsContext?) async -> String
     }
     var projectToolsBridge: ProjectToolsBridge?
+
+    // Слой разрешений (задача 39). Хранимые свойства — здесь (extension не
+    // может), логика — в ToolApprovalCenter.swift.
+    /// Ожидающие подтверждения операции (карточка над полем ввода).
+    @Published var pendingToolApprovals: [PendingToolApproval] = []
+    /// Continuation'ы ожидающих гейтов по id запроса.
+    var approvalContinuations: [UUID: CheckedContinuation<ToolApprovalDecision, Never>] = [:]
+    /// «Разрешить на сессию»: ключи операций по чату (in-memory, до выхода).
+    var sessionApprovals: [UUID: Set<String>] = [:]
+    /// Контексты файловых операций по чату (реестр чтений, изменения хода).
+    var fileOpsContexts: [UUID: FileOpsContext] = [:]
+    /// Мост «каталог чата → папочная база знаний» (задача 39, подвязывает
+    /// AppModel к KnowledgeBaseStore.addFolder). Возвращает id базы.
+    var addFolderKnowledgeBase: ((URL) -> String)?
 
     /// Раннер code review (задача 37) — обработчик /review. weak: раннер
     /// держит ChatViewModel строго, владелец обоих — AppModel.
@@ -98,9 +116,10 @@ final class ChatViewModel: ObservableObject {
     }
     var ragToolBridge: RagToolBridge?
 
-    /// Доступны ли инструменты проекта прямо сейчас (для UI меню).
+    /// Доступны ли инструменты проекта прямо сейчас (для UI меню):
+    /// учитывает per-chat каталог текущего чата (задача 39).
     var projectToolsAvailable: Bool {
-        projectToolsBridge?.available() ?? false
+        projectToolsBridge?.available(selectedChat?.configuration.projectRootPath) ?? false
     }
 
     /// Доступен ли провайдер чата прямо сейчас (per-чат override либо роутер) —
@@ -202,6 +221,10 @@ final class ChatViewModel: ObservableObject {
         agentTasks[id]?.cancel()
         agentTasks[id] = nil
         agentGen[id] = (agentGen[id] ?? 0) + 1
+        // Слой разрешений (задача 39): ожидания гейта отклоняются, состояние чата чистится.
+        denyPendingApprovals(chatID: id)
+        sessionApprovals[id] = nil
+        fileOpsContexts[id] = nil
         chats.removeAll { $0.id == id }
         if selectedChatID == id { selectedChatID = chats.first?.id }
     }
@@ -560,6 +583,9 @@ final class ChatViewModel: ObservableObject {
         generationTasks[chatID] = Task { [weak self] in
             guard let self else { return }
             let start = Date()
+            // Файловый контекст хода (задача 39): изменения цепляются к
+            // сообщению и при ошибке/отмене — применённое не теряется из истории.
+            var turnFileOps: FileOpsContext?
             do {
                 // Ретрив (задача 14): только при включённом тумблере;
                 // /help-ход пропускает RAG — его контекст заменяют доки;
@@ -586,21 +612,14 @@ final class ChatViewModel: ObservableObject {
                         : docs
                 }
 
-                let messages = ChatPromptBuilder.requestMessages(
-                    history: history,
-                    historyWindow: configuration.historyWindow,
-                    ragContext: retrieval?.block,
-                    projectDocs: projectDocs,
-                    tools: ragToolDefinition != nil
-                        ? ChatPromptBuilder.ragToolDirective : nil)
-                var settings = ChatSettings(model: resolved.model)
-                settings.temperature = configuration.temperature
-
-                // Инструменты (задачи 15, 21, 34): единая сборка и маршрутизация
-                // (ChatToolAssembly) → tool-use цикл БЕЗ стриминга (ответ
-                // приходит целиком после вызовов). Источники rag_search
-                // цепляются к сообщению сразу — цитаты видны ещё в ходе цикла.
+                // Инструменты (задачи 15, 21, 34, 39): единая сборка и
+                // маршрутизация (ChatToolAssembly) → tool-use цикл БЕЗ
+                // стриминга (ответ приходит целиком после вызовов). Источники
+                // rag_search цепляются к сообщению сразу — цитаты видны ещё
+                // в ходе цикла. Сборка ДО промпта: директива файловых
+                // инструментов зависит от эффективного корня и режима.
                 let tooling = await self.assembleTooling(
+                    chatID: chatID,
                     configuration: chatSnapshot.configuration,
                     ragToolDefinition: ragToolDefinition,
                     forceProjectTools: overrides.forceProjectTools,
@@ -608,6 +627,29 @@ final class ChatViewModel: ObservableObject {
                         self.appendSources(chatID: chatID, messageID: placeholderID,
                                            new: sources)
                     })
+                turnFileOps = tooling.fileOps
+
+                // Директивы [TOOLS] системного промпта: rag_search и файловые
+                // инструменты (задача 39) — только когда они реально в ходе.
+                var toolDirectives: [String] = []
+                if ragToolDefinition != nil {
+                    toolDirectives.append(ChatPromptBuilder.ragToolDirective)
+                }
+                if let projectRoot = tooling.projectRoot {
+                    toolDirectives.append(ChatPromptBuilder.fileToolsDirective(
+                        mode: chatSnapshot.configuration.permissionMode,
+                        rootPath: projectRoot.path))
+                }
+                let messages = ChatPromptBuilder.requestMessages(
+                    history: history,
+                    historyWindow: configuration.historyWindow,
+                    ragContext: retrieval?.block,
+                    projectDocs: projectDocs,
+                    tools: toolDirectives.isEmpty
+                        ? nil : toolDirectives.joined(separator: "\n\n"))
+                var settings = ChatSettings(model: resolved.model)
+                settings.temperature = configuration.temperature
+
                 let tools = tooling.tools
                 // Итоговый usage хода (задача 29): стрим отдаёт событием,
                 // tool-цикл суммирует по итерациям.
@@ -618,11 +660,16 @@ final class ChatViewModel: ObservableObject {
                         settings: settings,
                         messages: messages.map(ToolAwareMessage.init),
                         tools: tools,
+                        maxIterations: tooling.maxIterations,
                         execute: tooling.execute)
                     self.appendToMessage(chatID: chatID, messageID: placeholderID,
                                          chunk: outcome.text)
                     self.attachToolCalls(chatID: chatID, messageID: placeholderID,
                                          calls: outcome.transcript)
+                    if let ops = tooling.fileOps {
+                        self.attachFileChanges(chatID: chatID, messageID: placeholderID,
+                                               changes: await ops.drainChanges())
+                    }
                     turnUsage = outcome.usage
                 } else {
                     // Провайдер без function calling при запрошенных инструментах:
@@ -644,10 +691,19 @@ final class ChatViewModel: ObservableObject {
                                       duration: Date().timeIntervalSince(start),
                                       usage: turnUsage, resolved: resolved, error: nil)
             } catch is CancellationError {
+                // Применённые до отмены файловые операции — в историю (39).
+                if let ops = turnFileOps {
+                    self.attachFileChanges(chatID: chatID, messageID: placeholderID,
+                                           changes: await ops.drainChanges())
+                }
                 self.finishGeneration(chatID: chatID, messageID: placeholderID,
                                       duration: Date().timeIntervalSince(start),
                                       usage: nil, resolved: resolved, error: nil)
             } catch {
+                if let ops = turnFileOps {
+                    self.attachFileChanges(chatID: chatID, messageID: placeholderID,
+                                           changes: await ops.drainChanges())
+                }
                 self.finishGeneration(chatID: chatID, messageID: placeholderID,
                                       duration: Date().timeIntervalSince(start),
                                       usage: nil, resolved: resolved, error: error)
@@ -735,6 +791,16 @@ final class ChatViewModel: ObservableObject {
         chats[chatIndex].messages[messageIndex].toolCalls = calls
     }
 
+    /// Применённые файловые операции хода (задача 39) — diff'ы в сообщение.
+    func attachFileChanges(chatID: UUID, messageID: UUID, changes: [FileChangeDisplay]) {
+        guard !changes.isEmpty,
+              let chatIndex = chats.firstIndex(where: { $0.id == chatID }),
+              let messageIndex = chats[chatIndex].messages.firstIndex(where: { $0.id == messageID })
+        else { return }
+        let existing = chats[chatIndex].messages[messageIndex].fileChanges ?? []
+        chats[chatIndex].messages[messageIndex].fileChanges = existing + changes
+    }
+
     /// Тумблер встроенных инструментов проекта для текущего чата (задача 21).
     func toggleProjectTools() {
         guard let index = selectedIndex else { return }
@@ -762,9 +828,11 @@ final class ChatViewModel: ObservableObject {
         else { return }
 
         // Сообщение с tool-транскриптом при пустом тексте не выбрасываем:
-        // вызовы инструментов — тоже результат хода (задача 35).
+        // вызовы инструментов — тоже результат хода (задача 35). Аналогично
+        // применённые файловые операции (задача 39) — они уже на диске.
         let isEmpty = chats[chatIndex].messages[messageIndex].content.isEmpty
             && (chats[chatIndex].messages[messageIndex].toolCalls ?? []).isEmpty
+            && (chats[chatIndex].messages[messageIndex].fileChanges ?? []).isEmpty
         if let error {
             chats[chatIndex].errorText = (error as? LocalizedError)?.errorDescription
                 ?? error.localizedDescription

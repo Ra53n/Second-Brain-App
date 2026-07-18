@@ -100,6 +100,11 @@ struct MCPServersSection: View {
                         repositoryPath: projectRepoPath)
                 }
                 .help("Заготовка mcp-server-git (uvx) — внешняя альтернатива встроенным git-инструментам")
+                Button("Filesystem (шаблон)") {
+                    viewModel.editingServer = MCPServer.filesystemTemplate(
+                        rootPath: projectRepoPath)
+                }
+                .help("Заготовка server-filesystem (npx) — внешняя альтернатива встроенным файловым инструментам задачи 39")
                 Button("Импорт из Claude…") {
                     viewModel.showsImport = true
                 }

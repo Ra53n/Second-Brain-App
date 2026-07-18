@@ -73,6 +73,19 @@ struct MCPServer: Identifiable, Codable, Equatable {
         return s
     }
 
+    /// Шаблон официального filesystem MCP-сервера — внешняя альтернатива
+    /// встроенным файловым инструментам задачи 39: свой контроль доступа
+    /// (сервер видит только перечисленные каталоги), включать осознанно.
+    static func filesystemTemplate(rootPath: String = "") -> MCPServer {
+        var s = MCPServer()
+        s.name = "filesystem"
+        s.command = "npx"
+        s.args = ["-y", "@modelcontextprotocol/server-filesystem"]
+            + (rootPath.isEmpty ? [] : [rootPath])
+        s.enabled = false
+        return s
+    }
+
     /// Разбор JSON-блока в стиле Claude Desktop:
     /// `{ "mcpServers": { "<имя>": { command, args, env } } }` (или сразу карта).
     static func parseClaudeConfig(_ text: String) -> [MCPServer] {

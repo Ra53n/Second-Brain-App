@@ -217,25 +217,38 @@ final class AppModel: ObservableObject {
             })
     }
 
-    /// Связка чата со встроенными инструментами проекта (задача 21):
-    /// провайдер держит исполнитель для текущего projectRepoPath и
-    /// пересоздаёт его при смене пути.
+    /// Связка чата со встроенными инструментами проекта (задачи 21, 39):
+    /// провайдер держит per-root исполнители — каждый чат может работать со
+    /// своим каталогом (projectRootPath), глобальный путь настроек — дефолт.
     private func wireProjectTools() {
         guard chatViewModel.projectToolsBridge == nil else { return }
         let provider = projectToolsProvider
         chatViewModel.projectToolsBridge = ChatViewModel.ProjectToolsBridge(
-            available: { provider.current() != nil },
-            tools: { provider.current()?.registry.definitions() ?? [] },
-            execute: { name, args in
-                guard let current = provider.current() else {
-                    return "ERROR: репозиторий проекта не выбран (Настройки → Инструменты)"
+            available: { rootOverride in
+                provider.effectiveRootURL(override: rootOverride) != nil
+            },
+            tools: { rootOverride in
+                provider.toolset(rootOverride: rootOverride)?.registry.definitions() ?? []
+            },
+            rootURL: { rootOverride in
+                provider.effectiveRootURL(override: rootOverride)
+            },
+            execute: { rootOverride, name, args, fileOps in
+                guard let toolset = provider.toolset(rootOverride: rootOverride) else {
+                    return "ERROR: каталог проекта не выбран (чип «Проект» или Настройки → Инструменты)"
                 }
-                return await current.executor.execute(name: name, argumentsJSON: args)
+                return await toolset.executor.execute(name: name, argumentsJSON: args,
+                                                      fileOps: fileOps)
             })
         // /help (задачи 22, 25): RAG-ретрив по докам репозитория с фолбэком
         // на полный контекст — вся логика в ProjectToolsProvider.
         chatViewModel.projectDocsProvider = { question in
             await provider.helpContext(question: question)
+        }
+        // «Сделать базой знаний» (задача 39): каталог чата → папочная база
+        // реестра (дедуп по пути в addFolder).
+        chatViewModel.addFolderKnowledgeBase = { [weak knowledgeBaseStore] url in
+            knowledgeBaseStore?.addFolder(url: url).id ?? ""
         }
     }
 }

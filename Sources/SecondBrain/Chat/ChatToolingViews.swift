@@ -10,6 +10,20 @@ import SwiftUI
 
 // MARK: - Чипы источников инструментов
 
+/// Контролы чипа «Проект» (задача 39): per-chat каталог, режим разрешений,
+/// «Сделать базой знаний». Чистая модель для поповера — колбэки в ChatView.
+struct ProjectChipControls {
+    /// Эффективный путь (override чата либо глобальный); nil — не задан.
+    var effectivePath: String?
+    /// Каталог переопределён для этого чата.
+    var isOverride: Bool
+    var mode: AgentPermissionMode
+    var onPickChatRoot: () -> Void
+    var onResetChatRoot: () -> Void
+    var onSetMode: (AgentPermissionMode) -> Void
+    var onMakeKnowledgeBase: () -> Void
+}
+
 /// Ряд чипов включённых источников инструментов текущего чата.
 struct ToolChipsRow: View {
     let summaries: [ToolSourceSummary]
@@ -17,6 +31,8 @@ struct ToolChipsRow: View {
     let onDisable: (ToolSourceSummary) -> Void
     /// Открыть настройки на вкладке «Инструменты».
     let onConfigure: () -> Void
+    /// Контролы чипа «Проект» (задача 39); nil — секция не рисуется.
+    var projectControls: ProjectChipControls?
 
     var body: some View {
         ScrollView(.horizontal) {
@@ -24,7 +40,9 @@ struct ToolChipsRow: View {
                 ForEach(summaries) { summary in
                     ToolSourceChip(summary: summary,
                                    onDisable: { onDisable(summary) },
-                                   onConfigure: onConfigure)
+                                   onConfigure: onConfigure,
+                                   projectControls: summary.kind == .project
+                                       ? projectControls : nil)
                 }
             }
         }
@@ -38,6 +56,7 @@ private struct ToolSourceChip: View {
     let summary: ToolSourceSummary
     let onDisable: () -> Void
     let onConfigure: () -> Void
+    var projectControls: ProjectChipControls?
 
     @State private var showsPopover = false
 
@@ -68,6 +87,9 @@ private struct ToolSourceChip: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
+                if let controls = projectControls {
+                    projectSection(controls)
+                }
                 Divider()
                 Button("Выключить для этого чата") {
                     showsPopover = false
@@ -79,7 +101,55 @@ private struct ToolSourceChip: View {
                 }
             }
             .padding(12)
-            .frame(width: 280, alignment: .leading)
+            .frame(width: 320, alignment: .leading)
+        }
+    }
+
+    /// Секция чипа «Проект» (задача 39): каталог этого чата, режим
+    /// разрешений и создание базы знаний из каталога.
+    @ViewBuilder
+    private func projectSection(_ controls: ProjectChipControls) -> some View {
+        Divider()
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Каталог: \(controls.effectivePath ?? "не выбран")"
+                 + (controls.isOverride ? " (этого чата)" : " (глобальный)"))
+                .font(.caption)
+                .lineLimit(2)
+                .truncationMode(.middle)
+            HStack {
+                Button("Выбрать для чата…") {
+                    showsPopover = false
+                    controls.onPickChatRoot()
+                }
+                .help("Любой репозиторий, папка или vault — только для этого чата")
+                if controls.isOverride {
+                    Button("Вернуть глобальный") { controls.onResetChatRoot() }
+                }
+            }
+            .controlSize(.small)
+            Picker("Режим", selection: Binding(
+                get: { controls.mode },
+                set: { controls.onSetMode($0) }
+            )) {
+                ForEach(AgentPermissionMode.allCases, id: \.self) { mode in
+                    Text(mode.label).tag(mode)
+                }
+            }
+            .pickerStyle(.segmented)
+            .help(controls.mode.help)
+            if controls.mode == .autoDanger {
+                Label("Все операции — без подтверждений, включая удаление и команды.",
+                      systemImage: "exclamationmark.triangle")
+                    .font(.caption2)
+                    .foregroundStyle(.orange)
+            }
+            Button("Сделать базой знаний") {
+                showsPopover = false
+                controls.onMakeKnowledgeBase()
+            }
+            .controlSize(.small)
+            .disabled(controls.effectivePath == nil)
+            .help("Добавить каталог в реестр баз знаний и включить rag_search по нему в этом чате (индекс .md построится при первом поиске)")
         }
     }
 

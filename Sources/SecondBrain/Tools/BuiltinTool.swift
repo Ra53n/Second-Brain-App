@@ -18,6 +18,16 @@ struct ToolContext: Sendable {
     let repoRoot: URL
     /// Аргументы вызова от модели; `{}` при пустых.
     let arguments: JSONValue
+    /// Файловые операции чата (задача 39): реестр чтений для mtime-guard
+    /// записи + накопитель применённых изменений. nil — вызов вне чата
+    /// (write-инструменты честно отказывают).
+    let fileOps: FileOpsContext?
+
+    init(repoRoot: URL, arguments: JSONValue, fileOps: FileOpsContext? = nil) {
+        self.repoRoot = repoRoot
+        self.arguments = arguments
+        self.fileOps = fileOps
+    }
 
     /// Строковый аргумент по ключу.
     func input(_ key: String) -> String? { arguments[key]?.stringValue }

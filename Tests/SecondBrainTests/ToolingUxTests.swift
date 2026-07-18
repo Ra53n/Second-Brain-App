@@ -474,13 +474,16 @@ final class AvailableModelChoicesTests: XCTestCase {
 
 final class ProjectToolCatalogDisplayTests: XCTestCase {
 
-    /// Каталог для вкладки настроек синхронизирован с реестром инструментов.
+    /// Каталог для вкладки настроек синхронизирован с реестром инструментов
+    /// (задача 39: + файловые инструменты и run_command).
     func testProjectToolCatalogStable() {
         let catalog = ToolRegistry.projectToolCatalog()
         XCTAssertEqual(Set(catalog.map(\.name)),
                        ["git_branches", "git_status", "git_log", "git_diff",
-                        "list_files", "read_file"])
-        XCTAssertEqual(catalog.count, 6)
+                        "list_files", "read_file",
+                        "search_files", "write_file", "edit_file",
+                        "delete_file", "run_command"])
+        XCTAssertEqual(catalog.count, 11)
         for definition in catalog {
             XCTAssertFalse(definition.description.isEmpty, definition.name)
         }
