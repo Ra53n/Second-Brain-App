@@ -204,10 +204,17 @@ struct MeetingsPane: View {
             Button {
                 SettingsTabRouter.open(.meetings, openSettings: { openSettings() })
             } label: {
-                Label("Правила и папка…", systemImage: "gearshape")
+                // Чип показывает, куда по умолчанию лягут заметки (задача 43);
+                // availabilityTick перечитывает настройки при возврате из Settings.
+                Label(availabilityTick >= 0
+                      ? MeetingFolderPicker.chipTitle(
+                            defaultFolder: MeetingSettingsStore.load().defaultFolder,
+                            date: Date())
+                      : "",
+                      systemImage: "folder.badge.gearshape")
                     .foregroundStyle(.secondary)
             }
-            .help("Настройки встреч: правила раскладки для ИИ, папка заметок, источник по умолчанию")
+            .help("Папка заметок встреч по умолчанию; клик — настройки встреч (правила раскладки, папка, источник)")
             Spacer()
         }
         .font(.caption)
@@ -318,11 +325,22 @@ private struct PipelineStatusView: View {
 }
 
 /// Диалог подтверждения названия/папки (пайплайн стоит в awaitingTitle).
+/// Папка — меню папок vault (задача 43): предвыбрана папка по умолчанию
+/// пользователя, предложение ИИ — отдельной строкой с кнопкой «Применить»,
+/// произвольный путь — через пункт «Другая или новая папка…».
 private struct TitleConfirmationView: View {
     let context: MeetingContext
     let viewModel: MeetingsViewModel
     @State private var title: String = ""
-    @State private var folder: String = ""
+    @State private var selectedFolder: String = ""
+    @State private var isCustomFolder = false
+    @State private var customFolder: String = ""
+    @State private var rememberAsDefault = false
+
+    /// Итоговая папка, которая уйдёт в confirmTitle.
+    private var resolvedFolder: String {
+        isCustomFolder ? MeetingFolderPicker.normalize(customFolder) : selectedFolder
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -336,8 +354,19 @@ private struct TitleConfirmationView: View {
             }
             TextField("Название встречи", text: $title)
                 .textFieldStyle(.roundedBorder)
-            TextField("Папка в vault", text: $folder)
-                .textFieldStyle(.roundedBorder)
+
+            folderRow
+            if isCustomFolder {
+                TextField("Путь папки (например Работа/Встречи)", text: $customFolder)
+                    .textFieldStyle(.roundedBorder)
+                Text("Несуществующая папка будет создана автоматически.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            aiSuggestionRow
+            Toggle("Запомнить как папку по умолчанию", isOn: $rememberAsDefault)
+                .controlSize(.small)
+
             if !context.summary.isEmpty {
                 ScrollView {
                     Text(context.summary)
@@ -350,19 +379,82 @@ private struct TitleConfirmationView: View {
                 Spacer()
                 Button("Отмена") { viewModel.titleDialog = nil }
                 Button("Создать заметку") {
-                    viewModel.confirmTitle(title, folder: folder)
+                    viewModel.confirmTitle(title, folder: resolvedFolder,
+                                           rememberAsDefault: rememberAsDefault)
                 }
                 .buttonStyle(.borderedProminent)
-                .disabled(title.trimmingCharacters(in: .whitespaces).isEmpty)
+                .disabled(title.trimmingCharacters(in: .whitespaces).isEmpty
+                          || resolvedFolder.isEmpty)
             }
         }
         .padding()
         .frame(minWidth: 460)
         .onAppear {
             title = context.effectiveTitle
-            folder = context.effectiveFolder.isEmpty
-                ? MeetingNoteWriter.defaultFolder(for: context.recordedAt)
-                : context.effectiveFolder
+            // Предвыбор: подтверждённая ранее > дефолт настроек > ИИ > штатная.
+            selectedFolder = MeetingFolderPicker.preselected(
+                confirmed: context.confirmedFolder,
+                defaultFolder: MeetingSettingsStore.load().defaultFolder,
+                suggested: context.suggestedFolder,
+                date: context.recordedAt)
+        }
+    }
+
+    /// Строка «Папка»: меню всех папок vault + текущий выбор/дефолт/ИИ,
+    /// даже если их ещё нет на диске, + «Другая или новая папка…».
+    private var folderRow: some View {
+        HStack(spacing: 8) {
+            Text("Папка")
+            Menu {
+                ForEach(menuItems) { item in
+                    Button {
+                        selectedFolder = item.path
+                        isCustomFolder = false
+                    } label: {
+                        if item.path == selectedFolder && !isCustomFolder {
+                            Label(item.path, systemImage: "checkmark")
+                        } else {
+                            Text(item.path)
+                        }
+                    }
+                }
+                Divider()
+                Button("Другая или новая папка…") {
+                    customFolder = selectedFolder
+                    isCustomFolder = true
+                }
+            } label: {
+                Label(isCustomFolder ? "Другая папка…" : selectedFolder,
+                      systemImage: "folder")
+            }
+            .fixedSize()
+            Spacer()
+        }
+    }
+
+    private var menuItems: [FolderMenuItem] {
+        MeetingFolderPicker.menuItems(
+            vaultFolders: viewModel.vaultFolderPaths(),
+            extras: [selectedFolder,
+                     context.suggestedFolder,
+                     MeetingSettingsStore.load().defaultFolder])
+    }
+
+    /// Строка предложения ИИ; исчезает после «Применить» или при совпадении.
+    @ViewBuilder
+    private var aiSuggestionRow: some View {
+        if let suggestion = MeetingFolderPicker.aiSuggestion(
+            suggested: context.suggestedFolder, currentSelection: resolvedFolder) {
+            HStack(spacing: 8) {
+                Label("ИИ предлагает: \(suggestion)", systemImage: "sparkles")
+                    .foregroundStyle(.secondary)
+                Button("Применить") {
+                    selectedFolder = suggestion
+                    isCustomFolder = false
+                }
+                .controlSize(.small)
+            }
+            .font(.caption)
         }
     }
 }

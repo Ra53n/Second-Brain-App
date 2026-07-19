@@ -84,17 +84,8 @@ final class MeetingsViewModel: ObservableObject {
             router: functionRouter,
             store: meetingStore,
             vaultURL: { [weak vaultManager] in vaultManager?.vaultURL },
-            vaultFolders: { [weak vaultManager] in
-                guard let manager = vaultManager,
-                      let vault = manager.vaultURL,
-                      let root = manager.root else { return [] }
-                // Относительные пути папок vault для промпта и валидации.
-                let prefix = vault.path.hasSuffix("/") ? vault.path : vault.path + "/"
-                return root.allFolders
-                    .map { $0.url.path }
-                    .compactMap { $0.hasPrefix(prefix) ? String($0.dropFirst(prefix.count)) : nil }
-                    .filter { !$0.isEmpty }
-            })
+            // self к этому моменту полностью инициализирован (pipeline — IUO).
+            vaultFolders: { [weak self] in self?.vaultFolderPaths() ?? [] })
         // Статус без промпта: notDetermined оставляем nil («спросим при записи»).
         switch AVCaptureDevice.authorizationStatus(for: .audio) {
         case .authorized: micAuthorized = true
@@ -111,6 +102,23 @@ final class MeetingsViewModel: ObservableObject {
     /// Папка записей текущего vault (nil — vault не открыт).
     var recordingsDirectory: URL? {
         vaultManager.vaultURL?.appendingPathComponent("Meetings/_recordings", isDirectory: true)
+    }
+
+    /// Относительные пути папок vault — для промпта/валидации пайплайна и
+    /// меню выбора папки (задача 43). VaultManager приватен, UI ходит сюда.
+    func vaultFolderPaths() -> [String] {
+        guard let vault = vaultManager.vaultURL, let root = vaultManager.root else { return [] }
+        return Self.relativeFolderPaths(root: root, vaultURL: vault)
+    }
+
+    /// Чистая часть vaultFolderPaths (тестируется на temp-дереве): pre-order
+    /// из allFolders, без корня, dot-папки уже отфильтрованы при построении.
+    static func relativeFolderPaths(root: VaultNode, vaultURL: URL) -> [String] {
+        let prefix = vaultURL.path.hasSuffix("/") ? vaultURL.path : vaultURL.path + "/"
+        return root.allFolders
+            .map { $0.url.path }
+            .compactMap { $0.hasPrefix(prefix) ? String($0.dropFirst(prefix.count)) : nil }
+            .filter { !$0.isEmpty }
     }
 
     var isRecordingActive: Bool {
@@ -212,10 +220,19 @@ final class MeetingsViewModel: ObservableObject {
         }
     }
 
-    /// Подтверждение из диалога названия/папки.
-    func confirmTitle(_ title: String, folder: String) {
+    /// Подтверждение из диалога названия/папки. rememberAsDefault — галочка
+    /// «Запомнить как папку по умолчанию» (задача 43): выбранная папка
+    /// сохраняется в настройки ДО запуска filing, чтобы следующая встреча
+    /// уже предвыбирала её.
+    func confirmTitle(_ title: String, folder: String, rememberAsDefault: Bool = false) {
         guard let context = titleDialog else { return }
         titleDialog = nil
+        if rememberAsDefault {
+            let normalized = MeetingFolderPicker.normalize(folder)
+            if !normalized.isEmpty {
+                MeetingSettingsStore.update { $0.defaultFolder = normalized }
+            }
+        }
         Task { [weak self] in
             await self?.pipeline.confirmTitle(context.id, title: title, folder: folder)
         }
