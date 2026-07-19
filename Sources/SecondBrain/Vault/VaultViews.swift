@@ -89,10 +89,24 @@ struct VaultTreeView: View {
     @State private var renameDraft = ""
 
     var body: some View {
-        List(selection: $manager.selection) {
-            if let root = manager.root {
-                OutlineGroup(root.children ?? [], children: \.children) { node in
-                    row(for: node)
+        // ScrollViewReader + рекурсивные DisclosureGroup вместо OutlineGroup:
+        // reveal-механике (задача 42) нужно программно раскрывать предков
+        // (manager.expandedFolders) и скроллить к цели — OutlineGroup держит
+        // состояние раскрытия внутри себя и наружу его не отдаёт.
+        ScrollViewReader { proxy in
+            List(selection: $manager.selection) {
+                if let root = manager.root {
+                    VaultNodeRows(nodes: root.children ?? [], manager: manager) { node in
+                        row(for: node)
+                    }
+                }
+            }
+            .onChange(of: manager.revealTick) { _, _ in
+                guard let target = manager.revealTarget else { return }
+                // Следующий кадр: только что раскрытые DisclosureGroup должны
+                // успеть вставить строки, иначе scrollTo не найдёт id.
+                DispatchQueue.main.async {
+                    withAnimation { proxy.scrollTo(target.path, anchor: .center) }
                 }
             }
         }
@@ -120,19 +134,12 @@ struct VaultTreeView: View {
     }
 
     /// Строка дерева: иконка + имя + контекстное меню узла.
+    /// .id — якорь для scrollTo при reveal (совпадает с VaultNode.id).
     private func row(for node: VaultNode) -> some View {
-        Label(node.name, systemImage: node.isDirectory ? "folder" : icon(for: node))
+        Label(node.name, systemImage: node.systemImage)
             .tag(node.url)
+            .id(node.id)
             .contextMenu { nodeContextMenu(node) }
-    }
-
-    /// Иконка файла по расширению (пока различаем только markdown и аудио).
-    private func icon(for node: VaultNode) -> String {
-        switch node.url.pathExtension.lowercased() {
-        case "md": return "doc.text"
-        case "m4a", "mp3", "wav": return "waveform"
-        default: return "doc"
-        }
     }
 
     // MARK: - Меню
@@ -225,6 +232,44 @@ struct VaultTreeView: View {
                 Label("Ещё", systemImage: "ellipsis.circle")
             }
         }
+    }
+}
+
+/// Рекурсивные строки дерева: папка — DisclosureGroup с внешним состоянием
+/// раскрытия (VaultManager.expandedFolders — так reveal может раскрывать
+/// предков программно), файл — просто строка. Ведёт себя как OutlineGroup:
+/// List ленив, свёрнутые поддеревья не строятся.
+private struct VaultNodeRows<Row: View>: View {
+    let nodes: [VaultNode]
+    @ObservedObject var manager: VaultManager
+    @ViewBuilder let row: (VaultNode) -> Row
+
+    var body: some View {
+        ForEach(nodes) { node in
+            if node.isDirectory {
+                DisclosureGroup(isExpanded: expansionBinding(for: node)) {
+                    VaultNodeRows(nodes: node.children ?? [], manager: manager, row: row)
+                } label: {
+                    row(node)
+                }
+            } else {
+                row(node)
+            }
+        }
+    }
+
+    /// Биндинг раскрытия папки поверх общего Set в VaultManager.
+    private func expansionBinding(for node: VaultNode) -> Binding<Bool> {
+        Binding(
+            get: { manager.expandedFolders.contains(node.id) },
+            set: { expanded in
+                if expanded {
+                    manager.expandedFolders.insert(node.id)
+                } else {
+                    manager.expandedFolders.remove(node.id)
+                }
+            }
+        )
     }
 }
 

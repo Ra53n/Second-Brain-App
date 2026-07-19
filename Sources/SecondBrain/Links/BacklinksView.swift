@@ -48,7 +48,7 @@ struct BacklinksView: View {
     /// Строка панели: источник + сниппет; клик открывает источник.
     private func backlinkRow(_ occurrence: LinkOccurrence) -> some View {
         Button {
-            vaultManager.selection = occurrence.sourceFile
+            vaultManager.open(occurrence.sourceFile)
         } label: {
             VStack(alignment: .leading, spacing: 2) {
                 Text(occurrence.sourceFile.deletingPathExtension().lastPathComponent)

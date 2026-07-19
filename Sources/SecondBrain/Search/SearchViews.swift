@@ -178,7 +178,7 @@ struct QuickSwitcherView: View {
         let url = vaultURL
             .appendingPathComponent(filtered[selectedIndex])
             .appendingPathExtension("md")
-        vaultManager.selection = url.standardizedFileURL
+        vaultManager.open(url)
         dismiss()
     }
 }

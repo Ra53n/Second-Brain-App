@@ -86,7 +86,7 @@ struct ContentView: View {
             guard let url = notification.object as? URL else { return }
             selection = .notes
             vaultManager.rebuild() // свежесозданная заметка могла ещё не попасть в дерево
-            vaultManager.selection = url
+            vaultManager.open(url)
         }
         // «Открыть чат» из истории прогонов пайплайна (задача 36).
         .onReceive(NotificationCenter.default.publisher(for: .openPipelineChat)) { notification in
@@ -172,11 +172,18 @@ struct ContentView: View {
         } else if selection == .notes {
             if let url = vaultManager.selection,
                let node = vaultManager.root?.find(url) {
-                if !node.isDirectory,
-                   Self.editableExtensions.contains(url.pathExtension.lowercased()) {
-                    EditorPane(url: url, vaultManager: vaultManager)
-                } else {
-                    FileInfoView(node: node)
+                // Breadcrumb сверху (задача 42) — общий для редактора, папки
+                // и инфо-панели: пользователь всегда видит, где лежит узел.
+                VStack(spacing: 0) {
+                    NoteBreadcrumbBar(node: node, manager: vaultManager)
+                    Divider()
+                    if node.isDirectory {
+                        FolderContentsView(node: node, manager: vaultManager)
+                    } else if Self.editableExtensions.contains(url.pathExtension.lowercased()) {
+                        EditorPane(url: url, vaultManager: vaultManager)
+                    } else {
+                        FileInfoView(node: node)
+                    }
                 }
             } else {
                 ContentUnavailableView(

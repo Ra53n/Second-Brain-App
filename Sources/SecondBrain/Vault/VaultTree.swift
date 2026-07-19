@@ -47,6 +47,25 @@ struct VaultNode: Identifiable, Hashable {
     }
 }
 
+extension VaultNode {
+    /// SF-символ узла — общий для дерева, breadcrumb и списка папки (задача 42).
+    var systemImage: String {
+        Self.systemImage(isDirectory: isDirectory, fileExtension: url.pathExtension)
+    }
+
+    /// Иконка по типу: папка или файл по расширению (пока различаем только
+    /// markdown и аудио). Статическая версия — для PathSegment, у которого
+    /// узла дерева под рукой нет.
+    static func systemImage(isDirectory: Bool, fileExtension: String) -> String {
+        if isDirectory { return "folder" }
+        switch fileExtension.lowercased() {
+        case "md": return "doc.text"
+        case "m4a", "mp3", "wav": return "waveform"
+        default: return "doc"
+        }
+    }
+}
+
 /// Построение дерева vault с диска.
 enum VaultTree {
     /// Строит дерево от корня. `showsDotItems: false` скрывает всё, что

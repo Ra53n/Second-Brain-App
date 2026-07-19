@@ -54,9 +54,9 @@ final class SearchViewModel: ObservableObject {
             .store(in: &cancellables)
     }
 
-    /// Открыть найденное: выбор файла в дереве → редактор.
+    /// Открыть найденное: выбор файла (с раскрытием пути в дереве) → редактор.
     func open(_ hit: SearchHit) {
-        vaultManager?.selection = hit.url
+        vaultManager?.open(hit.url)
     }
 
     /// Команда «Пересоздать индекс» — на случай рассинхрона с vault.

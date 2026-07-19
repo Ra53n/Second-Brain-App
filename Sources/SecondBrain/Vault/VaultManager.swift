@@ -32,6 +32,16 @@ final class VaultManager: ObservableObject {
     @Published private(set) var root: VaultNode?
     /// Выбранный в дереве узел (файл или папка). Файл отсюда заберёт редактор (задача 03).
     @Published var selection: URL?
+    /// Раскрытые папки дерева (ключ — url.path, как VaultNode.id). Живёт здесь,
+    /// а не во View: переживает rebuild по FSEvents и нужен reveal-механике.
+    /// Протухшие пути удалённых папок безвредны — дерево их просто не найдёт.
+    @Published var expandedFolders: Set<String> = []
+    /// Цель последнего reveal-запроса — дерево скроллит к ней по revealTick.
+    @Published private(set) var revealTarget: URL?
+    /// Счётчик reveal-запросов. Тик, а не URL в onChange: повторный reveal
+    /// той же цели (например, клик по тому же сегменту breadcrumb) тоже
+    /// должен доскроллить дерево.
+    @Published private(set) var revealTick = 0
     /// Показывать ли dot-папки (.obsidian, .git, …). Настройка из тулбара дерева.
     @Published var showsDotItems = false {
         didSet { rebuild() }
@@ -159,14 +169,34 @@ final class VaultManager: ObservableObject {
         vaultURL = nil
         root = nil
         selection = nil
+        expandedFolders = []
+        revealTarget = nil
         linkIndex = nil
+    }
+
+    // MARK: - Навигация (breadcrumb, reveal в дереве — задача 42)
+
+    /// Открывает URL «как пользователь»: выделяет узел (detail покажет
+    /// редактор/папку) и раскрывает путь к нему в дереве.
+    func open(_ url: URL) {
+        selection = url.standardizedFileURL
+        reveal(url)
+    }
+
+    /// Раскрывает предков url в дереве и просит VaultTreeView проскроллить
+    /// к нему (через revealTick — см. комментарий у свойства).
+    func reveal(_ url: URL) {
+        guard let vaultURL else { return }
+        expandedFolders.formUnion(VaultPath.ancestorPaths(of: url, within: vaultURL))
+        revealTarget = url.standardizedFileURL
+        revealTick += 1
     }
 
     /// Переход по [[ссылке]]: существующая заметка открывается, несуществующая —
     /// создаётся (как в Obsidian). Цель с «папка/Имя» создаёт промежуточные папки.
     func openWikilink(_ target: String) {
         if let url = linkIndex?.resolve(target) {
-            selection = url
+            open(url)
             return
         }
         guard let vaultURL else { return }
@@ -226,12 +256,13 @@ final class VaultManager: ObservableObject {
         }
     }
 
-    /// Общий каркас CRUD: выполнить → выделить результат → перестроить дерево;
-    /// VaultError показываем как есть, системные ошибки заворачиваем.
+    /// Общий каркас CRUD: выполнить → выделить результат (с раскрытием пути
+    /// в дереве) → перестроить дерево; VaultError показываем как есть,
+    /// системные ошибки заворачиваем.
     private func perform(_ operation: () throws -> URL?) {
         do {
             if let resultURL = try operation() {
-                selection = resultURL.standardizedFileURL
+                open(resultURL)
             }
         } catch let error as VaultError {
             lastError = error
