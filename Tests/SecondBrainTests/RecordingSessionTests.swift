@@ -58,17 +58,23 @@ final class RecordingSessionTests: XCTestCase {
     }
 
     /// Сессия с моками; «перепаковка» — переименование .caf → .m4a.
-    private func makeSession(source: RecordingSource) -> RecordingSession {
+    /// trackIsEmpty/convert инжектируются для тестов пустых дорожек и сбоя remux.
+    private func makeSession(
+        source: RecordingSource,
+        trackIsEmpty: @escaping (URL) -> Bool = { _ in false },
+        convert: @escaping (URL) async throws -> URL = { url in
+            let target = url.deletingPathExtension().appendingPathExtension("m4a")
+            try FileManager.default.moveItem(at: url, to: target)
+            return target
+        }
+    ) -> RecordingSession {
         RecordingSession(
             source: source,
             directory: tempDir,
             micFactory: { self.mic },
             systemFactory: { self.system },
-            convert: { url in
-                let target = url.deletingPathExtension().appendingPathExtension("m4a")
-                try FileManager.default.moveItem(at: url, to: target)
-                return target
-            },
+            convert: convert,
+            trackIsEmpty: trackIsEmpty,
             clock: { self.now },
             dateProvider: { self.fixedDate })
     }
@@ -240,6 +246,63 @@ final class RecordingSessionTests: XCTestCase {
         let session = makeSession(source: .microphone)
         try session.start()
         XCTAssertEqual(mic.startURL?.lastPathComponent, "\(expectedBase) (2).caf")
+    }
+
+    // MARK: - Пустые дорожки и устойчивость к сбою конвертации
+
+    /// Микрофон без разрешения пишет пустой CAF: он отсеивается, а валидная
+    /// системная дорожка сохраняется — запись НЕ теряется (регрессия каскадного
+    /// сбоя транскрипции). Источник понижается до фактического .system.
+    func testEmptyMicTrackDroppedRecordingSurvivesAsSystem() async throws {
+        let emptyMicName = "\(expectedBase).caf" // микрофон в .both — без суффикса
+        let session = makeSession(source: .both,
+                                  trackIsEmpty: { $0.lastPathComponent == emptyMicName })
+        try session.start()
+        now = 60
+        let result = try await session.stop()
+
+        let systemM4A = "\(expectedBase)\(RecordingNamer.systemTrackSuffix).m4a"
+        XCTAssertEqual(result.audioFiles.map(\.lastPathComponent), [systemM4A])
+        XCTAssertEqual(result.metadata.source, .system, "выпал микрофон — источник понижен")
+        XCTAssertEqual(result.metadata.files, [systemM4A])
+        // Пустой микрофонный .caf убран, sidecar записан.
+        let leftovers = try FileManager.default.contentsOfDirectory(atPath: tempDir.path)
+        XCTAssertFalse(leftovers.contains(emptyMicName))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: result.sidecarURL.path))
+    }
+
+    /// Ни одной непустой дорожки (микрофон без разрешения, режим .microphone) →
+    /// понятная ошибка вместо пустой записи; sidecar не создаётся.
+    func testAllTracksEmptyThrowsNoAudioCaptured() async throws {
+        let session = makeSession(source: .microphone, trackIsEmpty: { _ in true })
+        try session.start()
+        now = 5
+        do {
+            _ = try await session.stop()
+            XCTFail("ожидали noAudioCaptured")
+        } catch {
+            XCTAssertEqual(error as? AudioRecordingError, .noAudioCaptured)
+        }
+        XCTAssertEqual(session.state, .stopped)
+        let files = try FileManager.default.contentsOfDirectory(atPath: tempDir.path)
+        XCTAssertEqual(files, [], "пустой .caf убран, sidecar не записан")
+    }
+
+    /// Конвертация валидной дорожки упала (капризный контейнер) — дорожка
+    /// сохраняется как .caf, звук не теряется, запись доводится до sidecar.
+    func testConversionFailureKeepsTrackAsCaf() async throws {
+        let session = makeSession(
+            source: .microphone,
+            convert: { _ in throw AudioRecordingError.conversionFailed("капризный контейнер") })
+        try session.start()
+        now = 30
+        let result = try await session.stop()
+
+        XCTAssertEqual(result.audioFiles.map(\.lastPathComponent), ["\(expectedBase).caf"])
+        XCTAssertTrue(FileManager.default.fileExists(atPath: result.audioFiles[0].path))
+        let metadata = try RecordingMetadataStore.load(from: result.sidecarURL)
+        XCTAssertEqual(metadata.files, ["\(expectedBase).caf"])
+        XCTAssertEqual(metadata.source, .microphone)
     }
 }
 

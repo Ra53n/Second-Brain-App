@@ -28,6 +28,22 @@ enum AudioFileConverter {
         return targetURL
     }
 
+    /// Перепаковывает запись в .m4a во ВРЕМЕННУЮ папку, НЕ трогая исходник —
+    /// для нормализации формата перед отправкой в облачный STT (внутренний CAF
+    /// облака не принимают: Deepgram отвечает «corrupt or unsupported data»).
+    /// Вызывающий обязан удалить возвращённый файл после использования.
+    static func temporaryM4A(from sourceURL: URL) async throws -> URL {
+        let targetURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("stt-\(UUID().uuidString)")
+            .appendingPathExtension("m4a")
+        do {
+            try await export(sourceURL, to: targetURL, preset: AVAssetExportPresetPassthrough)
+        } catch {
+            try await export(sourceURL, to: targetURL, preset: AVAssetExportPresetAppleM4A)
+        }
+        return targetURL
+    }
+
     /// Восстановление после краша: все осиротевшие .caf в папке перепаковываются
     /// в .m4a, для записей без sidecar'а он восстанавливается (дата — из имени,
     /// длительность — из самого файла; паузы, увы, уже не восстановить).

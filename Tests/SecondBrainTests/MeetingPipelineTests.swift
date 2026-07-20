@@ -3,6 +3,7 @@
 // «краша» (контекст из JSON середины пайплайна продолжает с нужного шага),
 // ретраи с лимитом, валидация папки, заметка на диске.
 
+import AVFoundation
 import XCTest
 @testable import SecondBrain
 
@@ -79,6 +80,29 @@ final class MeetingPipelineTests: XCTestCase {
                                      presetTitle: presetTitle)
         store.upsert(context)
         return context
+    }
+
+    /// Пишет секунду синуса как AAC-в-CAF (как настоящий рекордер) — для теста
+    /// нормализации формата перед отправкой в облачный STT.
+    private func makeCAF(at url: URL, seconds: Double = 1.0) throws {
+        let sampleRate = 44_100.0
+        let format = AVAudioFormat(standardFormatWithSampleRate: sampleRate, channels: 1)!
+        let settings: [String: Any] = [
+            AVFormatIDKey: kAudioFormatMPEG4AAC,
+            AVSampleRateKey: sampleRate,
+            AVNumberOfChannelsKey: 1,
+            AVEncoderAudioQualityKey: AVAudioQuality.high.rawValue
+        ]
+        let file = try AVAudioFile(forWriting: url, settings: settings,
+                                   commonFormat: .pcmFormatFloat32, interleaved: false)
+        let frames = AVAudioFrameCount(sampleRate * seconds)
+        let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frames)!
+        buffer.frameLength = frames
+        let pointer = buffer.floatChannelData![0]
+        for i in 0..<Int(frames) {
+            pointer[i] = sinf(2 * .pi * 440 * Float(i) / Float(sampleRate)) * 0.5
+        }
+        try file.write(from: buffer)
     }
 
     // MARK: - Полные прогоны
@@ -235,6 +259,50 @@ final class MeetingPipelineTests: XCTestCase {
         XCTAssertEqual(final.state, .failed)
         XCTAssertEqual(final.errorText,
                        MeetingError.audioFileMissing("нет-такой.m4a").errorDescription)
+    }
+
+    // MARK: - Нормализация формата аудио
+
+    /// Сирота .caf (после краха/сбоя перепаковки) нормализуется во временный
+    /// .m4a перед отправкой в облачный STT — иначе Deepgram отвечает
+    /// «corrupt or unsupported data». Исходный .caf не трогаем, temp убираем.
+    func testCafTrackIsNormalizedToM4ABeforeTranscription() async throws {
+        let pipeline = makePipeline()
+        let base = "2026-07-12 11-00"
+        let caf = "\(base).caf"
+        let cafURL = vaultDir.appendingPathComponent("Meetings/_recordings/\(caf)")
+        try makeCAF(at: cafURL)
+        let context = MeetingContext(recordingBase: base,
+                                     audioFiles: [caf],
+                                     recordedAt: Date(timeIntervalSince1970: 1_783_000_000),
+                                     duration: 5,
+                                     presetTitle: "Встреча из CAF")
+        store.upsert(context)
+
+        await pipeline.run(context.id)
+
+        let final = store.context(id: context.id)!
+        XCTAssertEqual(final.state, .done, "запись из .caf прошла пайплайн целиком")
+        // Провайдер получил перепакованный .m4a, а не исходный .caf.
+        let received = transcription.receivedAudioURL
+        XCTAssertEqual(received?.pathExtension, "m4a")
+        XCTAssertNotEqual(received?.lastPathComponent, caf)
+        // Временный .m4a убран после отправки.
+        if let received {
+            XCTAssertFalse(FileManager.default.fileExists(atPath: received.path))
+        }
+        // Исходный .caf не тронут (источник истины — vault).
+        XCTAssertTrue(FileManager.default.fileExists(atPath: cafURL.path))
+    }
+
+    /// Штатный .m4a уходит в провайдер как есть — без лишней перепаковки.
+    func testM4ATrackSentAsIsWithoutRepack() async throws {
+        let pipeline = makePipeline()
+        let context = try makeContext(presetTitle: "Обычная встреча")
+        await pipeline.run(context.id)
+        let received = transcription.receivedAudioURL
+        XCTAssertEqual(received?.lastPathComponent, context.audioFiles[0],
+                       ".m4a отправляется напрямую, тем же путём")
     }
 
     // MARK: - Map-reduce

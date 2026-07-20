@@ -162,8 +162,22 @@ final class MeetingPipeline {
             guard FileManager.default.fileExists(atPath: url.path) else {
                 throw MeetingError.audioFileMissing(fileName)
             }
+            // Облачные STT не принимают внутренний CAF (сирота после краха или
+            // сбоя перепаковки на stop()) — нормализуем во временный .m4a.
+            // Штатные .m4a уходят как есть.
+            let audioURL: URL
+            let tempURL: URL?
+            if AudioMIME.isCloudSTTReady(url) {
+                audioURL = url
+                tempURL = nil
+            } else {
+                let temp = try await AudioFileConverter.temporaryM4A(from: url)
+                audioURL = temp
+                tempURL = temp
+            }
+            defer { if let tempURL { try? FileManager.default.removeItem(at: tempURL) } }
             let transcript = try await resolved.provider.transcribe(
-                audioURL: url, language: "ru", hints: nil)
+                audioURL: audioURL, language: "ru", hints: nil)
             tracks.append(TrackTranscript(fileName: fileName, transcript: transcript))
         }
         guard tracks.contains(where: {

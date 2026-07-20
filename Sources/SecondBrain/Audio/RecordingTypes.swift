@@ -64,6 +64,7 @@ enum AudioRecordingError: LocalizedError, Equatable {
     case coreAudio(operation: String, status: Int32)  // ошибка Core Audio (OSStatus)
     case fileWriteFailed(String)
     case conversionFailed(String)
+    case noAudioCaptured                              // все дорожки пусты (нет сигнала)
 
     var errorDescription: String? {
         switch self {
@@ -84,6 +85,10 @@ enum AudioRecordingError: LocalizedError, Equatable {
             return "Не удалось записать аудиофайл: \(detail)"
         case let .conversionFailed(detail):
             return "Не удалось перепаковать запись в .m4a: \(detail)"
+        case .noAudioCaptured:
+            return "Не удалось записать звук: ни одна дорожка не содержит данных. "
+                + "Проверьте разрешение микрофона (Системные настройки → Конфиденциальность → Микрофон) "
+                + "и что источник звука не был выключен."
         }
     }
 }

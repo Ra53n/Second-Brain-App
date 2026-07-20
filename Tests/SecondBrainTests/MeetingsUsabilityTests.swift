@@ -5,22 +5,38 @@
 import XCTest
 @testable import SecondBrain
 
-// MARK: - MIME по расширению (OpenAI)
+// MARK: - MIME по расширению (общий AudioMIME для всех облачных STT)
 
-final class OpenAIMimeTypeTests: XCTestCase {
+final class AudioMIMETests: XCTestCase {
 
     func testMimeTypeByExtension() {
         // Регрессия задачи 41: MIME был захардкожен audio/mpeg для любого
         // файла — наши записи .m4a уходили с неверным типом.
-        XCTAssertEqual(OpenAIProvider.mimeType(for: URL(fileURLWithPath: "/a/rec.m4a")), "audio/mp4")
-        XCTAssertEqual(OpenAIProvider.mimeType(for: URL(fileURLWithPath: "/a/rec.MP4")), "audio/mp4")
-        XCTAssertEqual(OpenAIProvider.mimeType(for: URL(fileURLWithPath: "/a/rec.wav")), "audio/wav")
-        XCTAssertEqual(OpenAIProvider.mimeType(for: URL(fileURLWithPath: "/a/rec.mp3")), "audio/mpeg")
+        XCTAssertEqual(AudioMIME.type(for: URL(fileURLWithPath: "/a/rec.m4a")), "audio/mp4")
+        XCTAssertEqual(AudioMIME.type(for: URL(fileURLWithPath: "/a/rec.MP4")), "audio/mp4")
+        XCTAssertEqual(AudioMIME.type(for: URL(fileURLWithPath: "/a/rec.wav")), "audio/wav")
+        XCTAssertEqual(AudioMIME.type(for: URL(fileURLWithPath: "/a/rec.mp3")), "audio/mpeg")
+    }
+
+    func testMimeTypeCoversAdditionalFormats() {
+        // Расширенная таблица (фикс транскрипции): распространённые контейнеры
+        // получают корректный тип, а не универсальный audio/mpeg.
+        XCTAssertEqual(AudioMIME.type(for: URL(fileURLWithPath: "/a/rec.flac")), "audio/flac")
+        XCTAssertEqual(AudioMIME.type(for: URL(fileURLWithPath: "/a/rec.ogg")), "audio/ogg")
+        XCTAssertEqual(AudioMIME.type(for: URL(fileURLWithPath: "/a/rec.webm")), "audio/webm")
+        XCTAssertEqual(AudioMIME.type(for: URL(fileURLWithPath: "/a/rec.caf")), "audio/x-caf")
     }
 
     func testMimeTypeUnknownExtensionFallsBackToMpeg() {
-        XCTAssertEqual(OpenAIProvider.mimeType(for: URL(fileURLWithPath: "/a/rec.ogg")), "audio/mpeg")
-        XCTAssertEqual(OpenAIProvider.mimeType(for: URL(fileURLWithPath: "/a/rec")), "audio/mpeg")
+        XCTAssertEqual(AudioMIME.type(for: URL(fileURLWithPath: "/a/rec.xyz")), "audio/mpeg")
+        XCTAssertEqual(AudioMIME.type(for: URL(fileURLWithPath: "/a/rec")), "audio/mpeg")
+    }
+
+    func testCloudSTTReadinessExcludesInternalCaf() {
+        // Внутренний CAF нельзя слать в облако напрямую — его нормализуют в .m4a.
+        XCTAssertFalse(AudioMIME.isCloudSTTReady(URL(fileURLWithPath: "/a/rec.caf")))
+        XCTAssertTrue(AudioMIME.isCloudSTTReady(URL(fileURLWithPath: "/a/rec.m4a")))
+        XCTAssertTrue(AudioMIME.isCloudSTTReady(URL(fileURLWithPath: "/a/rec.wav")))
     }
 }
 

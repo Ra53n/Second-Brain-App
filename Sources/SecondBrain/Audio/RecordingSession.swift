@@ -38,6 +38,11 @@ final class RecordingSession: ObservableObject {
     private let micFactory: () throws -> AudioTrackRecorder
     private let systemFactory: () throws -> AudioTrackRecorder
     private let convert: (URL) async throws -> URL
+    /// Пустая ли дорожка (не записалось ни одного сэмпла). Инжектируется в
+    /// тестах; в проде — нулевая длительность файла. Микрофон без разрешения
+    /// или молчащий вход пишет валидный, но пустой CAF: его remux в .m4a падает
+    /// и — если не отсеять — роняет весь stop(), теряя вторую (валидную) дорожку.
+    private let trackIsEmpty: (URL) -> Bool
     private let clock: () -> TimeInterval  // монотонные часы (инжектируются в тестах)
     private let dateProvider: () -> Date
 
@@ -54,6 +59,7 @@ final class RecordingSession: ObservableObject {
          micFactory: @escaping () throws -> AudioTrackRecorder,
          systemFactory: @escaping () throws -> AudioTrackRecorder,
          convert: @escaping (URL) async throws -> URL = { try await AudioFileConverter.remuxToM4A($0) },
+         trackIsEmpty: @escaping (URL) -> Bool = { AudioFileConverter.audioDuration(of: $0) <= 0 },
          clock: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime },
          dateProvider: @escaping () -> Date = Date.init) {
         self.source = source
@@ -61,6 +67,7 @@ final class RecordingSession: ObservableObject {
         self.micFactory = micFactory
         self.systemFactory = systemFactory
         self.convert = convert
+        self.trackIsEmpty = trackIsEmpty
         self.clock = clock
         self.dateProvider = dateProvider
     }
@@ -160,8 +167,14 @@ final class RecordingSession: ObservableObject {
     }
 
     /// Останавливает запись, перепаковывает дорожки в .m4a и пишет sidecar.
-    /// Если перепаковка упала, состояние всё равно .stopped: запись окончена,
-    /// .caf останется на диске и восстановится при следующем запуске.
+    ///
+    /// Устойчивость (фикс каскадного сбоя транскрипции):
+    ///  - пустые дорожки (микрофон без разрешения/сигнала) отсеиваются — иначе
+    ///    их remux падает и роняет весь stop(), теряя валидную вторую дорожку;
+    ///  - если конвертация валидной дорожки всё же упала, она сохраняется как
+    ///    .caf (звук не теряется: .caf читается плеером, recoverOrphans перепакует);
+    ///  - source в метаданных отражает реально сохранённые дорожки;
+    ///  - если не записалось НИЧЕГО — бросаем noAudioCaptured (понятно пользователю).
     func stop() async throws -> Result {
         guard state == .recording || state == .paused else {
             throw AudioRecordingError.invalidTransition(from: state, action: "stop")
@@ -174,19 +187,46 @@ final class RecordingSession: ObservableObject {
         timer = nil
         elapsed = accumulated
 
-        var rawFiles: [URL] = []
-        if let mic = micRecorder { rawFiles.append(try mic.stop()) }
-        if let system = systemRecorder { rawFiles.append(try system.stop()) }
+        // Останавливаем дорожки, помня их вид — source ниже пересчитывается по
+        // тому, что реально уцелело.
+        var rawTracks: [(url: URL, isSystem: Bool)] = []
+        if let mic = micRecorder { rawTracks.append((try mic.stop(), false)) }
+        if let system = systemRecorder { rawTracks.append((try system.stop(), true)) }
         micRecorder = nil
         systemRecorder = nil
         state = .stopped
 
         var finalFiles: [URL] = []
-        for raw in rawFiles { finalFiles.append(try await convert(raw)) }
+        var keptMic = false
+        var keptSystem = false
+        for track in rawTracks {
+            // Пустая дорожка: не конвертируем (пустой CAF роняет remux) и не
+            // включаем в запись — транскрибировать нечего, .caf убираем.
+            if trackIsEmpty(track.url) {
+                try? FileManager.default.removeItem(at: track.url)
+                continue
+            }
+            do {
+                finalFiles.append(try await convert(track.url))
+            } catch {
+                // Капризный контейнер: сохраняем дорожку как .caf, чтобы не
+                // потерять звук. Запись НЕ теряется.
+                finalFiles.append(track.url)
+            }
+            if track.isSystem { keptSystem = true } else { keptMic = true }
+        }
+
+        guard !finalFiles.isEmpty else {
+            throw AudioRecordingError.noAudioCaptured
+        }
+
+        // Фактический источник: в режиме .both могла выпасть одна из дорожек.
+        let effectiveSource: RecordingSource =
+            (keptMic && keptSystem) ? .both : (keptSystem ? .system : .microphone)
 
         let metadata = RecordingMetadata(date: startedAt,
                                          duration: accumulated,
-                                         source: source,
+                                         source: effectiveSource,
                                          files: finalFiles.map { $0.lastPathComponent })
         let sidecarURL = RecordingMetadataStore.sidecarURL(base: currentBaseName ?? "",
                                                            in: directory)

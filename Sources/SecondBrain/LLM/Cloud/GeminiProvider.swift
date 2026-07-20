@@ -125,7 +125,7 @@ struct GeminiProvider: ChatProvider, TranscriptionProvider, EmbeddingProvider {
     func transcribe(audioURL: URL, language: String?, hints: String?) async throws -> Transcript {
         let key = try apiKey()
         let data = try Data(contentsOf: audioURL)
-        let mimeType = Self.mimeType(for: audioURL)
+        let mimeType = AudioMIME.type(for: audioURL)
         let instruction = "Транскрибируй аудио дословно, без пересказа и комментариев."
             + (hints.map { " Контекст/термины: \($0)." } ?? "")
 
@@ -258,14 +258,6 @@ struct GeminiProvider: ChatProvider, TranscriptionProvider, EmbeddingProvider {
         )
     }
 
-    private static func mimeType(for url: URL) -> String {
-        switch url.pathExtension.lowercased() {
-        case "wav": return "audio/wav"
-        case "mp3": return "audio/mpeg"
-        case "m4a", "mp4": return "audio/mp4"
-        default: return "audio/mpeg"
-        }
-    }
 
     /// Формат ошибки Gemini: {"error": {"code": ..., "message": ..., "status": ...}}.
     static func errorMessage(from data: Data) -> String? {

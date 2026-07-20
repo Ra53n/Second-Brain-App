@@ -72,12 +72,15 @@ final class MockChatProvider: ChatProvider {
 final class MockTranscriptionProvider: TranscriptionProvider {
     var result: Transcript
     var errorToThrow: Error?
+    /// Последний URL, отданный на транскрипцию — для проверки нормализации формата.
+    private(set) var receivedAudioURL: URL?
 
     init(result: Transcript = Transcript(fullText: "тестовый транскрипт", segments: [], language: "ru")) {
         self.result = result
     }
 
     func transcribe(audioURL: URL, language: String?, hints: String?) async throws -> Transcript {
+        receivedAudioURL = audioURL
         if let errorToThrow { throw errorToThrow }
         return result
     }

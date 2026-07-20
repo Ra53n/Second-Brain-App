@@ -173,7 +173,7 @@ struct OpenAIProvider: ChatProvider, TranscriptionProvider, EmbeddingProvider {
         if let language { form.addField(name: "language", value: language) }
         if let hints { form.addField(name: "prompt", value: hints) }
         form.addFile(name: "file", filename: audioURL.lastPathComponent,
-                     mimeType: Self.mimeType(for: audioURL), data: audioData)
+                     mimeType: AudioMIME.type(for: audioURL), data: audioData)
         let body = form.finalize()
 
         var request = URLRequest(url: baseURL.appendingPathComponent("audio/transcriptions"))
@@ -198,17 +198,6 @@ struct OpenAIProvider: ChatProvider, TranscriptionProvider, EmbeddingProvider {
         }
     }
 
-    /// MIME по расширению файла (как у Deepgram/Gemini). Раньше был захардкожен
-    /// audio/mpeg — для наших записей .m4a это несоответствие контейнера и
-    /// заявленного типа, отдельные бэкенды на нём спотыкаются.
-    static func mimeType(for url: URL) -> String {
-        switch url.pathExtension.lowercased() {
-        case "wav": return "audio/wav"
-        case "mp3": return "audio/mpeg"
-        case "m4a", "mp4": return "audio/mp4"
-        default: return "audio/mpeg"
-        }
-    }
 
     // MARK: - EmbeddingProvider
 

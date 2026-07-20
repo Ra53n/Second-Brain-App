@@ -47,7 +47,7 @@ struct DeepgramProvider: TranscriptionProvider {
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("Token \(key)", forHTTPHeaderField: "Authorization")
-        request.setValue(Self.mimeType(for: audioURL), forHTTPHeaderField: "Content-Type")
+        request.setValue(AudioMIME.type(for: audioURL), forHTTPHeaderField: "Content-Type")
         request.httpBody = audioData
         request.timeoutInterval = 300
 
@@ -110,15 +110,6 @@ struct DeepgramProvider: TranscriptionProvider {
         }
         flush()
         return segments
-    }
-
-    private static func mimeType(for url: URL) -> String {
-        switch url.pathExtension.lowercased() {
-        case "wav": return "audio/wav"
-        case "mp3": return "audio/mpeg"
-        case "m4a", "mp4": return "audio/mp4"
-        default: return "audio/mpeg"
-        }
     }
 
     /// Формат ошибки Deepgram: {"err_code": ..., "err_msg": ..., "request_id": ...}.
