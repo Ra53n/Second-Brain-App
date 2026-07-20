@@ -117,6 +117,11 @@ struct MeetingsPane: View {
             .fixedSize()
             .help("Источник этой записи: микрофон, системный звук или оба (две дорожки)")
 
+            // Устройство вывода для системного звука — когда источник его пишет.
+            if viewModel.sourceChoice.needsSystemAudio && MeetingsViewModel.systemAudioSupported {
+                systemAudioDeviceMenu
+            }
+
             // Название до записи: пайплайн пройдёт без диалога подтверждения.
             TextField("Название (пусто — предложит ИИ)", text: $viewModel.presetTitle)
                 .textFieldStyle(.roundedBorder)
@@ -140,6 +145,11 @@ struct MeetingsPane: View {
         if viewModel.sourceChoice.needsSystemAudio && !MeetingsViewModel.systemAudioSupported {
             Label("Запись системного звука требует macOS 14.4+ — выберите «Микрофон»",
                   systemImage: "speaker.slash")
+                .font(.caption)
+                .foregroundStyle(.orange)
+        }
+        if let warning = viewModel.systemAudioWarning {
+            Label(warning, systemImage: "speaker.badge.exclamationmark")
                 .font(.caption)
                 .foregroundStyle(.orange)
         }
@@ -265,6 +275,41 @@ struct MeetingsPane: View {
                 .foregroundStyle(presenter.hasAvailableProvider ? Color.secondary : .orange)
         }
         .help("Каким провайдером транскрибировать встречи; «Авто» — первый доступный")
+    }
+
+    /// Пикер устройства вывода для системного звука: «Авто» (следовать за
+    /// системным выводом, переключаясь на лету) или конкретное устройство.
+    private var systemAudioDeviceMenu: some View {
+        let selectedUID = viewModel.systemAudioDeviceUID
+        let devices = viewModel.availableOutputDevices
+        let label = selectedUID.flatMap { uid in devices.first { $0.uid == uid }?.name } ?? "Авто"
+        return Menu {
+            Button {
+                viewModel.systemAudioDeviceUID = nil
+            } label: {
+                if selectedUID == nil {
+                    Label("Авто (системный вывод)", systemImage: "checkmark")
+                } else {
+                    Text("Авто (системный вывод)")
+                }
+            }
+            Divider()
+            ForEach(devices) { device in
+                Button {
+                    viewModel.systemAudioDeviceUID = device.uid
+                } label: {
+                    if selectedUID == device.uid {
+                        Label(device.name, systemImage: "checkmark")
+                    } else {
+                        Text(device.name)
+                    }
+                }
+            }
+        } label: {
+            Label(label, systemImage: "hifispeaker")
+        }
+        .fixedSize()
+        .help("С какого устройства вывода писать системный звук. «Авто» следует за системным выводом и переключается на лету при смене устройства.")
     }
 }
 

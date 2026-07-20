@@ -18,8 +18,14 @@ struct MeetingSettings: Codable, Equatable {
     /// Источник записи, предвыбранный при запуске; nil — оба входа
     /// (микрофон + системный звук), см. resolvedDefaultSource.
     var defaultSource: RecordingSource?
+    /// UID устройства вывода, с которого писать системный звук; nil — «Авто»
+    /// (следовать за системным выводом по умолчанию, с горячей пересборкой при
+    /// смене устройства — например, при подключении наушников).
+    var systemAudioDeviceUID: String?
 
-    enum CodingKeys: String, CodingKey { case filingRules, defaultFolder, defaultSource }
+    enum CodingKeys: String, CodingKey {
+        case filingRules, defaultFolder, defaultSource, systemAudioDeviceUID
+    }
 
     init() {}
 
@@ -28,6 +34,7 @@ struct MeetingSettings: Codable, Equatable {
         filingRules = try c.decodeIfPresent(String.self, forKey: .filingRules) ?? ""
         defaultFolder = try c.decodeIfPresent(String.self, forKey: .defaultFolder) ?? ""
         defaultSource = try c.decodeIfPresent(RecordingSource.self, forKey: .defaultSource)
+        systemAudioDeviceUID = try c.decodeIfPresent(String.self, forKey: .systemAudioDeviceUID)
     }
 
     /// Источник записи, который реально предвыбираем: не задан — «оба входа»

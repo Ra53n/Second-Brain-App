@@ -15,6 +15,9 @@ private final class MockTrackRecorder: AudioTrackRecorder {
     private(set) var resumeCount = 0
     private(set) var stopCount = 0
     var failOnStart = false
+    /// Симуляция прерывания (системный звук потерял устройство).
+    var interrupted = false
+    var wasInterrupted: Bool { interrupted }
 
     func start(to url: URL) throws {
         if failOnStart { throw AudioRecordingError.noInputDevice }
@@ -303,6 +306,78 @@ final class RecordingSessionTests: XCTestCase {
         let metadata = try RecordingMetadataStore.load(from: result.sidecarURL)
         XCTAssertEqual(metadata.files, ["\(expectedBase).caf"])
         XCTAssertEqual(metadata.source, .microphone)
+    }
+
+    // MARK: - Прерывание системного звука
+
+    /// Системная дорожка прервалась (сменилось устройство) — флаг прокидывается
+    /// в Result, чтобы UI предупредил о неполной записи.
+    func testSystemAudioInterruptedPropagatesToResult() async throws {
+        system.interrupted = true
+        let session = makeSession(source: .both)
+        try session.start()
+        now = 60
+        let result = try await session.stop()
+        XCTAssertTrue(result.systemAudioInterrupted)
+    }
+
+    /// Без прерывания флаг чист.
+    func testNoInterruptionGivesCleanResult() async throws {
+        let session = makeSession(source: .both)
+        try session.start()
+        now = 60
+        let result = try await session.stop()
+        XCTAssertFalse(result.systemAudioInterrupted)
+    }
+}
+
+// MARK: - Резолвер устройства системного звука
+
+final class SystemAudioDeviceResolverTests: XCTestCase {
+
+    func testAutoWhenNoPreferred() {
+        XCTAssertTrue(SystemAudioDeviceResolver.isAuto(nil))
+        XCTAssertFalse(SystemAudioDeviceResolver.isAuto("uid-1"))
+    }
+
+    func testEffectiveUsesPreferredWhenAvailable() {
+        XCTAssertEqual(SystemAudioDeviceResolver.effectiveUID(
+            preferred: "headphones", availableUIDs: ["builtin", "headphones"], defaultUID: "builtin"),
+            "headphones")
+    }
+
+    func testEffectiveFallsBackToDefaultWhenPreferredGone() {
+        // Выбранное устройство отключили — уходим на системное по умолчанию.
+        XCTAssertEqual(SystemAudioDeviceResolver.effectiveUID(
+            preferred: "headphones", availableUIDs: ["builtin"], defaultUID: "builtin"),
+            "builtin")
+    }
+
+    func testEffectiveAutoFollowsSystemDefault() {
+        XCTAssertEqual(SystemAudioDeviceResolver.effectiveUID(
+            preferred: nil, availableUIDs: ["builtin", "headphones"], defaultUID: "headphones"),
+            "headphones")
+    }
+
+    /// Режим «Авто»: писали встроенные, система переключилась на наушники → пересбор.
+    func testShouldRebuildWhenAutoAndDefaultChanged() {
+        XCTAssertTrue(SystemAudioDeviceResolver.shouldRebuild(
+            preferred: nil, capturing: "builtin",
+            availableUIDs: ["builtin", "headphones"], newDefaultUID: "headphones"))
+    }
+
+    /// Явно выбраны наушники; системный вывод сменился, но наушники на месте → без пересбора.
+    func testShouldNotRebuildWhenExplicitDeviceStillPresent() {
+        XCTAssertFalse(SystemAudioDeviceResolver.shouldRebuild(
+            preferred: "headphones", capturing: "headphones",
+            availableUIDs: ["builtin", "headphones"], newDefaultUID: "builtin"))
+    }
+
+    /// Явно выбранные наушники отключили → переходим на системный вывод.
+    func testShouldRebuildWhenExplicitDeviceDisappeared() {
+        XCTAssertTrue(SystemAudioDeviceResolver.shouldRebuild(
+            preferred: "headphones", capturing: "headphones",
+            availableUIDs: ["builtin"], newDefaultUID: "builtin"))
     }
 }
 

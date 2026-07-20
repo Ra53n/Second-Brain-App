@@ -22,6 +22,10 @@ final class RecordingSession: ObservableObject {
         let audioFiles: [URL]        // 1 или 2 дорожки (.m4a)
         let sidecarURL: URL
         let metadata: RecordingMetadata
+        /// Системный звук прерывался во время записи (сменилось устройство
+        /// вывода, а пересборка не удалась) — UI предупреждает о неполной
+        /// системной дорожке. По умолчанию false.
+        var systemAudioInterrupted: Bool = false
     }
 
     @Published private(set) var state: RecordingState = .idle
@@ -73,7 +77,9 @@ final class RecordingSession: ObservableObject {
     }
 
     /// Продакшн-вариант: реальные рекордеры под выбранный источник.
-    convenience init(source: RecordingSource, directory: URL) {
+    /// systemAudioDeviceUID — выбранное устройство вывода для системного звука
+    /// (nil = «Авто», следовать за системным выводом).
+    convenience init(source: RecordingSource, directory: URL, systemAudioDeviceUID: String? = nil) {
         self.init(source: source,
                   directory: directory,
                   micFactory: { MicrophoneRecorder() },
@@ -81,7 +87,7 @@ final class RecordingSession: ObservableObject {
                       guard #available(macOS 14.4, *) else {
                           throw AudioRecordingError.systemAudioUnsupported
                       }
-                      return SystemAudioRecorder()
+                      return SystemAudioRecorder(preferredDeviceUID: systemAudioDeviceUID)
                   })
     }
 
@@ -192,6 +198,9 @@ final class RecordingSession: ObservableObject {
         var rawTracks: [(url: URL, isSystem: Bool)] = []
         if let mic = micRecorder { rawTracks.append((try mic.stop(), false)) }
         if let system = systemRecorder { rawTracks.append((try system.stop(), true)) }
+        // Системный звук мог прерваться (сменилось устройство, пересборка не
+        // удалась) — читаем флаг до обнуления рекордера.
+        let systemInterrupted = systemRecorder?.wasInterrupted ?? false
         micRecorder = nil
         systemRecorder = nil
         state = .stopped
@@ -235,7 +244,10 @@ final class RecordingSession: ObservableObject {
         } catch {
             throw AudioRecordingError.fileWriteFailed(error.localizedDescription)
         }
-        return Result(audioFiles: finalFiles, sidecarURL: sidecarURL, metadata: metadata)
+        // О прерывании сообщаем, только если системная дорожка реально осталась
+        // (иначе это уже обычная «дорожка выпала»).
+        return Result(audioFiles: finalFiles, sidecarURL: sidecarURL, metadata: metadata,
+                      systemAudioInterrupted: systemInterrupted && keptSystem)
     }
 
     // MARK: - Внутренности

@@ -24,6 +24,14 @@ protocol AudioTrackRecorder: AnyObject {
     func resume()
     /// Остановить и закрыть файл; возвращает URL записанного файла.
     func stop() throws -> URL
+    /// Прерывалась ли дорожка во время записи по внешней причине (напр.,
+    /// системный звук потерял устройство вывода и пересборка не удалась) —
+    /// чтобы предупредить пользователя. Дефолт — false.
+    var wasInterrupted: Bool { get }
+}
+
+extension AudioTrackRecorder {
+    var wasInterrupted: Bool { false }
 }
 
 /// RMS-уровень сигнала для индикатора в UI.

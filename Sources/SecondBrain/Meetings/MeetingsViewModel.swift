@@ -53,6 +53,17 @@ final class MeetingsViewModel: ObservableObject {
             MeetingSettingsStore.update { $0.filingRules = filingRules }
         }
     }
+    /// Устройство вывода для захвата системного звука; nil — «Авто» (следовать
+    /// за системным выводом с горячей пересборкой). Сохраняется в настройки.
+    @Published var systemAudioDeviceUID: String? {
+        didSet {
+            guard systemAudioDeviceUID != oldValue else { return }
+            MeetingSettingsStore.update { $0.systemAudioDeviceUID = systemAudioDeviceUID }
+        }
+    }
+    /// Предупреждение после последней записи, если системный звук прервался
+    /// (сменилось устройство вывода); nil — всё хорошо.
+    @Published var systemAudioWarning: String?
     let meetingStore: MeetingStore
     /// Роутер функций: пайплайну — для вызовов, статус-строке раздела — для
     /// показа и переключения провайдера транскрипции.
@@ -76,6 +87,7 @@ final class MeetingsViewModel: ObservableObject {
         self.functionRouter = functionRouter
         let settings = MeetingSettingsStore.load()
         self.filingRules = settings.filingRules
+        self.systemAudioDeviceUID = settings.systemAudioDeviceUID
         // Источник записи по умолчанию — из настроек (задача 17); не задан —
         // оба входа (задача 41), с деградацией на macOS без системного звука.
         self.sourceChoice = settings.resolvedDefaultSource(
@@ -146,7 +158,9 @@ final class MeetingsViewModel: ObservableObject {
             lastError = .systemAudioUnsupported
             return
         }
-        let newSession = RecordingSession(source: sourceChoice, directory: directory)
+        systemAudioWarning = nil // прошлое предупреждение неактуально
+        let newSession = RecordingSession(source: sourceChoice, directory: directory,
+                                          systemAudioDeviceUID: systemAudioDeviceUID)
         do {
             try newSession.start()
             stopPlayback() // не играем поверх записи
@@ -154,6 +168,13 @@ final class MeetingsViewModel: ObservableObject {
         } catch {
             lastError = normalize(error)
         }
+    }
+
+    /// Устройства вывода для пикера источника системного звука (пусто на
+    /// macOS < 14.4). Опрашивается лениво при открытии меню.
+    var availableOutputDevices: [AudioOutputDevice] {
+        guard #available(macOS 14.4, *) else { return [] }
+        return SystemAudioDevices.availableOutputs()
     }
 
     func togglePause() {
@@ -173,6 +194,11 @@ final class MeetingsViewModel: ObservableObject {
         guard let session else { return }
         do {
             let result = try await session.stop()
+            // Системный звук мог прерваться из-за смены устройства вывода.
+            systemAudioWarning = result.systemAudioInterrupted
+                ? "Системный звук прервался: во время записи сменилось устройство вывода, "
+                    + "а переподключение не удалось. Записана часть до переключения."
+                : nil
             // Название задано до записи — сразу заводим контекст встречи:
             // пайплайн потом пройдёт мимо диалога подтверждения (задача 11).
             let preset = presetTitle.trimmingCharacters(in: .whitespacesAndNewlines)

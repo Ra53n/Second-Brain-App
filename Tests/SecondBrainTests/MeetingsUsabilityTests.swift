@@ -163,6 +163,26 @@ final class ResolvedDefaultSourceTests: XCTestCase {
     }
 }
 
+// MARK: - Выбор устройства системного звука
+
+final class MeetingSettingsSystemAudioTests: XCTestCase {
+
+    func testSystemAudioDeviceUIDRoundTrips() throws {
+        var settings = MeetingSettings()
+        settings.systemAudioDeviceUID = "headphones-uid"
+        let data = try JSONEncoder().encode(settings)
+        let decoded = try JSONDecoder().decode(MeetingSettings.self, from: data)
+        XCTAssertEqual(decoded.systemAudioDeviceUID, "headphones-uid")
+    }
+
+    func testOldSettingsWithoutDeviceDecodeToAuto() throws {
+        // Старый JSON без поля → nil («Авто», следовать за системным выводом).
+        let decoded = try JSONDecoder().decode(
+            MeetingSettings.self, from: Data(#"{"filingRules":"x"}"#.utf8))
+        XCTAssertNil(decoded.systemAudioDeviceUID)
+    }
+}
+
 // MARK: - Переключатель провайдера транскрипции
 
 @MainActor
