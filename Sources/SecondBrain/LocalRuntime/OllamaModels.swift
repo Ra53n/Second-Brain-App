@@ -26,6 +26,13 @@ struct OllamaModel: Identifiable, Hashable {
         capabilities.map { $0.contains("completion") } ?? true
     }
 
+    /// Пригодна для эмбеддингов: capability "embedding" (nomic, bge-m3).
+    /// nil capabilities (старый сервер) — НЕ считаем эмбеддинговой: чат-модель
+    /// эмбеддинги корректно не отдаёт, роутер не должен подсовывать её в embed.
+    var supportsEmbedding: Bool {
+        capabilities.map { $0.contains("embedding") } ?? false
+    }
+
     /// Компактная строка метаданных: «4,7 ГБ · Q4_K_M · 8B».
     var detailLine: String? {
         var parts: [String] = []

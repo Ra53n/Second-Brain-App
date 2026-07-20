@@ -19,6 +19,16 @@ final class OllamaTagsCapabilitiesTests: XCTestCase {
         XCTAssertFalse(models[1].supportsChat, "эмбеддинг-модели не место в пикере чата")
         XCTAssertTrue(models[2].supportsChat, "старый сервер без capabilities — считаем чатовой")
     }
+
+    /// supportsEmbedding: только явная capability "embedding"; без capabilities
+    /// (старый сервер) — НЕ эмбеддинговая (чат-модель эмбеддинги не отдаёт).
+    func testSupportsEmbeddingFromCapabilities() throws {
+        let json = #"{"models":[{"name":"nomic","size":1,"details":{},"capabilities":["embedding"]},{"name":"qwen","size":1,"details":{},"capabilities":["completion"]},{"name":"old","size":1,"details":{}}]}"#
+        let models = try OllamaParsing.parseTags(Data(json.utf8))
+        XCTAssertTrue(models[0].supportsEmbedding, "nomic — эмбеддинговая")
+        XCTAssertFalse(models[1].supportsEmbedding, "чат-модель не эмбеддинговая")
+        XCTAssertFalse(models[2].supportsEmbedding, "старый сервер без capabilities — не эмбеддинг")
+    }
 }
 
 // MARK: - Мок процесса
@@ -141,12 +151,14 @@ final class IdleShutdownPolicyTests: XCTestCase {
 @MainActor
 final class OllamaManagerTests: XCTestCase {
 
-    /// Менеджер с полностью замоканными зависимостями.
+    /// Менеджер с полностью замоканными зависимостями. modelsLoader по умолчанию
+    /// пустой — тесты не должны ходить в реальный Ollama (127.0.0.1:11434).
     private func makeManager(healthy: @escaping () -> Bool,
                              binary: URL? = URL(fileURLWithPath: "/fake/ollama"),
                              idleTimeout: TimeInterval = 600,
                              clock: @escaping () -> TimeInterval = { 0 },
                              spawned: MockProcess = MockProcess(),
+                             models: @escaping (String) async -> [OllamaModel] = { _ in [] },
                              registry: BackgroundProcessRegistry = BackgroundProcessRegistry())
     -> (OllamaManager, MockProcess, BackgroundProcessRegistry) {
         let manager = OllamaManager(
@@ -154,6 +166,7 @@ final class OllamaManagerTests: XCTestCase {
             idlePolicy: IdleShutdownPolicy(timeout: idleTimeout, clock: clock),
             spawn: { _, _ in spawned },
             health: { _ in healthy() },
+            modelsLoader: models,
             binaryLocator: { binary },
             healthRetryDelay: 0)
         return (manager, spawned, registry)
@@ -195,6 +208,7 @@ final class OllamaManagerTests: XCTestCase {
             idlePolicy: IdleShutdownPolicy(timeout: 600, clock: { 0 }),
             spawn: { _, _ in spawnedFlag = true; return realSpawn },
             health: { _ in spawnedFlag },
+            modelsLoader: { _ in [] },
             binaryLocator: { URL(fileURLWithPath: "/fake/ollama") },
             healthRetryDelay: 0)
         _ = manager
@@ -223,6 +237,7 @@ final class OllamaManagerTests: XCTestCase {
             idlePolicy: IdleShutdownPolicy(timeout: 600, clock: { now }),
             spawn: { _, _ in serverUp = true; return process },
             health: { _ in serverUp },
+            modelsLoader: { _ in [] },
             binaryLocator: { URL(fileURLWithPath: "/fake/ollama") },
             healthRetryDelay: 0)
 
@@ -247,6 +262,7 @@ final class OllamaManagerTests: XCTestCase {
             idlePolicy: IdleShutdownPolicy(timeout: 600, clock: { 0 }),
             spawn: { _, _ in serverUp = true; return process },
             health: { _ in serverUp },
+            modelsLoader: { _ in [] },
             binaryLocator: { URL(fileURLWithPath: "/fake/ollama") },
             healthRetryDelay: 0)
         try await manager.ensureRunning()
@@ -259,6 +275,32 @@ final class OllamaManagerTests: XCTestCase {
         XCTAssertEqual(OllamaManager.hostPort("http://127.0.0.1:11434"), "127.0.0.1:11434")
         XCTAssertEqual(OllamaManager.hostPort("http://localhost:9999"), "localhost:9999")
         XCTAssertEqual(OllamaManager.hostPort("мусор"), "127.0.0.1:11434")
+    }
+
+    /// Фикс роутинга: при живом сервере кэш моделей заполняется, разбивается
+    /// на чат/эмбеддинг — роутер выбирает дефолт из реально установленных.
+    func testInstalledModelsLoadedWhenServerResponds() async throws {
+        let models = [
+            OllamaModel(name: "qwen2.5:7b", sizeBytes: nil, quantization: nil,
+                        parameterSize: nil, capabilities: ["completion"]),
+            OllamaModel(name: "nomic-embed-text", sizeBytes: nil, quantization: nil,
+                        parameterSize: nil, capabilities: ["embedding"]),
+        ]
+        let (manager, _, _) = makeManager(healthy: { true }, models: { _ in models })
+        try await manager.ensureRunning()
+        XCTAssertEqual(manager.installedModels.map(\.name).sorted(),
+                       ["nomic-embed-text", "qwen2.5:7b"])
+        XCTAssertEqual(manager.installedChatModels.map(\.name), ["qwen2.5:7b"])
+        XCTAssertEqual(manager.installedEmbeddingModels.map(\.name), ["nomic-embed-text"])
+    }
+
+    /// Сервер не отвечает → кэш моделей пуст (провайдер выпадает из авто-выбора).
+    func testInstalledModelsClearedWhenServerDown() async {
+        let stale = OllamaModel(name: "x", sizeBytes: nil, quantization: nil,
+                                parameterSize: nil, capabilities: ["completion"])
+        let (manager, _, _) = makeManager(healthy: { false }, models: { _ in [stale] })
+        await manager.refreshStatus()
+        XCTAssertTrue(manager.installedModels.isEmpty)
     }
 }
 

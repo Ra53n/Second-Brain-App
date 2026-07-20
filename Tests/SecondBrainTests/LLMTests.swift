@@ -336,6 +336,120 @@ final class FunctionRouterTests: XCTestCase {
         router.clearAssignment(for: .chat)
         XCTAssertEqual(router.resolveChatProvider(for: .chat)?.model, "def")
     }
+
+    // MARK: - Живой список моделей (фикс: Ollama qwen3:8b не установлен → 404)
+
+    /// Авто-дефолт берёт реально установленную модель, а не хардкод дескриптора.
+    /// qwen3:8b не скачан → выбирается установленная qwen2.5:7b.
+    func testDefaultPicksInstalledModelOverStaticDefault() {
+        let (router, registry) = makeRouter()
+        registry.register(
+            ProviderDescriptor(id: "ollama", displayName: "Ollama", capabilities: [.chat],
+                               isLocal: true, defaultModel: "qwen3:8b"),
+            chat: MockChatProvider(),
+            availableModels: { _ in ["qwen2.5:7b"] })
+        XCTAssertEqual(router.resolveChatProvider(for: .chat)?.model, "qwen2.5:7b")
+    }
+
+    /// Статичный дефолт в приоритете, если он реально установлен.
+    func testDefaultPrefersStaticDefaultWhenInstalled() {
+        let (router, registry) = makeRouter()
+        registry.register(
+            ProviderDescriptor(id: "ollama", displayName: "Ollama", capabilities: [.chat],
+                               isLocal: true, defaultModel: "qwen3:8b"),
+            chat: MockChatProvider(),
+            availableModels: { _ in ["qwen2.5:7b", "qwen3:8b"] })
+        XCTAssertEqual(router.resolveChatProvider(for: .chat)?.model, "qwen3:8b")
+    }
+
+    /// Нет ни одной пригодной модели → провайдер выпадает из авто-выбора,
+    /// роутер уходит на следующего доступного (не гарантированный 404).
+    func testProviderWithoutInstalledModelsSkippedForNext() {
+        let (router, registry) = makeRouter()
+        registry.register(
+            ProviderDescriptor(id: "ollama", displayName: "Ollama", capabilities: [.chat],
+                               isLocal: true, defaultModel: "qwen3:8b"),
+            chat: MockChatProvider(),
+            availableModels: { _ in [] }) // моделей нет
+        registry.register(
+            ProviderDescriptor(id: "cloud", displayName: "Cloud", capabilities: [.chat],
+                               isLocal: true, defaultModel: "gpt"),
+            chat: MockChatProvider())
+        let resolved = router.resolveChatProvider(for: .chat)
+        XCTAssertEqual(resolved?.providerID, "cloud")
+    }
+
+    /// Единственный провайдер без моделей → nil (UI покажет noChatProvider).
+    func testNoUsableModelResolvesNil() {
+        let (router, registry) = makeRouter()
+        registry.register(
+            ProviderDescriptor(id: "ollama", displayName: "Ollama", capabilities: [.chat],
+                               isLocal: true, defaultModel: "qwen3:8b"),
+            chat: MockChatProvider(), availableModels: { _ in [] })
+        XCTAssertNil(router.resolveChatProvider(for: .chat))
+    }
+
+    /// Явное назначение на удалённую модель → откат на установленную, не 404.
+    func testExplicitUnavailableModelFallsBackToInstalled() {
+        let (router, registry) = makeRouter()
+        registry.register(
+            ProviderDescriptor(id: "ollama", displayName: "Ollama", capabilities: [.chat],
+                               isLocal: true, defaultModel: "qwen3:8b"),
+            chat: MockChatProvider(), availableModels: { _ in ["qwen2.5:7b"] })
+        router.assign(FunctionAssignment(providerID: "ollama", model: "qwen3:8b"), to: .chat)
+        XCTAssertEqual(router.resolveChatProvider(for: .chat)?.model, "qwen2.5:7b")
+    }
+
+    /// Явное назначение на установленную локальную модель — уважается.
+    func testExplicitInstalledModelHonored() {
+        let (router, registry) = makeRouter()
+        registry.register(
+            ProviderDescriptor(id: "ollama", displayName: "Ollama", capabilities: [.chat],
+                               isLocal: true, defaultModel: "qwen3:8b"),
+            chat: MockChatProvider(), availableModels: { _ in ["qwen2.5:7b", "llama3:8b"] })
+        router.assign(FunctionAssignment(providerID: "ollama", model: "llama3:8b"), to: .chat)
+        XCTAssertEqual(router.resolveChatProvider(for: .chat)?.model, "llama3:8b")
+    }
+
+    /// Провайдер без живого списка моделей (облако) не ограничивается: любая
+    /// кастомная модель уважается — список моделей на стороне API, наш неполный.
+    /// (isLocal:true в тесте, чтобы не требовать ключ из KeyStore — важна только
+    /// логика «нет резолвера моделей → модель не ограничиваем».)
+    func testProviderWithoutModelListDoesNotRestrictModel() {
+        let (router, registry) = makeRouter()
+        registry.register(
+            ProviderDescriptor(id: "openai", displayName: "OpenAI", capabilities: [.chat],
+                               isLocal: true, defaultModel: "gpt-4o-mini"),
+            chat: MockChatProvider())
+        router.assign(FunctionAssignment(providerID: "openai", model: "gpt-4o"), to: .chat)
+        XCTAssertEqual(router.resolveChatProvider(for: .chat)?.model, "gpt-4o")
+    }
+
+    // MARK: - Цепочка фоллбэка
+
+    /// Цепочка: явное назначение первым, затем прочие доступные, без повторов.
+    func testFallbackChainOrdersExplicitThenOthers() {
+        let (router, registry) = makeRouter()
+        registry.register(
+            ProviderDescriptor(id: "ollama", displayName: "Ollama", capabilities: [.chat],
+                               isLocal: true, defaultModel: "qwen3:8b"),
+            chat: MockChatProvider(), availableModels: { _ in ["qwen2.5:7b"] })
+        registry.register(
+            ProviderDescriptor(id: "cloud", displayName: "Cloud", capabilities: [.chat],
+                               isLocal: true, defaultModel: "gpt"),
+            chat: MockChatProvider())
+        router.assign(FunctionAssignment(providerID: "cloud", model: "gpt"), to: .meetingSummary)
+
+        let chain = router.resolveChatProviders(for: .meetingSummary)
+        XCTAssertEqual(chain.map(\.providerID), ["cloud", "ollama"], "явный первым, дубли убраны")
+        XCTAssertEqual(chain.last?.model, "qwen2.5:7b")
+    }
+
+    /// Пустая цепочка без пригодных провайдеров.
+    func testFallbackChainEmptyWithoutProviders() {
+        let (router, _) = makeRouter()
+        XCTAssertTrue(router.resolveChatProviders(for: .meetingSummary).isEmpty)
+    }
 }
 
 // MARK: - KeyStore (тестовый Keychain-сервис)

@@ -192,11 +192,31 @@ final class MeetingPipeline {
         }
     }
 
-    /// Summary + предложение названия/папки; длинный транскрипт — map-reduce.
+    /// Summary с ФОЛЛБЭКОМ по провайдерам: если выбранная модель не смогла
+    /// (не установлена/сеть/отзыв ключа), пробуем следующего доступного.
+    /// Пусто кандидатов → noChatProvider с инструкцией.
     private func summarizeStep(_ context: MeetingContext) async throws {
-        guard let resolved = router.resolveChatProvider(for: .meetingSummary) else {
-            throw MeetingError.noChatProvider
+        let candidates = router.resolveChatProviders(for: .meetingSummary)
+        guard !candidates.isEmpty else { throw MeetingError.noChatProvider }
+        var lastError: Error?
+        for resolved in candidates {
+            do {
+                try await performSummary(context, using: resolved)
+                return
+            } catch is CancellationError {
+                throw CancellationError() // отмену не глотаем в фоллбэк
+            } catch {
+                lastError = error // провайдер не смог — следующий кандидат
+            }
         }
+        throw lastError ?? MeetingError.noChatProvider
+    }
+
+    /// Одна попытка summary конкретным провайдером; длинный транскрипт —
+    /// map-reduce. Мутирует контекст ТОЛЬКО при успехе — фоллбэк на другого
+    /// провайдера стартует с чистого листа.
+    private func performSummary(_ context: MeetingContext,
+                                using resolved: ResolvedChatProvider) async throws {
         let fullText = context.combinedTranscriptText
         let chunks = MeetingPrompts.chunkTranscript(fullText)
         let transcriptForPrompt: String

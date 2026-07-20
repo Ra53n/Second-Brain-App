@@ -226,9 +226,10 @@ enum MeetingError: LocalizedError, Equatable {
         case .noVault:
             return "Откройте vault: заметка встречи сохраняется в него."
         case .noTranscriptionProvider:
-            return "Нет доступного провайдера транскрипции. Добавьте API-ключ (OpenAI/Deepgram/AssemblyAI/Gemini) или настройте локальный."
+            return "Нет доступного провайдера транскрипции. Добавьте API-ключ (OpenAI/Deepgram/AssemblyAI/Gemini) или скачайте локальную модель Whisper."
         case .noChatProvider:
-            return "Нет доступного чат-провайдера для саммари. Добавьте API-ключ или настройте локальную модель."
+            return "Нет доступной модели для саммари. Скачайте чат-модель Ollama "
+                + "(например «ollama pull qwen3:8b») или добавьте API-ключ облачного провайдера в Настройках."
         case let .audioFileMissing(name):
             return "Аудиофайл записи не найден: \(name)"
         case .emptyTranscript:

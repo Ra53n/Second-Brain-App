@@ -173,21 +173,41 @@ final class FunctionRouter: ObservableObject {
         FunctionRoutingStore.save(config, to: storeURL)
     }
 
+    /// Основной chat-провайдер для функции (первый в цепочке фоллбэка).
     func resolveChatProvider(for function: AppFunction) -> ResolvedChatProvider? {
-        guard function.requiredCapability == .chat else { return nil }
-        if let assignment = validAssignment(for: function),
-           let provider = registry.chatProvider(for: assignment.providerID) {
-            return ResolvedChatProvider(
-                provider: provider, model: assignment.model,
-                providerID: assignment.providerID,
-                displayName: registry.descriptor(for: assignment.providerID)?.displayName
-                    ?? assignment.providerID.rawValue)
+        resolveChatProviders(for: function).first
+    }
+
+    /// Упорядоченная цепочка chat-провайдеров для ФОЛЛБЭКА: валидное явное
+    /// назначение первым, затем все доступные провайдеры чата с рабочей моделью
+    /// (в порядке регистрации), без повторов. Пустая — ни одного пригодного
+    /// (вызывающий показывает noChatProvider). Пайплайн перебирает цепочку,
+    /// если вызов провайдера падает (модель не установлена, сеть, отзыв ключа).
+    func resolveChatProviders(for function: AppFunction) -> [ResolvedChatProvider] {
+        guard function.requiredCapability == .chat else { return [] }
+        var result: [ResolvedChatProvider] = []
+        var seen: Set<ProviderID> = []
+
+        func append(id: ProviderID, model: String) {
+            guard !seen.contains(id), let provider = registry.chatProvider(for: id) else { return }
+            seen.insert(id)
+            result.append(ResolvedChatProvider(
+                provider: provider, model: model, providerID: id,
+                displayName: registry.descriptor(for: id)?.displayName ?? id.rawValue))
         }
-        guard let (id, model) = defaultAssignment(for: .chat),
-              let provider = registry.chatProvider(for: id) else { return nil }
-        return ResolvedChatProvider(
-            provider: provider, model: model, providerID: id,
-            displayName: registry.descriptor(for: id)?.displayName ?? id.rawValue)
+
+        // 1) Явный выбор пользователя (если провайдер+модель ещё валидны).
+        if let assignment = validAssignment(for: function) {
+            append(id: assignment.providerID, model: assignment.model)
+        }
+        // 2) Все прочие доступные провайдеры чата с рабочей дефолтной моделью.
+        for descriptor in registry.descriptors(supporting: .chat)
+            where registry.isAvailable(descriptor.id) {
+            if let model = registry.preferredDefaultModel(for: descriptor.id, capability: .chat) {
+                append(id: descriptor.id, model: model)
+            }
+        }
+        return result
     }
 
     func resolveTranscriptionProvider(for function: AppFunction) -> ResolvedTranscriptionProvider? {
@@ -215,24 +235,30 @@ final class FunctionRouter: ObservableObject {
     // MARK: - Внутреннее
 
     /// Явное назначение годится, только если провайдер существует, всё ещё
-    /// поддерживает нужную способность и доступен (ключ есть/рантайм жив).
+    /// поддерживает нужную способность, доступен (ключ есть/рантайм жив) И его
+    /// модель реально пригодна (у Ollama — установлена; иначе откат на автодефолт,
+    /// чтобы не слать 404 по несуществующей модели).
     private func validAssignment(for function: AppFunction) -> FunctionAssignment? {
         guard let assignment = config[function],
               let descriptor = registry.descriptor(for: assignment.providerID),
               descriptor.capabilities.contains(function.requiredCapability),
-              registry.isAvailable(assignment.providerID) else {
+              registry.isAvailable(assignment.providerID),
+              registry.isModelSelectable(assignment.model, for: assignment.providerID,
+                                         capability: function.requiredCapability) else {
             return nil
         }
         return assignment
     }
 
-    /// Первый доступный провайдер способности с известной моделью по умолчанию
-    /// (провайдеры без defaultModel не участвуют в автодефолте — их нечем вызвать).
-    /// Модель берётся per-capability (задача 28): у Ollama эмбеддинги — не qwen3.
+    /// Первый доступный провайдер способности с РАБОЧЕЙ моделью по умолчанию.
+    /// Модель берётся per-capability (задача 28: у Ollama эмбеддинги — не qwen3)
+    /// и из реально доступных (Ollama — установленные: qwen3:8b если скачан,
+    /// иначе первая чат-модель). Провайдер без пригодной модели пропускается —
+    /// авто-выбор уходит на следующего (облако) вместо гарантированного 404.
     /// Internal (задача 41): статус-строка «Встреч» показывает «Авто → X».
     func defaultAssignment(for capability: ProviderCapability) -> (ProviderID, String)? {
         for descriptor in registry.descriptors(supporting: capability) where registry.isAvailable(descriptor.id) {
-            if let model = descriptor.defaultModel(for: capability) {
+            if let model = registry.preferredDefaultModel(for: descriptor.id, capability: capability) {
                 return (descriptor.id, model)
             }
         }

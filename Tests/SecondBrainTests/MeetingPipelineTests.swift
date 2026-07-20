@@ -325,4 +325,67 @@ final class MeetingPipelineTests: XCTestCase {
         XCTAssertTrue(finalPrompt.contains("конспект части 1"))
         XCTAssertFalse(finalPrompt.contains(longText))
     }
+
+    // MARK: - Фоллбэк провайдера саммари (фикс: Ollama-модель не установлена)
+
+    /// Первый chat-провайдер падает (модель не установлена — 404) → пайплайн
+    /// переходит на следующего доступного и доводит саммари до конца.
+    func testSummaryFallsBackToNextProviderOnFailure() async throws {
+        store = MeetingStore(fileURL: storeFile)
+        registry = ProviderRegistry()
+        let failing = MockChatProvider()
+        failing.errorToThrow = OllamaError.badStatus(code: 404, message: "model 'qwen3:8b' not found")
+        let working = MockChatProvider(responses: [Self.goodLLMResponse])
+        transcription = MockTranscriptionProvider(
+            result: Transcript(fullText: "текст встречи", segments: [], language: "ru"))
+        // Порядок регистрации = порядок фоллбэка; оба доступны.
+        registry.register(
+            ProviderDescriptor(id: "broken", displayName: "Broken",
+                               capabilities: [.chat, .transcription], isLocal: true,
+                               defaultModel: "qwen3:8b"),
+            chat: failing, transcription: transcription)
+        // isLocal:true — чтобы не требовать ключ из KeyStore; для теста важно
+        // лишь, что это второй доступный провайдер без своего списка моделей.
+        registry.register(
+            ProviderDescriptor(id: "cloud", displayName: "Cloud", capabilities: [.chat],
+                               isLocal: true, defaultModel: "gpt"),
+            chat: working)
+        router = FunctionRouter(registry: registry, config: FunctionRoutingConfig(),
+                                storeURL: vaultDir.appendingPathComponent("routing.json"))
+        let pipeline = MeetingPipeline(router: router, store: store,
+                                       vaultURL: { [vaultDir] in vaultDir },
+                                       vaultFolders: { ["Работа", "Работа/Релизы"] },
+                                       settings: { MeetingSettings() })
+        let context = try makeContext(presetTitle: "Встреча")
+        await pipeline.run(context.id)
+
+        let final = store.context(id: context.id)!
+        XCTAssertEqual(final.state, .done, "фоллбэк на рабочего провайдера довёл до конца")
+        XCTAssertEqual(final.summary, "Обсудили релиз, решили катить в пятницу.")
+    }
+
+    /// Нет ни одного chat-провайдера → noChatProvider с инструкцией.
+    func testSummaryNoChatProviderFailsClearly() async throws {
+        store = MeetingStore(fileURL: storeFile)
+        registry = ProviderRegistry()
+        transcription = MockTranscriptionProvider(
+            result: Transcript(fullText: "текст", segments: [], language: "ru"))
+        registry.register(
+            ProviderDescriptor(id: "stt", displayName: "STT", capabilities: [.transcription],
+                               isLocal: true, defaultModel: "base"),
+            transcription: transcription)
+        router = FunctionRouter(registry: registry, config: FunctionRoutingConfig(),
+                                storeURL: vaultDir.appendingPathComponent("routing.json"))
+        let pipeline = MeetingPipeline(router: router, store: store,
+                                       vaultURL: { [vaultDir] in vaultDir },
+                                       vaultFolders: { [] },
+                                       settings: { MeetingSettings() })
+        let context = try makeContext(presetTitle: "Т")
+        await pipeline.run(context.id)
+
+        let final = store.context(id: context.id)!
+        XCTAssertEqual(final.state, .failed)
+        XCTAssertEqual(final.failedStage, .summarizing)
+        XCTAssertEqual(final.errorText, MeetingError.noChatProvider.errorDescription)
+    }
 }

@@ -85,6 +85,16 @@ enum LocalProviders {
             isAvailable: { [weak ollamaManager] in
                 guard let manager = ollamaManager else { return false }
                 return manager.isInstalled || manager.status != .stopped
+            },
+            // Живой список моделей: роутер берёт дефолт из реально установленных,
+            // а не из хардкода qwen3:8b (иначе 404, если модель не скачана).
+            availableModels: { [weak ollamaManager] capability in
+                guard let manager = ollamaManager else { return [] }
+                switch capability {
+                case .chat: return manager.installedChatModels.map(\.name)
+                case .embedding: return manager.installedEmbeddingModels.map(\.name)
+                case .transcription: return []
+                }
             })
     }
 

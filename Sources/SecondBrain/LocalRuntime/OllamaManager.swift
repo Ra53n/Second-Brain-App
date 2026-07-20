@@ -86,11 +86,19 @@ final class OllamaManager: ObservableObject {
 
     @Published private(set) var status: RuntimeStatus = .stopped
 
+    /// Кэш установленных моделей (/api/tags): роутер выбирает дефолтную модель
+    /// чата/эмбеддингов из реально скачанных, а не из хардкода qwen3:8b.
+    /// Обновляется при старте, каждые 30 с и после подъёма сервера; пусто,
+    /// когда сервер не отвечает.
+    @Published private(set) var installedModels: [OllamaModel] = []
+
     let baseURL: String
 
     // Инжектируемые зависимости (тесты подменяют).
     private let spawn: (URL, String) throws -> ManagedProcess
     private let health: (String) async -> Bool
+    /// Загрузка списка установленных моделей — инжектируется для тестов.
+    private let modelsLoader: (String) async -> [OllamaModel]
     private let binaryLocator: () -> URL?
     private let registry: BackgroundProcessRegistry
     private let idlePolicy: IdleShutdownPolicy
@@ -107,6 +115,7 @@ final class OllamaManager: ObservableObject {
          idlePolicy: IdleShutdownPolicy = IdleShutdownPolicy(),
          spawn: @escaping (URL, String) throws -> ManagedProcess = OllamaManager.defaultSpawn,
          health: @escaping (String) async -> Bool = OllamaManager.isServerResponding,
+         modelsLoader: @escaping (String) async -> [OllamaModel] = OllamaManager.loadInstalledModels,
          binaryLocator: @escaping () -> URL? = OllamaManager.findBinary,
          healthRetryDelay: TimeInterval = 0.5) {
         self.baseURL = baseURL
@@ -114,6 +123,7 @@ final class OllamaManager: ObservableObject {
         self.idlePolicy = idlePolicy
         self.spawn = spawn
         self.health = health
+        self.modelsLoader = modelsLoader
         self.binaryLocator = binaryLocator
         self.healthRetryDelay = healthRetryDelay
         startIdleTimer()
@@ -126,6 +136,11 @@ final class OllamaManager: ObservableObject {
 
     /// Установлен ли Ollama (для isAvailable в реестре провайдеров и UI).
     var isInstalled: Bool { binaryLocator() != nil }
+
+    /// Установленные чат-модели (для авто-выбора дефолта роутером).
+    var installedChatModels: [OllamaModel] { installedModels.filter(\.supportsChat) }
+    /// Установленные эмбеддинг-модели.
+    var installedEmbeddingModels: [OllamaModel] { installedModels.filter(\.supportsEmbedding) }
 
     // MARK: - Жизненный цикл
 
@@ -140,6 +155,7 @@ final class OllamaManager: ObservableObject {
         }
         if await health(baseURL) {
             if status != .runningSpawned { status = .runningExternal }
+            installedModels = await modelsLoader(baseURL)
             return
         }
         guard let binary = binaryLocator() else {
@@ -168,6 +184,8 @@ final class OllamaManager: ObservableObject {
         startupTask = task
         defer { startupTask = nil }
         try await task.value
+        // Сервер только что поднялся — подтягиваем список моделей для роутинга.
+        installedModels = await modelsLoader(baseURL)
     }
 
     /// Отметка использования (каждый запрос к серверу) — сдвигает idle-окно.
@@ -205,6 +223,8 @@ final class OllamaManager: ObservableObject {
         case (false, _):
             if status != .starting { status = .stopped }
         }
+        // Список моделей актуален, только пока сервер отвечает.
+        installedModels = responding ? await modelsLoader(baseURL) : []
     }
 
     // MARK: - Дефолтные зависимости
@@ -221,6 +241,11 @@ final class OllamaManager: ObservableObject {
         process.standardError = FileHandle.nullDevice
         try process.run()
         return process
+    }
+
+    /// Загрузка списка установленных моделей (/api/tags); сбой/офлайн → пусто.
+    nonisolated static func loadInstalledModels(baseURL: String) async -> [OllamaModel] {
+        (try? await OllamaClient(baseURL: baseURL).installedModels()) ?? []
     }
 
     /// Health-check: GET /api/version с коротким таймаутом.

@@ -76,6 +76,10 @@ final class ProviderRegistry: ObservableObject {
     /// локальный провайдер считается доступным всегда, чтобы не блокировать
     /// разработку до появления менеджера рантайма).
     private var availabilityChecks: [ProviderID: () -> Bool] = [:]
+    /// Живой список моделей провайдера по способности (Ollama — установленные
+    /// через /api/tags). Без резолвера провайдер считается «моделит» одну
+    /// статичную defaultModel из дескриптора (облако — модель живёт на стороне API).
+    private var modelResolvers: [ProviderID: (ProviderCapability) -> [String]] = [:]
 
     init() {}
 
@@ -86,7 +90,8 @@ final class ProviderRegistry: ObservableObject {
         chat: ChatProvider? = nil,
         transcription: TranscriptionProvider? = nil,
         embedding: EmbeddingProvider? = nil,
-        isAvailable: (() -> Bool)? = nil
+        isAvailable: (() -> Bool)? = nil,
+        availableModels: ((ProviderCapability) -> [String])? = nil
     ) {
         descriptors.removeAll { $0.id == descriptor.id } // повторная регистрация — замена
         descriptors.append(descriptor)
@@ -95,6 +100,9 @@ final class ProviderRegistry: ObservableObject {
         embeddingProviders[descriptor.id] = embedding
         if let isAvailable {
             availabilityChecks[descriptor.id] = isAvailable
+        }
+        if let availableModels {
+            modelResolvers[descriptor.id] = availableModels
         }
     }
 
@@ -118,5 +126,27 @@ final class ProviderRegistry: ObservableObject {
     /// Провайдеры, поддерживающие способность, в порядке регистрации.
     func descriptors(supporting capability: ProviderCapability) -> [ProviderDescriptor] {
         descriptors.filter { $0.capabilities.contains(capability) }
+    }
+
+    /// Модель по умолчанию для авто-роутинга. У провайдеров с живым списком
+    /// (Ollama) — реально установленная: приоритет статичному дескрипторному
+    /// дефолту, если он скачан (qwen3:8b), иначе первая доступная (qwen2.5:7b);
+    /// nil — подходящих моделей нет (провайдер выпадает из авто-выбора).
+    /// Без резолвера (облако) — статичный defaultModel дескриптора.
+    func preferredDefaultModel(for id: ProviderID, capability: ProviderCapability) -> String? {
+        let staticDefault = descriptor(for: id)?.defaultModel(for: capability)
+        guard let resolver = modelResolvers[id] else { return staticDefault }
+        let available = resolver(capability)
+        if let staticDefault, available.contains(staticDefault) { return staticDefault }
+        return available.first
+    }
+
+    /// Пригодна ли модель как ЯВНОЕ назначение пользователя. Провайдеры с живым
+    /// списком (Ollama) — только реально установленная; без списка (облако) —
+    /// любая (список моделей на стороне API, наш неисчерпывающий).
+    func isModelSelectable(_ model: String, for id: ProviderID,
+                           capability: ProviderCapability) -> Bool {
+        guard let resolver = modelResolvers[id] else { return true }
+        return resolver(capability).contains(model)
     }
 }
