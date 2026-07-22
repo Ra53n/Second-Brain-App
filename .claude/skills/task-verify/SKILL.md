@@ -11,9 +11,8 @@ description: Проверить выполненную задачу Second Brain
 ## 1. Сборка и тесты
 
 ```bash
-swift build
-export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
-swift test
+./scripts/build.sh
+./scripts/test.sh
 ```
 
 Оба зелёные. Отдельно убедись, что **новых варнингов не появилось** — сравни с тем, что
@@ -76,8 +75,8 @@ osascript .claude/skills/smoke-ui/ax.applescript dump | grep -v "| $"
 
 ## Чек-лист выхода
 
-- [ ] `swift build` зелёный, новых варнингов нет.
-- [ ] `swift test` зелёный, число тестов не уменьшилось.
+- [ ] `./scripts/build.sh` зелёный, новых варнингов нет.
+- [ ] `./scripts/test.sh` зелёный, число тестов не уменьшилось.
 - [ ] Каждый критерий приёмки подтверждён доказательством или честно помечен как
       непроверенный.
 - [ ] Диф не содержит антипаттернов и лишних файлов.
