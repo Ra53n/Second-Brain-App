@@ -32,6 +32,8 @@ enum AppSection: String, CaseIterable, Identifiable {
 /// Корневой view: сайдбар разделов, контент раздела, detail.
 struct ContentView: View {
     @State private var selection: AppSection? = .notes
+    /// Открытие окна настроек по ссылке secondbrain://settings/<вкладка> (задача 50).
+    @Environment(\.openSettings) private var openSettings
     /// Общий объектный граф (владелец — SecondBrainApp).
     let model: AppModel
     /// Наблюдаемые здесь объекты: body читает их состояние напрямую
@@ -76,6 +78,18 @@ struct ContentView: View {
                  attachmentAnchor: .point(.topTrailing),
                  arrowEdge: .bottom) {
             GitSyncPanel(viewModel: syncViewModel)
+        }
+        // Навигация по ссылке secondbrain:// (задача 50) — единственная точка
+        // входа deep link'ов. Только навигация: URL может открыть кто угодно.
+        .onOpenURL { url in
+            switch DeepLinkParser.parse(url) {
+            case .section(let section):
+                selection = section
+            case .settings(let tab):
+                SettingsTabRouter.open(tab, openSettings: openSettings.callAsFunction)
+            case nil:
+                break   // мусорная ссылка — молчим, экран не трогаем
+            }
         }
         // Quick switcher: команда меню (Cmd+P, App.swift) шлёт нотификацию.
         .onReceive(NotificationCenter.default.publisher(for: .showQuickSwitcher)) { _ in

@@ -126,10 +126,29 @@ cmd_restart() {
   echo "OK    приложение перезапущено"
 }
 
+# Слаг раздела для ссылки secondbrain://section/<slug> (задача 50).
+section_slug() {
+  case "$1" in
+    Заметки) echo notes ;; Встречи) echo meetings ;; Чат) echo chat ;;
+    Пайплайны) echo pipelines ;; Настройки) echo settings ;; *) echo "" ;;
+  esac
+}
+
 cmd_open() {
-  local section="$1" marker attempt out
+  local section="$1" marker attempt out slug
   marker="$(section_marker "$section")"
+  slug="$(section_slug "$section")"
   for attempt in 1 2; do
+    # Основной путь — deep link: детерминирован, в отличие от AX-клика по
+    # сайдбару (см. «Результат» задачи 49). AX остаётся фолбэком для сборок
+    # без URL-схемы.
+    if [ -n "$slug" ]; then
+      open "secondbrain://section/$slug" 2>/dev/null
+      sleep 1
+      if [ -n "$marker" ] && [[ "$(osa check "$marker")" == PASS* ]]; then
+        echo "OK    открыт раздел: $section (deep link)"; return 0
+      fi
+    fi
     osa click "$section" >/dev/null
     if [ -z "$marker" ]; then echo "OK    открыт раздел: $section (маркер не задан)"; return 0; fi
     out=$(osa check "$marker")

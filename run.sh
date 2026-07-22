@@ -92,6 +92,18 @@ cat > "${APP_DIR}/Contents/Info.plist" <<PLIST
     <string>Second Brain записывает встречи с микрофона для последующей транскрипции.</string>
     <key>NSAudioCaptureUsageDescription</key>
     <string>Second Brain записывает системный звук (голоса собеседников в Zoom/Meet) для транскрипции встреч.</string>
+    <!-- Навигация по ссылкам secondbrain://section/<раздел> (задача 50):
+         детерминированное открытие экрана для смоука UI. Схема обязана
+         совпадать с DeepLinkParser.scheme. -->
+    <key>CFBundleURLTypes</key>
+    <array>
+        <dict>
+            <key>CFBundleURLName</key>
+            <string>com.local.second-brain.deeplink</string>
+            <key>CFBundleURLSchemes</key>
+            <array><string>secondbrain</string></array>
+        </dict>
+    </array>
 </dict>
 </plist>
 PLIST

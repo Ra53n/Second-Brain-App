@@ -86,11 +86,11 @@ end collectInteractive
 
 -- Поиск с одной повторной попыткой: первый AX-запрос сразу после activate часто
 -- приходит в момент перестроения окна и не видит элементов (ложный FAIL).
-on findRetrying(w, target)
-	set found to my findByLabel(w, target, 0)
+on findRetrying(w, target, deepFirst)
+	set found to my findByLabel(w, target, 0, deepFirst)
 	if found is missing value then
 		delay 0.7
-		set found to my findByLabel(w, target, 0)
+		set found to my findByLabel(w, target, 0, deepFirst)
 	end if
 	return found
 end findRetrying
@@ -100,7 +100,7 @@ end findRetrying
 -- Скорость: подписи детей запрашиваются ПАКЕТНО (три Apple Event на контейнер
 -- вместо трёх на каждый элемент). На разделе с сотнями строк разница —
 -- десятки секунд против долей секунды.
-on findByLabel(el, target, depth)
+on findByLabel(el, target, depth, deepFirst)
 	if depth > 9 then return missing value
 	tell application "System Events"
 		set kids to {}
@@ -125,10 +125,12 @@ on findByLabel(el, target, depth)
 		-- Сначала вглубь: нужен САМЫЙ КОНКРЕТНЫЙ элемент. Контейнер (строка списка,
 		-- ячейка) часто отдаёт ту же подпись, что и текст внутри, но клик по строке
 		-- SwiftUI-список не выделяет — а клик по тексту внутри работает.
-		repeat with k in kids
-			set found to my findByLabel(k, target, depth + 1)
-			if found is not missing value then return found
-		end repeat
+		if deepFirst then
+			repeat with k in kids
+				set found to my findByLabel(k, target, depth + 1, true)
+				if found is not missing value then return found
+			end repeat
+		end if
 
 		set n to count of kids
 		repeat with i from 1 to n
@@ -149,6 +151,14 @@ on findByLabel(el, target, depth)
 			if lbl contains target then return item i of kids
 		end repeat
 
+		-- Обход «сверху вниз» (check): подпись почти всегда на верхних уровнях,
+		-- поэтому сначала уровень, потом вглубь — это в разы дешевле.
+		if not deepFirst then
+			repeat with k in kids
+				set found to my findByLabel(k, target, depth + 1, false)
+				if found is not missing value then return found
+			end repeat
+		end if
 	end tell
 	return missing value
 end findByLabel
@@ -190,15 +200,22 @@ on run argv
 
 		else if mode is "check" then
 			set target to item 2 of argv
-			if my findRetrying(w, target) is not missing value then
-				return "PASS  " & target
-			else
-				return "FAIL  " & target & " — не найдено на экране"
-			end if
+			-- Ищем во ВСЕХ окнах процесса: окно настроек (Cmd+,) — отдельное,
+			-- и «window 1» не обязательно то, что видит пользователь: окна
+			-- накапливаются при повторных open -a.
+			-- check ищет «сверху вниз»: подпись обычно на верхних уровнях,
+			-- полный обход вглубь стоил бы секунды на каждом окне.
+			if my findRetrying(w, target, false) is not missing value then return "PASS  " & target
+			repeat with ww in windows
+				if my findByLabel(ww, target, 0, false) is not missing value then
+					return "PASS  " & target & " (окно: " & (name of ww) & ")"
+				end if
+			end repeat
+			return "FAIL  " & target & " — не найдено ни в одном окне"
 
 		else if mode is "click" then
 			set target to item 2 of argv
-			set el to my findRetrying(w, target)
+			set el to my findRetrying(w, target, true)
 			if el is missing value then return "FAIL  клик: " & target & " — не найдено"
 			try
 				click el
