@@ -22,6 +22,19 @@ let package = Package(
                 .product(name: "WhisperKit", package: "WhisperKit")
             ],
             path: "Sources/SecondBrain",
+            // Модульные правила для кодовых агентов (задача 44): лежат рядом с кодом,
+            // чтобы подхватываться автоматически, но ресурсами сборки не являются.
+            exclude: [
+                "Chat/CLAUDE.md",
+                "Meetings/CLAUDE.md",
+                "RAG/CLAUDE.md",
+                "LLM/CLAUDE.md",
+                "Tools/CLAUDE.md",
+                "Editor/CLAUDE.md",
+                "Audio/CLAUDE.md",
+                "Vault/CLAUDE.md",
+                "GitSync/CLAUDE.md"
+            ],
             resources: [
                 .copy("Resources/AppIcon.icns")
             ]
@@ -30,6 +43,8 @@ let package = Package(
             name: "SecondBrainTests",
             dependencies: ["SecondBrain"],
             path: "Tests/SecondBrainTests",
+            // Правила написания тестов для агентов — не ресурс сборки (задача 44).
+            exclude: ["CLAUDE.md"],
             resources: [
                 // JSON/SSE-фикстуры реальных ответов облачных API (задача 08).
                 .copy("Fixtures")
