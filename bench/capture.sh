@@ -28,6 +28,21 @@ fi
 
 mkdir -p "$OUT"
 
+# Генерация сохраняется ВЕТКОЙ, а не только патчем: так дифф смотрится штатными
+# инструментами (git diff, Claude Code, IDE), а после отката main работа не
+# теряется и генерации сравниваются между собой напрямую.
+BRANCH="bench/$LABEL"
+ORIG_BRANCH="$(git rev-parse --abbrev-ref HEAD)"
+git branch -f "$BRANCH" HEAD
+if [ -n "$(git status --porcelain)" ]; then
+  # Хвост коммитим НА ВЕТКУ и возвращаемся: иначе служебный коммит остаётся
+  # в истории рабочей ветки и живёт там, если забыть про откат.
+  git switch -q "$BRANCH"
+  git add -A
+  git commit -q -m "bench $LABEL: хвост, не закоммиченный агентом"
+  git switch -q "$ORIG_BRANCH"
+fi
+
 # Дифф от базы до рабочего дерева: HEAD может быть и с коммитами, и без —
 # так захватывается работа независимо от того, закоммитил её агент или нет.
 git add -AN >/dev/null 2>&1            # чтобы новые файлы попали в дифф
@@ -58,5 +73,7 @@ python3 "$ROOT/bench/render_diff.py" "$OUT/$LABEL.patch" "$OUT/$LABEL.html" "$LA
 
 cat "$OUT/$LABEL-stats.txt"
 echo
-echo "OK    $OUT/$LABEL.patch, $LABEL.html, $LABEL-stats.txt"
-echo "      откат: git reset --hard $BASE && git clean -fd"
+echo "OK    ветка $BRANCH + $OUT/$LABEL.{patch,html} + $LABEL-stats.txt"
+echo "      смотреть дифф:  git diff $BASE..$BRANCH"
+echo "      сравнить с др.: git diff bench/gen1..bench/gen2"
+echo "      откат main:     git reset --hard $BASE && git clean -fd"
