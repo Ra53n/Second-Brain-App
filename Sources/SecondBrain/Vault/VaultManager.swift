@@ -239,8 +239,52 @@ final class VaultManager: ObservableObject {
         perform { try VaultFileOperations.createFile(in: folder, named: name) }
     }
 
+    /// Переименование + починка входящих [[ссылок]] (задача 54). Вхождения собираются
+    /// ДО переименования файла (старый URL), переписываются best-effort ПОСЛЕ его
+    /// успеха — упавшее переименование ссылок не трогает вовсе.
     func rename(_ node: VaultNode, to newName: String) {
-        perform { try VaultFileOperations.rename(node.url, to: newName) }
+        let oldURL = node.url
+        let occurrences = linkIndex?.backlinks(to: oldURL) ?? []
+        let oldTargets = Set(occurrences.map { $0.link.target.lowercased() })
+
+        let newURL: URL
+        do {
+            newURL = try VaultFileOperations.rename(oldURL, to: newName)
+        } catch let error as VaultError {
+            lastError = error
+            rebuild()
+            return
+        } catch {
+            lastError = .operationFailed(error.localizedDescription)
+            rebuild()
+            return
+        }
+
+        if !oldTargets.isEmpty {
+            let newBaseName = newURL.deletingPathExtension().lastPathComponent
+            let sourceFiles = Set(occurrences.map { $0.sourceFile }).sorted { $0.path < $1.path }
+            var failedNames: [String] = []
+            for sourceFile in sourceFiles {
+                do {
+                    let text = try String(contentsOf: sourceFile, encoding: .utf8)
+                    let updated = LinkRewriter.rewrite(in: text, oldTargets: oldTargets, newBaseName: newBaseName)
+                    if updated != text {
+                        try VaultFileOperations.overwrite(sourceFile, contents: updated)
+                    }
+                } catch {
+                    failedNames.append(sourceFile.lastPathComponent)
+                }
+            }
+            if !failedNames.isEmpty {
+                lastError = .operationFailed("не удалось обновить ссылки в: \(failedNames.joined(separator: ", "))")
+            }
+        }
+
+        open(newURL)
+        if linkIndex?.refresh() == true {
+            linkVersion += 1
+        }
+        rebuild()
     }
 
     func move(_ node: VaultNode, into folder: VaultNode) {

@@ -309,6 +309,139 @@ final class VaultManagerTests: VaultTestCase {
     }
 }
 
+// MARK: - VaultManager.rename + починка [[ссылок]] (задача 54)
+
+@MainActor
+final class VaultManagerRenameLinksTests: VaultTestCase {
+
+    /// Открывает vault и дожидается фонового построения LinkIndex (Task.detached
+    /// в openVault) — без этого backlinks(to:) в rename() всегда пуст.
+    private func openVaultAndWaitForLinkIndex(_ manager: VaultManager) {
+        let built = expectation(description: "linkIndex построен")
+        let cancellable = manager.$linkVersion.dropFirst().sink { _ in built.fulfill() }
+        manager.openVault(at: tempDir)
+        wait(for: [built], timeout: 5.0)
+        cancellable.cancel()
+    }
+
+    private func makeManager() throws -> (VaultManager, String) {
+        let suiteName = "VaultManagerRenameLinksTests-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        return (VaultManager(defaults: defaults, restoreLast: false), suiteName)
+    }
+
+    /// Критерий приёмки: rename чинит bare/alias/heading/path-формы ссылок во всех
+    /// файлах-источниках на диске, переименовывает файл, lastError == nil.
+    func testRenameFixesAllLinkFormsInSourceFiles() throws {
+        try makeFile("Old.md", contents: "тело заметки")
+        try makeFile("Источник 1.md", contents: "смотри [[Old]] и [[Old|подпись]] тут")
+        try makeFile("Папка/Источник 2.md", contents: "путь [[Old#Раздел]] и снова [[Old]]")
+        let (manager, suite) = try makeManager()
+        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
+        openVaultAndWaitForLinkIndex(manager)
+
+        let node = try XCTUnwrap(manager.root?.find(tempDir.appendingPathComponent("Old.md")))
+        manager.rename(node, to: "New.md")
+
+        XCTAssertNil(manager.lastError)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: tempDir.appendingPathComponent("Old.md").path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: tempDir.appendingPathComponent("New.md").path))
+
+        let source1 = try String(contentsOf: tempDir.appendingPathComponent("Источник 1.md"), encoding: .utf8)
+        XCTAssertEqual(source1, "смотри [[New]] и [[New|подпись]] тут")
+        let source2 = try String(contentsOf: tempDir.appendingPathComponent("Папка/Источник 2.md"), encoding: .utf8)
+        XCTAssertEqual(source2, "путь [[New#Раздел]] и снова [[New]]")
+
+        manager.closeVault()
+    }
+
+    /// Битый ввод (пустое имя, «/» в имени, уже занятое имя) — rename падает
+    /// ДО починки ссылок: lastError выставлен, файл-источник и Old.md не тронуты.
+    func testRenameWithInvalidOrDuplicateNameLeavesSourceUntouched() throws {
+        try makeFile("Old.md", contents: "тело")
+        try makeFile("Источник.md", contents: "ссылка [[Old]] тут")
+        try makeFile("Занято.md")
+        let (manager, suite) = try makeManager()
+        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
+        openVaultAndWaitForLinkIndex(manager)
+
+        for badName in ["", "с/слэшем.md", "Занято.md"] {
+            let node = try XCTUnwrap(manager.root?.find(tempDir.appendingPathComponent("Old.md")), badName)
+            manager.rename(node, to: badName)
+
+            XCTAssertNotNil(manager.lastError, badName)
+            XCTAssertTrue(FileManager.default.fileExists(atPath: tempDir.appendingPathComponent("Old.md").path), badName)
+            let source = try String(contentsOf: tempDir.appendingPathComponent("Источник.md"), encoding: .utf8)
+            XCTAssertEqual(source, "ссылка [[Old]] тут", badName)
+        }
+
+        manager.closeVault()
+    }
+
+    /// Дубли имён: bare `[[Old]]` глобально резолвится в корневой Old.md (короче
+    /// путь), `[[Архив/Old]]` — явно в Архив/Old.md. Переименование Архив/Old не
+    /// должно трогать bare-ссылку, ведущую в другой файл.
+    func testRenameDuplicateOnlyFixesBacklinkThatResolvesToIt() throws {
+        try makeFile("Old.md", contents: "корневая")
+        try makeFile("Архив/Old.md", contents: "архивная")
+        try makeFile("Заметка со ссылками.md", contents: "родной [[Old]] и архивный [[Архив/Old]]")
+        let (manager, suite) = try makeManager()
+        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
+        openVaultAndWaitForLinkIndex(manager)
+
+        // Подтверждаем предпосылку теста: bare резолвится в корень, а не в архив.
+        XCTAssertEqual(manager.linkIndex?.resolve("Old")?.path, tempDir.appendingPathComponent("Old.md").path)
+
+        let archived = try XCTUnwrap(manager.root?.find(tempDir.appendingPathComponent("Архив/Old.md")))
+        manager.rename(archived, to: "New.md")
+
+        XCTAssertNil(manager.lastError)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: tempDir.appendingPathComponent("Архив/New.md").path))
+        let source = try String(contentsOf: tempDir.appendingPathComponent("Заметка со ссылками.md"), encoding: .utf8)
+        XCTAssertEqual(source, "родной [[Old]] и архивный [[Архив/New]]")
+
+        manager.closeVault()
+    }
+
+    /// Ошибка записи ОДНОГО источника (папка без прав на запись) не отменяет
+    /// переименование файла и не отменяет починку остальных источников —
+    /// лучшее усилие, ошибка сводится в lastError с именем проблемного файла.
+    func testRenameContinuesAfterOneSourceWriteFailsAndReportsIt() throws {
+        try makeFile("Old.md", contents: "тело")
+        try makeFile("Обычный источник.md", contents: "[[Old]] тут")
+        let protectedFolder = try makeDir("Защищённая папка")
+        try makeFile("Защищённая папка/Источник.md", contents: "[[Old]] тоже")
+        // Каталог без права записи: атомарная перезапись не сможет создать
+        // временный файл рядом — единственный надёжный способ смоделировать
+        // отказ записи на temp-FS без запуска от root.
+        try FileManager.default.setAttributes([.posixPermissions: 0o555], ofItemAtPath: protectedFolder.path)
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: protectedFolder.path) }
+
+        let (manager, suite) = try makeManager()
+        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
+        openVaultAndWaitForLinkIndex(manager)
+
+        let node = try XCTUnwrap(manager.root?.find(tempDir.appendingPathComponent("Old.md")))
+        manager.rename(node, to: "New.md")
+
+        // Переименование самого файла не откатывается частичным сбоем записи источников.
+        XCTAssertTrue(FileManager.default.fileExists(atPath: tempDir.appendingPathComponent("New.md").path))
+
+        let ok = try String(contentsOf: tempDir.appendingPathComponent("Обычный источник.md"), encoding: .utf8)
+        XCTAssertEqual(ok, "[[New]] тут")
+
+        let blocked = try String(
+            contentsOf: tempDir.appendingPathComponent("Защищённая папка/Источник.md"), encoding: .utf8
+        )
+        XCTAssertEqual(blocked, "[[Old]] тоже", "недоступный на запись источник остаётся нетронутым")
+
+        let message = try XCTUnwrap(manager.lastError?.errorDescription)
+        XCTAssertTrue(message.contains("Источник.md"), message)
+
+        manager.closeVault()
+    }
+}
+
 // MARK: - Debouncer
 
 final class DebouncerTests: XCTestCase {

@@ -991,6 +991,7 @@ struct MarkdownEditorView: NSViewRepresentable {
             func s(_ r: NSRange) -> NSRange { NSRange(location: r.location + delta, length: r.length) }
             return Wikilink(
                 range: s(link.range),
+                targetRange: s(link.targetRange),
                 target: link.target,
                 heading: link.heading,
                 alias: link.alias,

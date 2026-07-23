@@ -47,7 +47,7 @@ final class IncrementalHighlightTests: XCTestCase {
     }
     private func shiftLink(_ l: Wikilink, by d: Int) -> Wikilink {
         func s(_ r: NSRange) -> NSRange { NSRange(location: r.location + d, length: r.length) }
-        return Wikilink(range: s(l.range), target: l.target, heading: l.heading, alias: l.alias,
+        return Wikilink(range: s(l.range), targetRange: s(l.targetRange), target: l.target, heading: l.heading, alias: l.alias,
                         concealShape: .init(hidePrefix: s(l.concealShape.hidePrefix), hideSuffix: s(l.concealShape.hideSuffix), visible: s(l.concealShape.visible)))
     }
 

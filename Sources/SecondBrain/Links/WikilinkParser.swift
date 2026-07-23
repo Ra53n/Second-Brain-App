@@ -28,6 +28,8 @@ import Foundation
 struct Wikilink: Equatable {
     /// Диапазон всей конструкции [[...]] в UTF-16.
     let range: NSRange
+    /// Точный диапазон сегмента цели (без пробелов) — для переписывания при переименовании (задача 54).
+    let targetRange: NSRange
     /// Имя целевой заметки (возможно с путём «папка/Имя»), без расширения.
     let target: String
     /// Заголовок секции после «#», если есть.
@@ -121,7 +123,7 @@ enum WikilinkParser {
             visible: visible
         )
 
-        return Wikilink(range: matchRange, target: target, heading: heading, alias: alias, concealShape: shape)
+        return Wikilink(range: matchRange, targetRange: targetRange, target: target, heading: heading, alias: alias, concealShape: shape)
     }
 
     /// Диапазон без ведущих/хвостовых пробелов — абсолютные UTF-16-координаты.

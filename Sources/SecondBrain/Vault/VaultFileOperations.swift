@@ -121,6 +121,13 @@ enum VaultFileOperations {
         return target
     }
 
+    /// Перезаписывает содержимое существующего .md на месте (атомарно). В отличие от
+    /// writeConflictCopy пишет в тот же файл — единственная точка правки содержимого при
+    /// переименовании со ссылками (инвариант №1).
+    static func overwrite(_ url: URL, contents: String) throws {
+        try Data(contents.utf8).write(to: url, options: .atomic)
+    }
+
     // MARK: - Внутреннее
 
     /// Подбирает свободный URL: `base.ext`, `base 2.ext`, `base 3.ext`, …
