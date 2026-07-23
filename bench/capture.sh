@@ -33,6 +33,7 @@ mkdir -p "$OUT"
 # теряется и генерации сравниваются между собой напрямую.
 BRANCH="bench/$LABEL"
 ORIG_BRANCH="$(git rev-parse --abbrev-ref HEAD)"
+DEFAULT_BRANCH=main
 git branch -f "$BRANCH" HEAD
 if [ -n "$(git status --porcelain)" ]; then
   # Хвост коммитим НА ВЕТКУ и возвращаемся: иначе служебный коммит остаётся
@@ -76,4 +77,4 @@ echo
 echo "OK    ветка $BRANCH + $OUT/$LABEL.{patch,html} + $LABEL-stats.txt"
 echo "      смотреть дифф:  git diff $BASE..$BRANCH"
 echo "      сравнить с др.: git diff bench/gen1..bench/gen2"
-echo "      откат main:     git reset --hard $BASE && git clean -fd"
+echo "      уборка:         git switch $DEFAULT_BRANCH && git branch -D bench/work"
