@@ -239,8 +239,42 @@ final class VaultManager: ObservableObject {
         perform { try VaultFileOperations.createFile(in: folder, named: name) }
     }
 
+    /// Переименовывает заметку/папку. Для `.md`-файла дополнительно чинит все
+    /// `[[ссылки]]` на неё в других заметках (задача 52): цель ссылки меняет
+    /// базовое имя, сохраняя алиас, `#заголовок` и путь-префикс.
     func rename(_ node: VaultNode, to newName: String) {
-        perform { try VaultFileOperations.rename(node.url, to: newName) }
+        let oldURL = node.url
+        // Ссылки на заметку собираем ДО переименования, по свежему индексу:
+        // после rename резолв уже указывал бы на новый URL.
+        var backlinks: [LinkOccurrence] = []
+        if !node.isDirectory, let linkIndex {
+            linkIndex.refresh()
+            backlinks = linkIndex.backlinks(to: oldURL)
+        }
+
+        var renamedURL: URL?
+        perform {
+            let newURL = try VaultFileOperations.rename(oldURL, to: newName)
+            renamedURL = newURL
+            return newURL
+        }
+
+        // Чиним ссылки, только если файл реально переименован и остался .md-заметкой.
+        guard let newURL = renamedURL,
+              newURL.standardizedFileURL != oldURL.standardizedFileURL,
+              newURL.pathExtension.lowercased() == "md",
+              !backlinks.isEmpty
+        else {
+            if let linkIndex, linkIndex.refresh() { linkVersion += 1 }
+            return
+        }
+        let newBase = newURL.deletingPathExtension().lastPathComponent
+        let failures = LinkRenameApplier.apply(backlinks: backlinks, to: newBase)
+        if !failures.isEmpty {
+            lastError = .operationFailed("не удалось обновить ссылки в файлах: \(failures.joined(separator: ", "))")
+        }
+        // Индекс перестроить: изменились и переименованный файл, и правленые источники.
+        if let linkIndex, linkIndex.refresh() { linkVersion += 1 }
     }
 
     func move(_ node: VaultNode, into folder: VaultNode) {
