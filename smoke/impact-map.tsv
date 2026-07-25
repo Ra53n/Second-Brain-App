@@ -1,0 +1,35 @@
+# impact-map.tsv — модуль → раздел UI → смоук-сценарий → тест-фильтр (задача 59).
+# Данные для задачи 60 (выбор смоука/тестов по дифу); здесь только формат и наполнение.
+#
+# Формат (TSV, реальные табы): module_glob<TAB>section<TAB>scenario<TAB>test_filter
+#   module_glob — префикс пути изменённого файла относительно Sources/SecondBrain/,
+#                 сравнение по startswith после отбрасывания хвостового «/**»
+#                 (Meetings/** матчит и Meetings/MeetingFSM.swift, и Meetings/Sub/Foo.swift).
+#                 Строки идут от специфичных модулей к общему фолбэку — «App/**» последняя.
+#   section     — раздел UI (маркеры — section_marker в ui.sh): Встречи/Заметки/Чат/
+#                 Пайплайны/Настройки; «*» — правка широкая, не привязана к разделу.
+#   scenario    — путь к smoke/*.txt для `ui.sh run <scenario> --html <out>`;
+#                 «*» — широкий диф, прогнать все сценарии.
+#   test_filter — regex для `swift test --filter`. Важно: matчит РЕАЛЬНЫЕ классы
+#                 XCTestCase, не имена файлов — swift test фильтрует по классу теста,
+#                 а не по файлу (у одного *Tests.swift файла нередко несколько классов
+#                 с другими именами; проверено эмпирически: --filter ToolPermissionsTests
+#                 матчит 0 тестов, хотя файл называется так). «*» — без --filter, весь
+#                 набор. Пересечение фильтров между строками не ошибка: избыточный
+#                 прогон безопаснее пропущенного.
+Meetings/**	Встречи	smoke/meetings.txt	Meeting|RelativeFolderPaths|ResolvedDefaultSource|TranscriptionRoutePresenter|CombinedTranscriptText
+Audio/**	Встречи	smoke/meetings.txt	AudioFileConverter|RecordingMetadata|RecordingNamer|RecordingSession|AudioLevelMeter|SystemAudioDeviceResolver
+Editor/**	Заметки	smoke/notes.txt	Conceal|Checklist|MarkdownHighlighter|MarkdownEditingCommands|IncrementalHighlight|ParagraphStyling|RevealHeightStability|StructuralEditDetection|Block|CodeRegion|CursorScrollPreservation
+Vault/**	Заметки	smoke/notes.txt	Vault|Debouncer
+Links/**	Заметки	smoke/notes.txt	Wikilink|Frontmatter|FuzzyMatch
+Search/**	Заметки	smoke/notes.txt	FTSQuery
+Chat/**	Чат	smoke/chat.txt	Chat|Agent|Approval|Slash|Regenerate|RagBindings|MessageMetrics|DiffSplitter|GitChangesOverview|ProjectRepoState|ToolSourceSummary|RagChipSummary|ProjectWizardState|AvailableModelChoices|ProjectToolCatalog
+RAG/**	Чат	smoke/chat.txt	RagRetriever|RagRerank|MarkdownChunker|RagIndex|KnowledgeMerge|RagSearchTool|Vector|FolderDocsLoader|FolderIndexService|KnowledgeBaseStore|ProjectDocsRag
+MCP/**	Чат	smoke/chat.txt	MCP|ToolUseLoop|ToolSchemaConversion|OllamaToolParsing
+Tools/**	Чат	smoke/chat.txt	FileTools|RunCommandTool|ProjectTools|ProjectDocsContext|ProjectDocsLoader|ProjectDocsPrompt|GitBranchParser|GitToolsIntegration|SafePath|ToolExecutor|ToolRegistry|ToolPermission|ToolRiskClassifier|GitDiffTool|UnifiedDiff
+Pipelines/**	Пайплайны	smoke/pipelines.txt	Pipeline|Cron|GitHubClient|PRWatch|PRReference|CodeReview|ReviewSlash
+Settings/**	Настройки	smoke/settings.txt	Settings|RoutingValidator|KeyVerifier
+LLM/**	Настройки	smoke/settings.txt	FunctionRout|HashingEmbedder|KeyStore|LLMDTO|Provider|RagRouting|AudioChunker|MultipartFormData|SSEStream|AudioMIME|DeepgramQueryItems
+LocalRuntime/**	Настройки	smoke/settings.txt	BackgroundProcessRegistry|IdleShutdownPolicy|Ollama|Whisper
+GitSync/**	Настройки	smoke/settings.txt	AutoBackup|GitClientIntegration|GitRemoteURL|GitStatusParser|GitignoreAdvisor
+App/**	*	*	*

@@ -15,6 +15,7 @@
 #   ./scripts/ui.sh list                   интерактивные элементы экрана (компактно)
 #   ./scripts/ui.sh dump                   всё дерево (дорого, для разбора)
 #   ./scripts/ui.sh run smoke/meetings.txt прогон сценария, один компактный отчёт
+#   ./scripts/ui.sh run smoke/meetings.txt --html out.html   + самодостаточный HTML (задача 59)
 #
 # Переменные: UI_TIMEOUT (сек, по умолчанию 15), SMOKE_ALLOW_DESTRUCTIVE=1 —
 # разрешить нажатия из запретного списка (только на тестовом vault!).
@@ -85,8 +86,22 @@ cmd_preflight() {
 }
 
 cmd_run() {
-  local file="$1" pass=0 fail=0 line action arg
+  local file="${1:?файл сценария}" pass=0 fail=0 line action arg out status
+  local html_out="" steps_tsv="" dump_file="" dump_taken=0
+  shift
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --html) html_out="${2:?путь для HTML}"; shift 2 ;;
+      *) echo "FAIL  неизвестный флаг: $1"; return 1 ;;
+    esac
+  done
   [ -f "$file" ] || { echo "FAIL  сценарий не найден: $file"; return 1; }
+
+  if [ -n "$html_out" ]; then
+    steps_tsv=$(mktemp) && dump_file=$(mktemp)
+    trap 'rm -f "$steps_tsv" "$dump_file"' RETURN
+  fi
+
   while IFS= read -r line; do
     [[ -z "$line" || "$line" == \#* ]] && continue
     action="${line%% *}"; arg="${line#* }"
@@ -97,10 +112,41 @@ cmd_run() {
       *)     out="FAIL  неизвестный шаг: $line" ;;
     esac
     echo "$out"
-    [[ "$out" == FAIL* || "$out" == ТАЙМАУТ* ]] && fail=$((fail+1)) || pass=$((pass+1))
+
+    if [[ "$out" == FAIL* || "$out" == ТАЙМАУТ* ]]; then
+      status=FAIL; fail=$((fail+1))
+    elif [[ "$out" == SKIP* ]]; then
+      status=SKIP; pass=$((pass+1))
+    else
+      status=PASS; pass=$((pass+1))
+    fi
+
+    if [ -n "$html_out" ]; then
+      printf '%s\t%s\t%s\t%s\n' "$status" "$action" "$arg" "$out" >> "$steps_tsv"
+      # Снимок только на первом сломанном шаге: дальше он один и тот же экран.
+      if [ "$status" = "FAIL" ] && [ "$dump_taken" -eq 0 ]; then
+        osa dump > "$dump_file" 2>&1
+        dump_taken=1
+      fi
+    fi
+
     [[ "$out" == ТАЙМАУТ* ]] && break
   done < "$file"
   echo "ИТОГ: $pass пройдено, $fail провалено — $file"
+
+  if [ -n "$html_out" ]; then
+    # /bin/bash системный (3.2) — без массивов: пустой массив под set -u падает
+    # «unbound variable», поэтому ветвим на дамп есть/нет явно.
+    if [ "$dump_taken" -eq 1 ]; then
+      python3 "$ROOT/scripts/smoke_report.py" --scenario "$(basename "$file")" \
+        --steps "$steps_tsv" --out "$html_out" --dump "$dump_file"
+    else
+      python3 "$ROOT/scripts/smoke_report.py" --scenario "$(basename "$file")" \
+        --steps "$steps_tsv" --out "$html_out"
+    fi
+    echo "HTML: $html_out"
+  fi
+
   [ $fail -eq 0 ]
 }
 
@@ -178,6 +224,6 @@ case "${1:-}" in
   list)      osa list ;;
   dump)      osa dump ;;
   window)    osa window ;;
-  run)       cmd_run "${2:?файл сценария}" ;;
-  *) sed -n '2,25p' "$0"; exit 1 ;;
+  run)       shift; cmd_run "$@" ;;
+  *) sed -n '2,21p' "$0"; exit 1 ;;
 esac
