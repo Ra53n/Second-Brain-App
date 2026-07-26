@@ -40,8 +40,10 @@ final class ProjectToolsProvider {
                 return block
             }
         }
+        let budget = settingsStore.settings.helpContextBudget
         return await Task.detached(priority: .userInitiated) {
-            ProjectDocsContext.build(files: ProjectDocsLoader.loadFiles(repoRoot: root))
+            ProjectDocsContext.build(files: ProjectDocsLoader.loadFiles(repoRoot: root),
+                                    budget: budget)
         }.value
     }
 

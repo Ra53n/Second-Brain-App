@@ -31,10 +31,16 @@ struct AppSettings: Codable, Equatable {
     /// (задача 21). Пусто — инструменты недоступны. Хранится строкой:
     /// приложение не в sandbox, security-scoped bookmark не нужен.
     var projectRepoPath = ""
+    /// Бюджет контекста для /help (символы, ~4 на токен). Дефолт 32000 = ~8 тыс.
+    /// токенов. Задача 80.
+    var helpContextBudget = 32_000
+
+    /// Допустимые границы `helpContextBudget` — общие для UI-валидации и декодирования.
+    static let helpContextBudgetRange = 1_000...1_000_000
 
     enum CodingKeys: String, CodingKey {
         case showsDotItems, restoreLastVault, autoBackupMinutes, localIdleMinutes
-        case projectRepoPath
+        case projectRepoPath, helpContextBudget
     }
 
     init() {}
@@ -47,6 +53,11 @@ struct AppSettings: Codable, Equatable {
         autoBackupMinutes = try c.decodeIfPresent(Int.self, forKey: .autoBackupMinutes) ?? d.autoBackupMinutes
         localIdleMinutes = try c.decodeIfPresent(Int.self, forKey: .localIdleMinutes) ?? d.localIdleMinutes
         projectRepoPath = try c.decodeIfPresent(String.self, forKey: .projectRepoPath) ?? d.projectRepoPath
+        // Битый/устаревший settings.json может содержать значение за границами —
+        // зажимаем при декодировании, а не только при вводе в UI.
+        let rawHelpContextBudget = try c.decodeIfPresent(Int.self, forKey: .helpContextBudget) ?? d.helpContextBudget
+        let range = AppSettings.helpContextBudgetRange
+        helpContextBudget = min(max(rawHelpContextBudget, range.lowerBound), range.upperBound)
     }
 }
 

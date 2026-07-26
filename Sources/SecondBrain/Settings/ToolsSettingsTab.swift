@@ -27,9 +27,16 @@ struct ToolsSettingsTab: View {
     /// Каталог встроенных инструментов статичен — считается один раз.
     private static let builtinCatalog = ToolRegistry.projectToolCatalog()
 
+    /// Черновой текст бюджета `/help`: клэмп применяется на коммите (Enter/потеря
+    /// фокуса), не на каждый символ — иначе набор «50000» обрубается уже на первой
+    /// цифре («5» < 1000 → мгновенный клэмп до 1000).
+    @State private var helpContextBudgetDraft = ""
+    @FocusState private var helpContextBudgetFocused: Bool
+
     var body: some View {
         Form {
             builtinToolsSection
+            helpContextBudgetSection
             ProjectDocsStatusSection(provider: projectToolsProvider,
                                      repoPath: settingsStore.settings.projectRepoPath,
                                      onOpenSettingsTab: { tab in
@@ -46,6 +53,43 @@ struct ToolsSettingsTab: View {
         .task(id: settingsStore.settings.projectRepoPath) {
             await refreshProjectRepoWarning()
         }
+    }
+
+    private var helpContextBudgetSection: some View {
+        Section("Контекст /help") {
+            HStack {
+                Text("Бюджет контекста (символы)")
+                Spacer()
+                TextField("32000", text: $helpContextBudgetDraft)
+                    .frame(width: 100)
+                    .textFieldStyle(.roundedBorder)
+                    .multilineTextAlignment(.trailing)
+                    .focused($helpContextBudgetFocused)
+                    .onSubmit { commitHelpContextBudget() }
+                    .onChange(of: helpContextBudgetFocused) { wasFocused, isFocused in
+                        if wasFocused && !isFocused { commitHelpContextBudget() }
+                    }
+            }
+            Text("Максимум символов документации проекта в контексте /help (≈4 символа на токен). Минимум 1000, максимум 1000000.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+        .onAppear {
+            helpContextBudgetDraft = String(settingsStore.settings.helpContextBudget)
+        }
+    }
+
+    /// Парсит черновик, зажимает в границы `AppSettings.helpContextBudgetRange`
+    /// и сохраняет; нечисловой ввод откатывается к текущему значению настройки.
+    private func commitHelpContextBudget() {
+        let range = AppSettings.helpContextBudgetRange
+        guard let value = Int(helpContextBudgetDraft) else {
+            helpContextBudgetDraft = String(settingsStore.settings.helpContextBudget)
+            return
+        }
+        let clamped = min(max(value, range.lowerBound), range.upperBound)
+        settingsStore.settings.helpContextBudget = clamped
+        helpContextBudgetDraft = String(clamped)
     }
 
     private var builtinToolsSection: some View {

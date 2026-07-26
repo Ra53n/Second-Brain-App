@@ -44,14 +44,12 @@ enum ProjectDocsLoader {
 
 /// Сборка блока [PROJECT_DOCS] из файлов под бюджет символов.
 enum ProjectDocsContext {
-    /// Суммарный лимит символов блока (≈ 8 тыс. токенов).
-    static let defaultBudget = 32_000
-
     /// README (первый файл) получает приоритет естественно: файлы кладутся
     /// по порядку, пока есть бюджет; не влезший обрезается с пометкой,
-    /// последующие пропускаются с перечислением имён.
+    /// последующие пропускаются с перечислением имён. Бюджет в символах —
+    /// ~4 символа на токен; дефолт 32000 = ~8 тыс. токенов.
     static func build(files: [(name: String, content: String)],
-                      budget: Int = defaultBudget) -> String {
+                      budget: Int = 32_000) -> String {
         guard !files.isEmpty else { return "" }
         var parts: [String] = []
         var remaining = budget

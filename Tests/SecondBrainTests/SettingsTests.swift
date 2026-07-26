@@ -38,6 +38,34 @@ final class AppSettingsCodableTests: XCTestCase {
         XCTAssertTrue(decoded.restoreLastVault)
         XCTAssertEqual(decoded.localIdleMinutes, 10)
         XCTAssertEqual(decoded.projectRepoPath, "", "поле задачи 21 получает дефолт")
+        XCTAssertEqual(decoded.helpContextBudget, 32_000, "поле задачи 80 получает дефолт")
+    }
+
+    func testOldJSONWithoutHelpContextBudgetLoadsWithDefault() throws {
+        // Старый файл до задачи 80 без helpContextBudget обязан загружаться с дефолтом 32000.
+        let old = #"{"autoBackupMinutes": 5, "projectRepoPath": "/tmp/repo"}"#
+        let decoded = try JSONDecoder().decode(AppSettings.self, from: Data(old.utf8))
+        XCTAssertEqual(decoded.helpContextBudget, 32_000)
+        XCTAssertEqual(decoded.autoBackupMinutes, 5)
+        XCTAssertEqual(decoded.projectRepoPath, "/tmp/repo")
+    }
+
+    func testHelpContextBudgetOutOfRangeClampedOnDecode() throws {
+        // Вручную отредактированный/устаревший settings.json может содержать значение
+        // за границами (отрицательное, ноль, огромное) — декодер обязан зажать его,
+        // а не пропустить в обход UI-валидации.
+        let cases: [(json: Int, expected: Int, name: String)] = [
+            (-100, 1_000, "отрицательное"),
+            (0, 1_000, "ноль"),
+            (500, 1_000, "ниже минимума"),
+            (2_000_000, 1_000_000, "выше максимума"),
+            (Int.max, 1_000_000, "экстремум"),
+        ]
+        for c in cases {
+            let json = #"{"helpContextBudget": \#(c.json)}"#
+            let decoded = try JSONDecoder().decode(AppSettings.self, from: Data(json.utf8))
+            XCTAssertEqual(decoded.helpContextBudget, c.expected, c.name)
+        }
     }
 }
 
@@ -93,6 +121,14 @@ final class SettingsStoreTests: XCTestCase {
         let reloaded = SettingsStore(fileURL: fileURL, defaults: defaults)
         XCTAssertTrue(reloaded.settings.showsDotItems)
         XCTAssertEqual(reloaded.settings.localIdleMinutes, 60)
+    }
+
+    func testHelpContextBudgetPersistsAndReloads() throws {
+        let store = SettingsStore(fileURL: fileURL, defaults: defaults)
+        store.settings.helpContextBudget = 64_000
+
+        let reloaded = SettingsStore(fileURL: fileURL, defaults: defaults)
+        XCTAssertEqual(reloaded.settings.helpContextBudget, 64_000)
     }
 
     func testCorruptFileQuarantinedAndDefaultsUsed() throws {

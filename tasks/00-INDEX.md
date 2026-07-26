@@ -83,7 +83,7 @@
 | 77 | [Разбить `SettingsViews.swift` по вкладкам](77-settingsviews-split.md) | — | [x] |
 | 78 | [Переименование заметки с обновлением ссылок](78-note-rename-links.md) | — | [x] |
 | 79 | [Шаблоны заметок](79-note-templates.md) | — | [x] |
-| 80 | [Настраиваемый бюджет контекста `/help`](80-help-context-budget-setting.md) | — | [ ] |
+| 80 | [Настраиваемый бюджет контекста `/help`](80-help-context-budget-setting.md) | — | [x] |
 
 ## Рекомендуемый порядок
 
