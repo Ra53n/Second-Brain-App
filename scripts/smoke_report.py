@@ -1,15 +1,20 @@
 #!/usr/bin/env python3
-"""smoke_report.py — результат прогона ui.sh run в self-contained HTML (задача 59).
+"""smoke_report.py — результат прогона ui.sh run в self-contained HTML (задача 59, 61).
 
 Скриншоты окна невозможны (kCGWindowSharingState=0), поэтому доказательство —
 таблица PASS/FAIL шагов + AX-дамп сломанного экрана, а не картинка. Страница
 без CDN и без сети — открывается локально в любой момент.
 
-Использование:
+Одиночный сценарий (как раньше, задача 59):
     smoke_report.py --scenario <имя> --steps <tsv> --out <html> [--dump <файл>]
+
+Сводный отчёт на несколько сценариев (задача 61) — группы --scenario/--steps/--dump
+повторяются, ровно один --steps на каждый --scenario:
+    smoke_report.py --out <html> [--tests-summary "<строка>"] \\
+        --scenario a.txt --steps a.tsv [--dump a.dump] \\
+        --scenario b.txt --steps b.tsv [--dump b.dump] ...
 """
 
-import argparse
 import html
 import sys
 from datetime import datetime
@@ -38,6 +43,9 @@ details.dump { margin-top: 18px; border: 1px solid #d0d7de; border-radius: 6px; 
 details.dump > summary { padding: 8px 12px; background: #f6f8fa; cursor: pointer; font-weight: 600; }
 details.dump pre { margin: 0; padding: 12px; font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace;
                     white-space: pre-wrap; word-break: break-word; }
+section.scenario { margin: 0 0 28px; padding-bottom: 20px; border-bottom: 1px solid #d8dee4; }
+section.scenario:last-child { border-bottom: none; padding-bottom: 0; margin-bottom: 0; }
+section.scenario h2 { margin: 0 0 4px; font-size: 14px; font-weight: 600; }
 @media (prefers-color-scheme: dark) {
   body { background: #0d1117; color: #e6edf3; }
   header { background: #161b22; border-color: #30363d; }
@@ -49,10 +57,15 @@ details.dump pre { margin: 0; padding: 12px; font: 12px/1.4 ui-monospace, SFMono
   tr.skip td { background: #161b22; color: #8d96a0; }
   details.dump { border-color: #30363d; }
   details.dump > summary { background: #161b22; }
+  section.scenario { border-color: #30363d; }
 }
 """
 
 ROW_CLASS = {"PASS": "pass", "FAIL": "fail", "TIMEOUT": "fail", "SKIP": "skip"}
+
+
+class ArgError(Exception):
+    pass
 
 
 def parse_steps(path):
@@ -77,13 +90,14 @@ def render_row(status, action, arg, output):
     return f'<tr class="{cls}"><td class="status">{html.escape(status)}</td>{cells}</tr>'
 
 
-def render(scenario, steps, dump_text):
+def counts_of(steps):
     # SKIP не ломает шаг (безопасный клик пропущен намеренно) — считаем как pass,
     # той же логикой, что и ИТОГ: строка в ui.sh (fail — только FAIL/TIMEOUT).
     failed = sum(1 for status, _, _, _ in steps if status in ("FAIL", "TIMEOUT"))
-    passed = len(steps) - failed
-    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    return len(steps) - failed, failed
 
+
+def render_table_and_dump(steps, dump_text):
     rows = "".join(render_row(*step) for step in steps)
     table = (
         "<table><thead><tr><th>Статус</th><th>Шаг</th><th>Аргумент</th>"
@@ -98,41 +112,138 @@ def render(scenario, steps, dump_text):
             '<details class="dump"><summary>AX-дерево сломанного экрана</summary>'
             f"<pre>{html.escape(dump_text)}</pre></details>"
         )
+    return table, dump_html
 
+
+def page(title, header_html, body_html):
     return (
         "<!doctype html><html lang='ru'><head><meta charset='utf-8'>"
         "<meta name='viewport' content='width=device-width, initial-scale=1'>"
-        f"<title>Смоук · {html.escape(scenario)}</title><style>{CSS}</style></head><body>"
-        f"<header><h1>Смоук · {html.escape(scenario)}</h1>"
-        f"<div class='meta'>{html.escape(timestamp)} · <span class='counts'>"
-        f"<span class='ok'>{passed} пройдено</span> / <span class='bad'>{failed} провалено</span>"
-        "</span></div></header>"
-        f"<div class='wrap'>{table}{dump_html}</div></body></html>"
+        f"<title>{html.escape(title)}</title><style>{CSS}</style></head><body>"
+        f"<header>{header_html}</header>"
+        f"<div class='wrap'>{body_html}</div></body></html>"
     )
 
 
-def main():
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--scenario", required=True, help="имя сценария (в заголовок отчёта)")
-    parser.add_argument("--steps", required=True, type=Path, help="TSV: status⇥action⇥arg⇥output")
-    parser.add_argument("--out", required=True, type=Path, help="куда писать HTML")
-    parser.add_argument("--dump", type=Path, help="AX-дамп сломанного экрана (опционально)")
-    args = parser.parse_args()
+def render_single(scenario, steps, dump_text, timestamp):
+    passed, failed = counts_of(steps)
+    table, dump_html = render_table_and_dump(steps, dump_text)
+    header = (
+        f"<h1>Смоук · {html.escape(scenario)}</h1>"
+        f"<div class='meta'>{html.escape(timestamp)} · <span class='counts'>"
+        f"<span class='ok'>{passed} пройдено</span> / <span class='bad'>{failed} провалено</span>"
+        "</span></div>"
+    )
+    return page(f"Смоук · {scenario}", header, table + dump_html)
 
+
+def render_multi(scenarios, tests_summary, timestamp):
+    total_pass = total_fail = total_steps = 0
+    sections = []
+    for scenario, steps, dump_text in scenarios:
+        passed, failed = counts_of(steps)
+        total_pass += passed
+        total_fail += failed
+        total_steps += len(steps)
+        table, dump_html = render_table_and_dump(steps, dump_text)
+        sections.append(
+            f'<section class="scenario"><h2>{html.escape(scenario)}</h2>'
+            f"<div class='meta'><span class='counts'>"
+            f"<span class='ok'>{passed} пройдено</span> / <span class='bad'>{failed} провалено</span>"
+            f"</span></div>{table}{dump_html}</section>"
+        )
+
+    tests_line = f"<div class='meta'>{html.escape(tests_summary)}</div>" if tests_summary else ""
+    header = (
+        "<h1>Смоук · сводный отчёт</h1>"
+        f"<div class='meta'>{html.escape(timestamp)} · <span class='counts'>"
+        f"{len(scenarios)} сценариев · {total_steps} шагов: "
+        f"<span class='ok'>{total_pass} пройдено</span> / <span class='bad'>{total_fail} провалено</span>"
+        "</span></div>"
+        f"{tests_line}"
+    )
+    return page("Смоук · сводный отчёт", header, "".join(sections))
+
+
+def parse_args(argv):
+    """Ручной разбор вместо argparse: --scenario/--steps/--dump повторяются группами,
+    и argparse не умеет выравнивать позиционно-связанные повторяемые флаги."""
+    out = None
+    tests_summary = None
+    scenarios = []  # [{"scenario": str, "steps": str|None, "dump": str|None}]
+    current = None
+    i = 0
+    while i < len(argv):
+        tok = argv[i]
+        if tok == "--out":
+            if i + 1 >= len(argv):
+                raise ArgError("--out требует значение")
+            out = argv[i + 1]; i += 2
+        elif tok == "--tests-summary":
+            if i + 1 >= len(argv):
+                raise ArgError("--tests-summary требует значение")
+            tests_summary = argv[i + 1]; i += 2
+        elif tok == "--scenario":
+            if i + 1 >= len(argv):
+                raise ArgError("--scenario требует значение")
+            current = {"scenario": argv[i + 1], "steps": None, "dump": None}
+            scenarios.append(current)
+            i += 2
+        elif tok == "--steps":
+            if current is None:
+                raise ArgError("--steps без предшествующего --scenario")
+            if i + 1 >= len(argv):
+                raise ArgError("--steps требует значение")
+            current["steps"] = argv[i + 1]; i += 2
+        elif tok == "--dump":
+            if current is None:
+                raise ArgError("--dump без предшествующего --scenario")
+            if i + 1 >= len(argv):
+                raise ArgError("--dump требует значение")
+            current["dump"] = argv[i + 1]; i += 2
+        else:
+            raise ArgError(f"неизвестный аргумент: {tok}")
+
+    if out is None:
+        raise ArgError("нужен --out")
+    if not scenarios:
+        raise ArgError("нужен хотя бы один --scenario")
+    for s in scenarios:
+        if s["steps"] is None:
+            raise ArgError(f"--scenario {s['scenario']} без --steps")
+
+    return out, tests_summary, scenarios
+
+
+def main():
     try:
-        steps = parse_steps(args.steps)
-    except OSError as e:
-        print(f"не удалось прочитать {args.steps}: {e}", file=sys.stderr)
+        out, tests_summary, scenario_specs = parse_args(sys.argv[1:])
+    except ArgError as e:
+        print(f"ошибка аргументов: {e}", file=sys.stderr)
         return 1
 
-    dump_text = None
-    if args.dump is not None:
+    loaded = []
+    for spec in scenario_specs:
         try:
-            dump_text = args.dump.read_text(encoding="utf-8", errors="replace")
-        except OSError:
-            dump_text = None  # снимок не сохранился — отчёт всё равно должен собраться
+            steps = parse_steps(Path(spec["steps"]))
+        except OSError as e:
+            print(f"не удалось прочитать {spec['steps']}: {e}", file=sys.stderr)
+            return 1
+        dump_text = None
+        if spec["dump"] is not None:
+            try:
+                dump_text = Path(spec["dump"]).read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                dump_text = None  # снимок не сохранился — отчёт всё равно должен собраться
+        loaded.append((spec["scenario"], steps, dump_text))
 
-    args.out.write_text(render(args.scenario, steps, dump_text), encoding="utf-8")
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    if len(loaded) == 1 and tests_summary is None:
+        html_out = render_single(*loaded[0], timestamp)
+    else:
+        html_out = render_multi(loaded, tests_summary, timestamp)
+
+    Path(out).write_text(html_out, encoding="utf-8")
     return 0
 
 

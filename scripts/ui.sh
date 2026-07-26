@@ -16,6 +16,9 @@
 #   ./scripts/ui.sh dump                   всё дерево (дорого, для разбора)
 #   ./scripts/ui.sh run smoke/meetings.txt прогон сценария, один компактный отчёт
 #   ./scripts/ui.sh run smoke/meetings.txt --html out.html   + самодостаточный HTML (задача 59)
+#   ./scripts/ui.sh run smoke/meetings.txt --tsv out.tsv [--dump-to out.dump]   без HTML,
+#                                           для сборки сводного отчёта smoke-all.sh (задача 61)
+#   ./scripts/ui.sh windows                число окон процесса (проверка «окна не плодятся»)
 #
 # Переменные: UI_TIMEOUT (сек, по умолчанию 15), SMOKE_ALLOW_DESTRUCTIVE=1 —
 # разрешить нажатия из запретного списка (только на тестовом vault!).
@@ -34,16 +37,59 @@ DESTRUCTIVE='Записать|Запись|Удалить|Удаление|Push|
 
 # Окно приложения могло быть закрыто пользователем или предыдущим прогоном:
 # без него System Events отдаёт -1719, и агент уходит в бесполезные ретраи.
+# `open -a` при уже живом процессе с открытым окном НЕ плодит окна (проверено
+# эмпирически) — плодит их deep-link `open secondbrain://…` в cmd_open (см.
+# close_extra_windows ниже). Здесь `open -a` — только для двух случаев: процесс
+# мёртв или у живого процесса ноль окон; иначе — просто activate.
 ensure_window() {
   local n
+  if ! pgrep -qf "SecondBrain.app/Contents/MacOS/SecondBrain"; then
+    open -a "$APP" 2>/dev/null
+    sleep 2
+    return
+  fi
   # Считать окна можно только у активного приложения: в фоне их «ноль».
-  n=$(perl -e 'alarm 10; exec @ARGV' 10 osascript \
+  n=$(perl -e 'alarm shift @ARGV; exec @ARGV' 10 osascript \
       -e 'tell application "SecondBrain" to activate' -e 'delay 0.4' \
       -e 'tell application "System Events" to tell process "SecondBrain" to return count of windows' 2>/dev/null | tail -1)
   if [ "${n:-0}" = "0" ]; then
     open -a "$APP" 2>/dev/null
     sleep 2
   fi
+}
+
+# Печатает число окон процесса (0, если процесс не запущен) — способ убедиться,
+# что прогон не плодит окна.
+cmd_windows() {
+  if ! pgrep -qf "SecondBrain.app/Contents/MacOS/SecondBrain"; then
+    echo 0
+    return 0
+  fi
+  perl -e 'alarm shift @ARGV; exec @ARGV' 10 osascript \
+      -e 'tell application "SecondBrain" to activate' -e 'delay 0.3' \
+      -e 'tell application "System Events" to tell process "SecondBrain" to return count of windows' 2>/dev/null | tail -1
+}
+
+# Deep-link `open secondbrain://…` (cmd_open) создаёт НОВОЕ окно на каждый
+# вызов, даже для того же раздела, даже когда приложение уже на переднем плане
+# (подтверждено эмпирически) — это поведение SwiftUI-сцены, лечится не здесь
+# (Sources/ вне объёма задачи 61). Единственное окно после навигации —
+# фронтовое (только что открытое); закрываем более старые следом.
+close_extra_windows() {
+  perl -e 'alarm shift @ARGV; exec @ARGV' 10 osascript -e '
+    tell application "SecondBrain" to activate
+    delay 0.2
+    tell application "System Events" to tell process "SecondBrain"
+      repeat while (count of windows) > 1
+        set nwin to count of windows
+        try
+          click (first button of window nwin whose subrole is "AXCloseButton")
+        on error
+          exit repeat
+        end try
+        delay 0.3
+      end repeat
+    end tell' >/dev/null 2>&1
 }
 
 # Запуск osascript с жёстким таймаутом: SIGALRM убивает зависший вызов.
@@ -87,20 +133,31 @@ cmd_preflight() {
 
 cmd_run() {
   local file="${1:?файл сценария}" pass=0 fail=0 line action arg out status
-  local html_out="" steps_tsv="" dump_file="" dump_taken=0
+  local html_out="" tsv_out="" dump_out="" steps_tsv="" dump_file="" dump_taken=0
+  local need_capture=0 need_dump=0 tmp_steps=0 tmp_dump=0
   shift
   while [ $# -gt 0 ]; do
     case "$1" in
-      --html) html_out="${2:?путь для HTML}"; shift 2 ;;
+      --html)    html_out="${2:?путь для HTML}"; shift 2 ;;
+      --tsv)     tsv_out="${2:?путь для TSV}"; shift 2 ;;
+      --dump-to) dump_out="${2:?путь для дампа}"; shift 2 ;;
       *) echo "FAIL  неизвестный флаг: $1"; return 1 ;;
     esac
   done
   [ -f "$file" ] || { echo "FAIL  сценарий не найден: $file"; return 1; }
 
-  if [ -n "$html_out" ]; then
-    steps_tsv=$(mktemp) && dump_file=$(mktemp)
-    trap 'rm -f "$steps_tsv" "$dump_file"' RETURN
+  # --tsv/--dump-to (задача 61): те же шаги без генерации HTML — smoke-all.sh
+  # собирает TSV всех сценариев и зовёт smoke_report.py один раз на весь прогон.
+  if [ -n "$html_out" ] || [ -n "$tsv_out" ]; then
+    need_capture=1
+    if [ -n "$tsv_out" ]; then steps_tsv="$tsv_out"; else steps_tsv=$(mktemp); tmp_steps=1; fi
+    : > "$steps_tsv"
   fi
+  if [ -n "$html_out" ] || [ -n "$dump_out" ]; then
+    need_dump=1
+    if [ -n "$dump_out" ]; then dump_file="$dump_out"; else dump_file=$(mktemp); tmp_dump=1; fi
+  fi
+  trap '[ "$tmp_steps" = 1 ] && rm -f "$steps_tsv"; [ "$tmp_dump" = 1 ] && rm -f "$dump_file"' RETURN
 
   while IFS= read -r line; do
     [[ -z "$line" || "$line" == \#* ]] && continue
@@ -121,10 +178,10 @@ cmd_run() {
       status=PASS; pass=$((pass+1))
     fi
 
-    if [ -n "$html_out" ]; then
+    if [ "$need_capture" -eq 1 ]; then
       printf '%s\t%s\t%s\t%s\n' "$status" "$action" "$arg" "$out" >> "$steps_tsv"
       # Снимок только на первом сломанном шаге: дальше он один и тот же экран.
-      if [ "$status" = "FAIL" ] && [ "$dump_taken" -eq 0 ]; then
+      if [ "$need_dump" -eq 1 ] && [ "$status" = "FAIL" ] && [ "$dump_taken" -eq 0 ]; then
         osa dump > "$dump_file" 2>&1
         dump_taken=1
       fi
@@ -191,6 +248,7 @@ cmd_open() {
     if [ -n "$slug" ]; then
       open "secondbrain://section/$slug" 2>/dev/null
       sleep 1
+      close_extra_windows
       if [ -n "$marker" ] && [[ "$(osa check "$marker")" == PASS* ]]; then
         echo "OK    открыт раздел: $section (deep link)"; return 0
       fi
@@ -224,6 +282,7 @@ case "${1:-}" in
   list)      osa list ;;
   dump)      osa dump ;;
   window)    osa window ;;
+  windows)   cmd_windows ;;
   run)       shift; cmd_run "$@" ;;
   *) sed -n '2,21p' "$0"; exit 1 ;;
 esac

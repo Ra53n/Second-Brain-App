@@ -1,16 +1,17 @@
 #!/usr/bin/env bash
-# smoke-all.sh — цикл прогона по импакту: diff → тесты+смоук → единый отчёт (задача 60).
+# smoke-all.sh — цикл прогона по импакту: diff → тесты+смоук → единый отчёт (задача 60, 61).
 #
 # Использование:
 #   ./scripts/smoke-all.sh [base-ref] [--full] [--dry-run] [--out <dir>] [--changed "<пути>"]
 #     base-ref  — git-ref для diff (умолчание: main; если HEAD уже main → HEAD~1)
 #     --full    — форсировать полный прогон: все сценарии + весь test.sh без фильтра
 #     --dry-run — только показать выбор (режим/сценарии/фильтр), ничего не гонять
-#     --out     — каталог для HTML-отчётов (умолчание: smoke/out/, создаётся сам)
+#     --out     — каталог для сводного отчёта (умолчание: smoke/out/, создаётся сам)
 #     --changed — свой список путей вместо git diff (для проверки --dry-run без реального дифа)
 #
 # Опирается на impact-map.tsv (диф → раздел/сценарий/фильтр), scripts/test.sh --filter
-# и scripts/ui.sh run --html (задачи 58/59). Смоук — только read-only check-сценарии.
+# и scripts/ui.sh run --tsv (задачи 58/59/61). Смоук — только read-only check-сценарии,
+# все прогоняются в одном окне приложения; результат — единый smoke/out/report.html.
 
 set -uo pipefail
 
@@ -190,6 +191,9 @@ fi
 
 OUT_DIR="${OUT_DIR:-$ROOT/smoke/out}"
 mkdir -p "$OUT_DIR"
+# Старые отчёты (в т.ч. пер-сценарный мусор до задачи 61) не переживают прогон —
+# иначе провал рендера молча оставляет свежим на вид отчёт от прошлого раза.
+rm -f "$OUT_DIR"/*.html
 
 echo "ИЗМЕНЕНО: $changed_count файл(ов) в Sources/SecondBrain"
 echo "РЕЖИМ: $(mode_ru "$mode")"
@@ -211,16 +215,56 @@ echo "$preflight_out"
 
 smoke_skipped=0
 failed_scenarios=""
+report_html="$OUT_DIR/report.html"
+report_code=0
+
+# Гоняем все сценарии в одном окне и один раз зовём smoke_report.py со всеми
+# TSV/дампами (задача 61) — используем "$@" вместо bash-массива: под system
+# /bin/bash (3.2) пустой массив под set -u падает «unbound variable», а
+# позиционные параметры пустыми быть могут.
+run_smoke_scenarios() {
+  local smoke_tmp scen name tsv dump scen_out scen_code
+  smoke_tmp="$(mktemp -d)"
+  set --
+  for scen in $scen_list; do
+    name="$(basename "$scen" .txt)"
+    tsv="$smoke_tmp/$name.tsv"
+    dump="$smoke_tmp/$name.dump"
+    scen_out="$("$ROOT/scripts/ui.sh" run "$ROOT/$scen" --tsv "$tsv" --dump-to "$dump" 2>&1)"; scen_code=$?
+    echo "$scen_out"
+    [ "$scen_code" -ne 0 ] && failed_scenarios="$failed_scenarios $name"
+    set -- "$@" --scenario "$(basename "$scen")" --steps "$tsv"
+    [ -s "$dump" ] && set -- "$@" --dump "$dump"
+  done
+  python3 "$ROOT/scripts/smoke_report.py" --out "$report_html" \
+    --tests-summary "$tests_summary" "$@"
+  report_code=$?
+  rm -rf "$smoke_tmp"
+}
+
 if [ "$preflight_code" -ne 0 ]; then
   echo "WARN  смоук пропущен: несвежая сборка или приложение не запущено — ./install.sh"
   smoke_skipped=1
 else
-  for scen in $scen_list; do
-    name="$(basename "$scen" .txt)"
-    scen_out="$("$ROOT/scripts/ui.sh" run "$ROOT/$scen" --html "$OUT_DIR/$name.html" 2>&1)"; scen_code=$?
-    echo "$scen_out"
-    [ "$scen_code" -ne 0 ] && failed_scenarios="$failed_scenarios $name"
-  done
+  # Одно окно на весь прогон: приводим к одному в начале, между сценариями
+  # больше НЕ рестартуем — cmd_open сам держит одно окно (см. ui.sh, задача 61).
+  win_count="$("$ROOT/scripts/ui.sh" windows 2>/dev/null)"
+  case "${win_count:-0}" in
+    ''|*[!0-9]*) win_count=0 ;;
+  esac
+  if [ "$win_count" -gt 1 ]; then
+    "$ROOT/scripts/ui.sh" restart >/dev/null 2>&1
+  fi
+
+  tests_summary="$(printf '%s\n' "$tests_out" | grep -E "Executed [0-9]+ tests" | tail -1)"
+  [ -z "$tests_summary" ] && tests_summary="$(printf '%s\n' "$tests_out" | tail -1)"
+
+  run_smoke_scenarios
+  if [ "$report_code" -eq 0 ]; then
+    echo "HTML: $report_html"
+  else
+    echo "ОШИБКА: сводный отчёт не собран"
+  fi
 fi
 
 echo
@@ -228,7 +272,7 @@ echo "--- ИТОГ ---"
 if [ "$tests_code" -eq 0 ]; then echo "Тесты: OK"; else echo "Тесты: ПРОВАЛ (код $tests_code)"; fi
 if [ "$smoke_skipped" -eq 1 ]; then
   echo "Смоук: ПРОПУЩЕН"
-elif [ -n "$failed_scenarios" ]; then
+elif [ -n "$failed_scenarios" ] || [ "$report_code" -ne 0 ]; then
   echo "Смоук: ПРОВАЛ —$failed_scenarios"
 else
   echo "Смоук: OK"
@@ -238,6 +282,7 @@ overall=0
 [ "$tests_code" -ne 0 ] && overall=1
 [ -n "$failed_scenarios" ] && overall=1
 [ "$smoke_skipped" -eq 1 ] && overall=1
+[ "$report_code" -ne 0 ] && overall=1
 
 if [ "$overall" -ne 0 ]; then
   echo
@@ -247,6 +292,7 @@ if [ "$overall" -ne 0 ]; then
     sect="$(section_for_scenario "$name.txt")"
     echo "Сценарий $name.txt (раздел «$sect»): вероятные модули — $(modules_for_section "$sect")"
   done
+  [ "$report_code" -ne 0 ] && echo "Сводный отчёт: smoke_report.py упал (код $report_code) — вывод выше."
 fi
 
 exit $overall
