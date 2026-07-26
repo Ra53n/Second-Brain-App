@@ -109,6 +109,45 @@ enum VaultFileOperations {
         try FileManager.default.trashItem(at: url, resultingItemURL: nil)
     }
 
+    /// mtime файла, если существует — снимок для mtime-guard записи содержимого.
+    /// Через FileManager.attributesOfItem, не URL.resourceValues: у URL есть
+    /// собственный кэш resource values, переживающий повторные вызовы на том
+    /// же значении URL (это ровно наш случай — overwrite вызывает эту функцию
+    /// второй раз для той же переменной url, которую уже спрашивали при
+    /// чтении содержимого) — с ним mtime-guard молча сравнивал бы кэш сам с
+    /// собой и никогда не сработал бы.
+    static func modificationDate(of url: URL) -> Date? {
+        (try? FileManager.default.attributesOfItem(atPath: url.path))?[.modificationDate] as? Date
+    }
+
+    /// Перезаписывает содержимое СУЩЕСТВУЮЩЕГО файла атомарно — точечная
+    /// правка (не структурная CRUD-операция), но обязана идти через этот же
+    /// файл (Vault/CLAUDE.md: все файловые операции — через VaultFileOperations).
+    /// mtime-guard: `expectedMTime` — снимок, снятый вызывающим кодом в момент
+    /// чтения содержимого; если файл на диске изменился с тех пор (открытый
+    /// редактор, внешняя правка, git-синк) — запись отклоняется, а не молча
+    /// затирает чужие несохранённые изменения (инвариант №1).
+    @discardableResult
+    static func overwrite(_ url: URL, content: String, expectedMTime: Date?) throws -> URL {
+        guard mtimeMatches(expectedMTime, modificationDate(of: url)) else {
+            throw VaultError.operationFailed("«\(url.lastPathComponent)» изменился на диске — запись отклонена")
+        }
+        try Data(content.utf8).write(to: url, options: .atomic)
+        return url
+    }
+
+    // Допуск сравнения дат: файловые системы округляют mtime (тот же допуск,
+    // что у mtime-guard FileOpsContext в Tools/FileTools.swift).
+    private static let mtimeTolerance: TimeInterval = 0.000_1
+
+    private static func mtimeMatches(_ expected: Date?, _ current: Date?) -> Bool {
+        switch (expected, current) {
+        case (nil, nil): return true
+        case let (e?, c?): return abs(c.timeIntervalSince(e)) <= mtimeTolerance
+        default: return false
+        }
+    }
+
     /// Сохраняет содержимое РЯДОМ с файлом под именем «Имя (conflict).ext»
     /// (занято → «Имя (conflict) 2.ext»). Используется редактором, когда файл
     /// изменили извне при несохранённых правках: оригинал не перезаписываем.

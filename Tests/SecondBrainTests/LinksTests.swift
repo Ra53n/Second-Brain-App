@@ -383,6 +383,112 @@ final class LinkIndexTests: VaultTestCase {
     }
 }
 
+// MARK: - NoteRenamePlanner
+
+final class NoteRenamePlannerTests: XCTestCase {
+
+    private let sourceFile = URL(fileURLWithPath: "/vault/Источник.md")
+
+    private func occurrence(_ text: String, index: Int = 0) -> LinkOccurrence {
+        let link = WikilinkParser.parse(text)[index]
+        return LinkOccurrence(sourceFile: sourceFile, link: link, snippet: text, lineNumber: 1)
+    }
+
+    func testPlainTargetIsRenamed() {
+        let rewrites = NoteRenamePlanner.rewrites(for: [occurrence("[[Старое]]")], newName: "Новое")
+        XCTAssertEqual(rewrites[0].replacement, "[[Новое]]")
+    }
+
+    func testAliasIsPreserved() {
+        let rewrites = NoteRenamePlanner.rewrites(for: [occurrence("[[Старое|алиас]]")], newName: "Новое")
+        XCTAssertEqual(rewrites[0].replacement, "[[Новое|алиас]]")
+    }
+
+    func testHeadingIsPreserved() {
+        let rewrites = NoteRenamePlanner.rewrites(for: [occurrence("[[Старое#Секция]]")], newName: "Новое")
+        XCTAssertEqual(rewrites[0].replacement, "[[Новое#Секция]]")
+    }
+
+    func testHeadingAndAliasArePreservedTogether() {
+        let rewrites = NoteRenamePlanner.rewrites(for: [occurrence("[[Старое#Секция|алиас]]")], newName: "Новое")
+        XCTAssertEqual(rewrites[0].replacement, "[[Новое#Секция|алиас]]")
+    }
+
+    func testPathTargetKeepsFolderPrefix() {
+        let rewrites = NoteRenamePlanner.rewrites(for: [occurrence("[[Папка/Старое]]")], newName: "Новое")
+        XCTAssertEqual(rewrites[0].replacement, "[[Папка/Новое]]")
+    }
+
+    func testApplyRewritesMultipleOccurrencesInSameFile() {
+        let text = "первая [[Старое]] и вторая [[Старое|алиас]] тут"
+        let links = WikilinkParser.parse(text)
+        let occurrences = links.map { LinkOccurrence(sourceFile: sourceFile, link: $0, snippet: text, lineNumber: 1) }
+        let rewrites = NoteRenamePlanner.rewrites(for: occurrences, newName: "Новое")
+
+        XCTAssertEqual(
+            NoteRenamePlanner.apply(rewrites, to: text),
+            "первая [[Новое]] и вторая [[Новое|алиас]] тут"
+        )
+    }
+
+    func testApplyLeavesUnrelatedTextUntouched() {
+        XCTAssertEqual(NoteRenamePlanner.apply([], to: "без ссылок"), "без ссылок")
+    }
+
+    /// Диапазон закэширован в LinkIndex на момент индексации; файл к моменту
+    /// apply() мог измениться (правка в открытом редакторе) — на этот же
+    /// диапазон в свежем тексте теперь указывает другая ссылка. Правка должна
+    /// быть пропущена, а не применена к чужому месту текста.
+    func testApplySkipsRewriteWhenRangeContentDoesNotMatchExpectedTarget() {
+        let text = "здесь [[Другое]] осталось как было"
+        let link = WikilinkParser.parse(text)[0]
+        let stale = LinkRewrite(
+            sourceFile: sourceFile,
+            range: link.range,
+            replacement: "[[Новое]]",
+            expectedTarget: "Старое" // индекс помнил другую цель на этом месте
+        )
+        XCTAssertEqual(NoteRenamePlanner.apply([stale], to: text), text)
+    }
+
+    /// Файл стал короче (например, вырезали кусок текста) — старый диапазон
+    /// указывает за пределы свежего текста. Ревьюер физически воспроизвёл
+    /// краш здесь (NSInvalidArgumentException у NSMutableString.replaceCharacters,
+    /// это не Swift Error, try/catch его не ловит) — правка обязана быть
+    /// отброшена ДО вызова replaceCharacters, а не приводить к abort().
+    func testApplySkipsRewriteWhenRangeOutOfBoundsWithoutCrashing() {
+        let originalText = "первая [[Старое]] тут"
+        let link = WikilinkParser.parse(originalText)[0]
+        let shortText = "тут" // диапазон из originalText сюда уже не помещается
+        let stale = LinkRewrite(
+            sourceFile: sourceFile,
+            range: link.range,
+            replacement: "[[Новое]]",
+            expectedTarget: link.target
+        )
+        XCTAssertEqual(NoteRenamePlanner.apply([stale], to: shortText), shortText)
+    }
+
+    /// В одном файле — валидное и устаревшее вхождение: валидное применяется,
+    /// устаревшее пропускается, остальной текст файла не портится.
+    func testApplyAppliesValidAndSkipsStaleInSameFile() {
+        let text = "первая [[Старое]] и вторая [[Другое]] тут"
+        let links = WikilinkParser.parse(text)
+        let valid = LinkRewrite(
+            sourceFile: sourceFile, range: links[0].range,
+            replacement: "[[Новое]]", expectedTarget: links[0].target
+        )
+        let stale = LinkRewrite(
+            sourceFile: sourceFile, range: links[1].range,
+            replacement: "[[ЧтоУгодно]]", expectedTarget: "НеТаЦель"
+        )
+        XCTAssertEqual(
+            NoteRenamePlanner.apply([valid, stale], to: text),
+            "первая [[Новое]] и вторая [[Другое]] тут"
+        )
+    }
+}
+
 // MARK: - FuzzyMatch
 
 final class FuzzyMatchTests: XCTestCase {

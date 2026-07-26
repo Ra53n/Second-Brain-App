@@ -203,6 +203,51 @@ final class VaultFileOperationsTests: VaultTestCase {
         // Файл исчез из исходного места (и лежит в Корзине — руками не проверить).
         XCTAssertFalse(FileManager.default.fileExists(atPath: file.path))
     }
+
+    // MARK: - overwrite (mtime-guard, задача 78)
+
+    func testOverwriteAppliesContentWhenMtimeMatches() throws {
+        let file = try makeFile("заметка.md", contents: "старое")
+        let mtimeAtRead = VaultFileOperations.modificationDate(of: file)
+
+        try VaultFileOperations.overwrite(file, content: "новое", expectedMTime: mtimeAtRead)
+
+        XCTAssertEqual(try String(contentsOf: file, encoding: .utf8), "новое")
+    }
+
+    /// Файл изменился на диске между чтением (снимок mtime) и записью — та же
+    /// гонка, что у backlink-файла между построением LinkIndex и переименованием
+    /// (открытый редактор, внешняя правка, git-синк). Запись обязана быть
+    /// отклонена, а не молча затереть конкурентную правку (инвариант №1).
+    func testOverwriteRejectsWhenFileChangedSinceRead() throws {
+        let file = try makeFile("заметка.md", contents: "исходное")
+        let mtimeAtRead = VaultFileOperations.modificationDate(of: file)
+
+        try "внешняя правка".write(to: file, atomically: true, encoding: .utf8)
+        // Форсируем заведомо другой mtime: на некоторых ФС две записи впритык
+        // получают одну и ту же секундную метку — тест иначе был бы недетерминирован.
+        try FileManager.default.setAttributes(
+            [.modificationDate: Date().addingTimeInterval(-30)],
+            ofItemAtPath: file.path
+        )
+
+        XCTAssertThrowsError(
+            try VaultFileOperations.overwrite(file, content: "затёртое", expectedMTime: mtimeAtRead)
+        ) {
+            guard case .operationFailed = $0 as? VaultError else {
+                return XCTFail("ожидали .operationFailed, получили \($0)")
+            }
+        }
+        // Не затёрто — на диске всё ещё внешняя правка, не «затёртое».
+        XCTAssertEqual(try String(contentsOf: file, encoding: .utf8), "внешняя правка")
+    }
+
+    func testOverwriteRejectsWhenExpectedMTimeIsNilButFileExists() throws {
+        let file = try makeFile("заметка.md", contents: "исходное")
+
+        XCTAssertThrowsError(try VaultFileOperations.overwrite(file, content: "новое", expectedMTime: nil))
+        XCTAssertEqual(try String(contentsOf: file, encoding: .utf8), "исходное")
+    }
 }
 
 // MARK: - VaultID
@@ -275,8 +320,11 @@ final class VaultManagerTests: VaultTestCase {
         manager.createNote()
         XCTAssertEqual(manager.selection?.lastPathComponent, "Без названия.md")
 
-        // Ошибка не глотается: rename в занятое имя → lastError.
+        // Ошибка не глотается: rename в занятое имя → lastError. Дожидаемся
+        // LinkIndex — иначе rename .md-заметки откажет с «индекс ещё строится»
+        // (задача 78, замечание 3), не с ожидаемой ошибкой конфликта имени.
         manager.createNote() // «Без названия 2.md»
+        try waitForLinkVersion(manager, atLeast: 1)
         let node = try XCTUnwrap(manager.root?.find(XCTUnwrap(manager.selection)))
         manager.rename(node, to: "Без названия.md")
         XCTAssertEqual(manager.lastError, .alreadyExists("Без названия.md"))
@@ -306,6 +354,114 @@ final class VaultManagerTests: VaultTestCase {
 
         wait(for: [ticked], timeout: 5.0)
         manager.closeVault()
+    }
+
+    /// Задача 78: переименование заметки обновляет входящие ссылки во всех
+    /// файлах, включая ссылку с алиасом; не тронутая заметка остаётся как есть.
+    func testRenameNoteUpdatesLinksAcrossFilesIncludingAlias() throws {
+        let suiteName = "VaultManagerTests-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        try makeFile("Старое имя.md", contents: "содержимое")
+        try makeFile("Источник 1.md", contents: "ссылка [[Старое имя]] тут")
+        try makeFile("Папка/Источник 2.md", contents: "с алиасом [[Старое имя|Название]]")
+        try makeFile("Мимо.md", contents: "не трогать [[Другая]]")
+
+        let manager = VaultManager(defaults: defaults, restoreLast: false)
+        manager.openVault(at: tempDir)
+        try waitForLinkVersion(manager, atLeast: 1) // индекс построился в фоне
+
+        let node = try XCTUnwrap(manager.root?.find(tempDir.appendingPathComponent("Старое имя.md")))
+        try waitForLinkVersion(manager, atLeast: manager.linkVersion + 1) {
+            manager.rename(node, to: "Новое имя.md")
+        }
+
+        XCTAssertNil(manager.lastError)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: tempDir.appendingPathComponent("Старое имя.md").path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: tempDir.appendingPathComponent("Новое имя.md").path))
+        XCTAssertEqual(
+            try String(contentsOf: tempDir.appendingPathComponent("Источник 1.md"), encoding: .utf8),
+            "ссылка [[Новое имя]] тут"
+        )
+        XCTAssertEqual(
+            try String(contentsOf: tempDir.appendingPathComponent("Папка/Источник 2.md"), encoding: .utf8),
+            "с алиасом [[Новое имя|Название]]"
+        )
+        XCTAssertEqual(
+            try String(contentsOf: tempDir.appendingPathComponent("Мимо.md"), encoding: .utf8),
+            "не трогать [[Другая]]"
+        )
+        manager.closeVault()
+    }
+
+    /// Конфликт имени: переименование не проходит, ничего не переименовано
+    /// и чужие файлы со ссылками не тронуты.
+    func testRenameNoteToExistingNameFailsWithoutTouchingLinks() throws {
+        let suiteName = "VaultManagerTests-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        try makeFile("Старое имя.md")
+        try makeFile("Занято.md")
+        try makeFile("Источник.md", contents: "[[Старое имя]]")
+
+        let manager = VaultManager(defaults: defaults, restoreLast: false)
+        manager.openVault(at: tempDir)
+        try waitForLinkVersion(manager, atLeast: 1)
+
+        let node = try XCTUnwrap(manager.root?.find(tempDir.appendingPathComponent("Старое имя.md")))
+        manager.rename(node, to: "Занято.md")
+
+        XCTAssertEqual(manager.lastError, .alreadyExists("Занято.md"))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: tempDir.appendingPathComponent("Старое имя.md").path))
+        XCTAssertEqual(
+            try String(contentsOf: tempDir.appendingPathComponent("Источник.md"), encoding: .utf8),
+            "[[Старое имя]]"
+        )
+        manager.closeVault()
+    }
+
+    /// Переименование сразу после openVault, пока Task.detached ещё строит
+    /// LinkIndex (linkIndex == nil) — явный отказ, а не тихое «нет входящих
+    /// ссылок» (`?? []` раньше маскировало неготовый индекс). Тест синхронный:
+    /// main-actor хоп фонового Task не может выполниться, пока текущий кадр
+    /// теста не вернёт управление в run loop — linkIndex гарантированно nil.
+    func testRenameNoteRefusesWhenLinkIndexNotYetBuilt() throws {
+        let suiteName = "VaultManagerTests-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        try makeFile("Старое имя.md")
+        try makeFile("Источник.md", contents: "[[Старое имя]]")
+
+        let manager = VaultManager(defaults: defaults, restoreLast: false)
+        manager.openVault(at: tempDir)
+        XCTAssertNil(manager.linkIndex)
+
+        let node = try XCTUnwrap(manager.root?.find(tempDir.appendingPathComponent("Старое имя.md")))
+        manager.rename(node, to: "Новое имя.md")
+
+        guard case .operationFailed = manager.lastError else {
+            return XCTFail("ожидали .operationFailed, получили \(String(describing: manager.lastError))")
+        }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: tempDir.appendingPathComponent("Старое имя.md").path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: tempDir.appendingPathComponent("Новое имя.md").path))
+        manager.closeVault()
+    }
+
+    /// Ждёт, пока `linkVersion` не станет >= `value` (индекс строится в фоне);
+    /// `perform` (если задан) запускается уже под активной подпиской, чтобы не
+    /// пропустить эмиссию, случившуюся раньше wait(for:).
+    private func waitForLinkVersion(_ manager: VaultManager, atLeast value: Int, perform: () -> Void = {}) throws {
+        if manager.linkVersion >= value {
+            perform()
+            return
+        }
+        let reached = expectation(description: "linkVersion >= \(value)")
+        let cancellable = manager.$linkVersion.sink { version in
+            if version >= value { reached.fulfill() }
+        }
+        perform()
+        wait(for: [reached], timeout: 5.0)
+        cancellable.cancel()
     }
 }
 

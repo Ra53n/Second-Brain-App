@@ -239,8 +239,76 @@ final class VaultManager: ObservableObject {
         perform { try VaultFileOperations.createFile(in: folder, named: name) }
     }
 
+    /// Переименовывает узел. Для заметок (.md, не папка) дополнительно
+    /// обновляет входящие wikilink-ссылки по всему vault (задача 78) — папки
+    /// и не-заметки вне объёма, для них только перемещение файла.
     func rename(_ node: VaultNode, to newName: String) {
-        perform { try VaultFileOperations.rename(node.url, to: newName) }
+        guard !node.isDirectory, node.url.pathExtension.lowercased() == "md" else {
+            perform { try VaultFileOperations.rename(node.url, to: newName) }
+            return
+        }
+        renameNote(node, to: newName)
+    }
+
+    /// Переименование + обновление ссылок — не проходит через `perform`:
+    /// линк-индекс обновляем (`linkVersion`) только при успехе, а конфликт
+    /// имени должен прерваться ДО правки чужих файлов (rename бросает первым).
+    /// Индекс ещё не готов (rename до окончания первичного Task.detached при
+    /// openVault) → явный отказ, а не молчаливое «нет входящих ссылок».
+    private func renameNote(_ node: VaultNode, to newName: String) {
+        guard let linkIndex else {
+            lastError = .operationFailed("индекс ссылок ещё строится, попробуйте переименовать через секунду")
+            return
+        }
+        // Сужает (не устраняет) окно устаревания backlinks: полная защита —
+        // в applyLinkRewrites, где каждое вхождение сверяется со свежим текстом.
+        linkIndex.refresh()
+        let newBaseName = URL(fileURLWithPath: newName).deletingPathExtension().lastPathComponent
+        let rewrites = NoteRenamePlanner.rewrites(for: linkIndex.backlinks(to: node.url), newName: newBaseName)
+        do {
+            let target = try VaultFileOperations.rename(node.url, to: newName)
+            try applyLinkRewrites(rewrites)
+            open(target)
+            if linkIndex.refresh() {
+                linkVersion += 1
+            }
+        } catch let error as VaultError {
+            lastError = error
+        } catch {
+            lastError = .operationFailed(error.localizedDescription)
+        }
+        rebuild()
+    }
+
+    /// Правит все файлы с входящими ссылками: на файл — перечитывает текст
+    /// заново (диапазоны в rewrites закэшированы на момент индексации и могли
+    /// устареть, NoteRenamePlanner.apply сверяет каждое вхождение со свежим
+    /// текстом) и пишет через VaultFileOperations.overwrite с mtime-guard.
+    /// Одна ошибка файла не прерывает остальные — копится и всплывает разом.
+    private func applyLinkRewrites(_ rewrites: [LinkRewrite]) throws {
+        var failures: [String] = []
+        for (file, fileRewrites) in Dictionary(grouping: rewrites, by: \.sourceFile) {
+            do {
+                try applyLinkRewrites(fileRewrites, to: file)
+            } catch let error as VaultError {
+                failures.append(error.errorDescription ?? file.lastPathComponent)
+            } catch {
+                failures.append(error.localizedDescription)
+            }
+        }
+        guard failures.isEmpty else {
+            throw VaultError.operationFailed(failures.joined(separator: "; "))
+        }
+    }
+
+    private func applyLinkRewrites(_ fileRewrites: [LinkRewrite], to file: URL) throws {
+        let mtimeAtRead = VaultFileOperations.modificationDate(of: file)
+        guard let text = try? String(contentsOf: file, encoding: .utf8) else {
+            throw VaultError.operationFailed("не удалось прочитать «\(file.lastPathComponent)» для обновления ссылок")
+        }
+        let updated = NoteRenamePlanner.apply(fileRewrites, to: text)
+        guard updated != text else { return } // все вхождения этого файла устарели
+        try VaultFileOperations.overwrite(file, content: updated, expectedMTime: mtimeAtRead)
     }
 
     func move(_ node: VaultNode, into folder: VaultNode) {
