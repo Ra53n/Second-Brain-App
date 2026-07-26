@@ -33,7 +33,8 @@ let package = Package(
                 "Editor/CLAUDE.md",
                 "Audio/CLAUDE.md",
                 "Vault/CLAUDE.md",
-                "GitSync/CLAUDE.md"
+                "GitSync/CLAUDE.md",
+                "Pipelines/CLAUDE.md"
             ],
             resources: [
                 .copy("Resources/AppIcon.icns")
