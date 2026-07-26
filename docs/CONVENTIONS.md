@@ -66,3 +66,66 @@
 | Лаунчер локального рантайма (spawn/stopIfSpawned, cleanup в applicationWillTerminate) | `Sources/ManagerAssistant/RagOllamaLauncher.swift` | 09 |
 | Вход в приложение (AppDelegate, activation policy, иконка) | `Sources/ManagerAssistant/App.swift` | 01 |
 | Сборка .app | `run.sh`, `install.sh`, `icon/render_icon.swift` | 01, 18 |
+
+## Шаблоны
+
+Перенесены из корневого `CLAUDE.md` (задача 61) — там осталась короткая ссылка сюда.
+
+### Файл модуля
+
+```swift
+// ИмяФайла.swift — одна строка о назначении (задача NN).
+// Важно: ≤2 строки ТОЛЬКО на неочевидную оговорку, которую из кода не вывести (иначе — нет).
+
+import Foundation
+
+struct Thing: Equatable {
+    let id: String
+}
+
+enum ThingLogic {
+    /// nil — когда вход не резолвится (единственное неочевидное в сигнатуре).
+    static func compute(_ input: String) -> Thing? { ... }
+}
+
+enum ThingError: LocalizedError, Equatable {
+    case notFound(String)
+
+    var errorDescription: String? {
+        switch self {
+        case .notFound(let name): return "«\(name)» не найдено"
+        }
+    }
+}
+```
+
+Порядок: заголовок → `import` → доменные типы → основной тип → `extension` → ошибки.
+Комментарии — минимум по делу: шапка 1 строка, `///` только где имя+сигнатура не объясняют
+сами, инлайн — только «почему». Удалил комментарий и смысл не потерялся → удаляй.
+
+### Тест
+
+```swift
+// ТемаTests.swift — тесты <чего> (задача NN).
+//
+// Что покрыто: перечисление групп случаев.
+
+import XCTest
+@testable import SecondBrain
+
+final class ТемаTests: XCTestCase {
+
+    func testОписаниеПроверяемогоПоведения() {
+        for (input, expected) in [("a", 1), ("b", 2)] {
+            // подпись в конце — чтобы из отчёта было видно, какой случай упал
+            XCTAssertEqual(ThingLogic.compute(input), expected, input)
+        }
+    }
+}
+```
+
+### Файл задачи `tasks/NN-slug.md`
+
+`# Задача NN: название` → `## Цель` (что видит пользователь) → `## Зависимости` →
+`## Объём` (нумерованный список работ с файлами) → `## Вне объёма` (что явно не трогаем) →
+`## Критерии приёмки` (проверяемые утверждения) → после выполнения `## Результат`.
