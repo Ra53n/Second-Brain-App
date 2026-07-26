@@ -14,6 +14,34 @@
 
 import Foundation
 
+/// Чистое ядро stdio-фрейминга MCPConnection (P1): резка буфера на строки и
+/// корреляция ответа с ожидающим continuation — без Process и без actor-состояния.
+enum MCPFraming {
+    /// Режет буфер по \n, пустые строки пропускает; извлечённое удаляется из buffer.
+    static func extractLines(from buffer: inout Data) -> [Data] {
+        var lines: [Data] = []
+        while let index = buffer.firstIndex(of: 0x0A) {
+            let line = buffer[buffer.startIndex..<index]
+            buffer.removeSubrange(buffer.startIndex...index)
+            if !line.isEmpty { lines.append(Data(line)) }
+        }
+        return lines
+    }
+
+    /// Резолвит continuation, ждущий ответа с этим id; сообщения без корреляции
+    /// (запрос/нотификация сервера, неизвестный id, битый JSON) молча отбрасывает.
+    static func resolvePending(_ data: Data, in pending: inout [Int: CheckedContinuation<JSONValue, Error>]) {
+        guard let message = try? JSONDecoder().decode(RPCIncoming.self, from: data) else { return }
+        guard message.method == nil, let id = message.id?.intValue,
+              let continuation = pending.removeValue(forKey: id) else { return }
+        if let error = message.error {
+            continuation.resume(throwing: MCPError.rpc(error.code, error.message))
+        } else {
+            continuation.resume(returning: message.result ?? .null)
+        }
+    }
+}
+
 actor MCPConnection {
     let server: MCPServer
     private let registry: BackgroundProcessRegistry
@@ -92,22 +120,8 @@ actor MCPConnection {
 
     /// Буферизация частичных строк: режем по \n, пустые пропускаем.
     private func drainLines() {
-        while let index = buffer.firstIndex(of: 0x0A) {
-            let line = buffer[buffer.startIndex..<index]
-            buffer.removeSubrange(buffer.startIndex...index)
-            if !line.isEmpty { handle(Data(line)) }
-        }
-    }
-
-    private func handle(_ data: Data) {
-        guard let message = try? JSONDecoder().decode(RPCIncoming.self, from: data) else { return }
-        // method != nil → запрос/нотификация сервера (не ответ) → игнор.
-        guard message.method == nil, let id = message.id?.intValue,
-              let continuation = pending.removeValue(forKey: id) else { return }
-        if let error = message.error {
-            continuation.resume(throwing: MCPError.rpc(error.code, error.message))
-        } else {
-            continuation.resume(returning: message.result ?? .null)
+        for line in MCPFraming.extractLines(from: &buffer) {
+            MCPFraming.resolvePending(line, in: &pending)
         }
     }
 
