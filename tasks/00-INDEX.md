@@ -68,7 +68,7 @@
 | 62 | [Гибкий конвейер и экономия токенов: caveman, ast-index](62-pipeline-flex-tokens.md) | — | [x] |
 | 63 | [Пул задач + Execution Loop: готовность флоу к автономному циклу](63-execution-loop-readiness.md) | — | [x] |
 | 64 | [`CLAUDE.md` для `Pipelines/`](64-pipelines-claude-md.md) | — | [x] |
-| 65 | [`CLAUDE.md` для `LocalRuntime/`](65-localruntime-claude-md.md) | — | [ ] |
+| 65 | [`CLAUDE.md` для `LocalRuntime/`](65-localruntime-claude-md.md) | — | [x] |
 | 66 | [`CLAUDE.md` для `MCP/`](66-mcp-claude-md.md) | — | [ ] |
 | 67 | [`RagVector.cosine` → NaN при Infinity-компоненте](67-ragvector-nan-fix.md) | — | [ ] |
 | 68 | [`CodeRegionDetector`: незакрытый код-блок не защищает контент](68-coderegiondetector-unclosed-block.md) | — | [ ] |
