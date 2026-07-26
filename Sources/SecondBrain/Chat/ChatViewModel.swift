@@ -27,25 +27,10 @@ final class ChatViewModel: ObservableObject {
     var ragProvider: ((Chat, String) async -> RagRetrievalOutcome?)?
 
     /// MCP-мост (задача 15): инструменты включённых серверов чата и исполнитель.
-    struct MCPBridge {
-        var tools: (Set<UUID>) async -> [ToolDefinition]
-        var execute: (String, String) async -> String
-    }
+    /// Тип — MCPBridge.swift.
     var mcpBridge: MCPBridge?
 
-    /// Мост встроенных инструментов проекта (задачи 21, 39). Маршрутизация в
-    /// send(): вызовы с именами из tools() идут сюда, остальные — в MCP
-    /// (имена не пересекаются: MCP-имена всегда содержат «__»). Первый
-    /// параметр всюду — projectRootPath чата (nil = глобальная настройка).
-    struct ProjectToolsBridge {
-        /// Каталог задан (override чата либо настройки) — видимость меню.
-        var available: (String?) -> Bool
-        var tools: (String?) -> [ToolDefinition]
-        /// Эффективный корень (для превью diff'ов и директивы промпта).
-        var rootURL: (String?) -> URL?
-        /// (rootOverride, имя, аргументы, файловый контекст чата) → результат.
-        var execute: (String?, String, String, FileOpsContext?) async -> String
-    }
+    /// Мост встроенных инструментов проекта (задачи 21, 39). Тип — ProjectToolsBridge.swift.
     var projectToolsBridge: ProjectToolsBridge?
 
     // Слой разрешений (задача 39). Хранимые свойства — здесь (extension не
@@ -72,32 +57,14 @@ final class ChatViewModel: ObservableObject {
     /// Тик обновления статистики баз для чипа «База» (перечитывает .task).
     @Published var ragBasesTick = 0
 
-    /// Мост вкладки «Изменения» к git-каталогу чата (задача 40): обзор
-    /// (ветка/статус/diff), коммит и пуш. Первый параметр — projectRootPath
-    /// чата (nil = глобальная настройка). commit/push возвращают текст
-    /// ошибки; nil — успех.
-    struct ChatGitBridge {
-        var overview: (String?) async -> GitChangesOverview?
-        var commit: (String?, String) async -> String?
-        var push: (String?) async -> String?
-        /// Точечный откат одного файла: tracked → к HEAD, новый → в Корзину.
-        var revertFile: (String?, String) async -> String?
-    }
+    /// Мост вкладки «Изменения» к git-каталогу чата (задача 40). Тип — ChatGitBridge.swift.
     var chatGitBridge: ChatGitBridge?
 
     /// Раннер code review (задача 37) — обработчик /review. weak: раннер
     /// держит ChatViewModel строго, владелец обоих — AppModel.
     weak var codeReviewRunner: CodeReviewRunner?
 
-    /// Диалог превью постинга ревью в PR (item-based sheet, паттерн
-    /// titleDialog встреч). non-nil → шит открыт.
-    struct ReviewPostContext: Identifiable {
-        let messageID: UUID
-        let target: ReviewTarget
-        /// Предзаполненный текст комментария (content сообщения), редактируемый.
-        var body: String
-        var id: UUID { messageID }
-    }
+    /// Диалог превью постинга ревью в PR (item-based sheet). Тип — ReviewPostContext.swift.
     @Published var reviewPostDialog: ReviewPostContext?
 
     /// Открыть превью постинга для итогового сообщения ревью.
@@ -128,15 +95,7 @@ final class ChatViewModel: ObservableObject {
         }
     }
 
-    /// Мост rag_search (задача 34): определение инструмента по включённым
-    /// базам чата и исполнитель поиска (KnowledgeBaseManager). Отдельно от
-    /// ragProvider: тот — статическая подстановка, этот — tool-режим.
-    struct RagToolBridge {
-        /// nil — включённых баз нет, инструмент не предлагается.
-        var definition: (Set<String>) -> ToolDefinition?
-        /// (аргументы вызова, включённые базы, topK, minScore) → текст + источники.
-        var execute: (String, Set<String>, Int, Double) async -> RagToolOutcome
-    }
+    /// Мост rag_search (задача 34). Тип — RagToolBridge.swift.
     var ragToolBridge: RagToolBridge?
 
     /// Доступны ли инструменты проекта прямо сейчас (для UI меню):
@@ -389,18 +348,7 @@ final class ChatViewModel: ObservableObject {
 
     // MARK: - Отправка со стримингом
 
-    /// Переопределения одного хода (задача 22): /help добавляет докблок,
-    /// принудительно включает инструменты проекта и пропускает RAG.
-    private struct TurnOverrides {
-        /// Загрузить [PROJECT_DOCS] через projectDocsProvider.
-        var wantsProjectDocs = false
-        /// Инструменты проекта включаются независимо от настройки чата.
-        var forceProjectTools = false
-        /// RAG-ретрив пропускается (докблок заменяет его на этом ходу).
-        var skipsRag = false
-        /// Провайдер без function calling → ответ без инструментов, не ошибка.
-        var allowsToolFallback = false
-    }
+    /// Переопределения одного хода (задача 22). Тип — TurnOverrides.swift.
 
     func send() {
         guard let index = selectedIndex else { return }

@@ -79,7 +79,7 @@
 | 73 | [Тесты на `ProviderToolSupport.swift`](73-providertoolsupport-tests.md) | — | [x] |
 | 74 | [Тесты на `VaultWatcher.swift`](74-vaultwatcher-tests.md) | — | [x] |
 | 75 | [Разбить `ChatViews.swift`: `MessageBubble`, `ReviewPostSheet`](75-chatviews-split.md) | — | [x] |
-| 76 | [Разбить `ChatViewModel.swift`: вынести bridge-классы](76-chatviewmodel-bridges-split.md) | — | [ ] |
+| 76 | [Разбить `ChatViewModel.swift`: вынести bridge-классы](76-chatviewmodel-bridges-split.md) | — | [x] |
 | 77 | [Разбить `SettingsViews.swift` по вкладкам](77-settingsviews-split.md) | — | [ ] |
 | 78 | [Переименование заметки с обновлением ссылок](78-note-rename-links.md) | — | [ ] |
 | 79 | [Шаблоны заметок](79-note-templates.md) | — | [ ] |
