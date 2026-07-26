@@ -73,7 +73,7 @@
 | 67 | [`RagVector.cosine` → NaN при Infinity-компоненте](67-ragvector-nan-fix.md) | — | [x] |
 | 68 | [`CodeRegionDetector`: незакрытый код-блок не защищает контент](68-coderegiondetector-unclosed-block.md) | — | [x] |
 | 69 | [`FrontmatterParser`: пустой frontmatter теряется при сериализации](69-frontmatter-empty-roundtrip.md) | — | [x] |
-| 70 | [Deep-link открывает новое окно вместо навигации в существующем](70-deeplink-reuse-window.md) | — | [ ] |
+| 70 | [Deep-link открывает новое окно вместо навигации в существующем](70-deeplink-reuse-window.md) | — | [x] |
 | 71 | [Тесты на `AppModel.swift`](71-appmodel-tests.md) | — | [ ] |
 | 72 | [Тесты на `MCPConnection.swift`](72-mcpconnection-tests.md) | — | [ ] |
 | 73 | [Тесты на `ProviderToolSupport.swift`](73-providertoolsupport-tests.md) | — | [ ] |

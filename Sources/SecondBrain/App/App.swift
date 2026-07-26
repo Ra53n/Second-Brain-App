@@ -69,7 +69,12 @@ struct SecondBrainApp: App {
     @StateObject private var model = AppModel()
 
     var body: some Scene {
-        WindowGroup("Second Brain") {
+        // Window (не WindowGroup, задача 70): у приложения нет сценария
+        // «несколько главных окон» — WindowGroup трактует каждый Open URL
+        // (secondbrain://…) как запрос новой сцены и плодит окна на каждый
+        // deep-link. Window — синглтон: macOS активирует существующее окно
+        // и доставляет onOpenURL в него вместо создания нового экземпляра.
+        Window("Second Brain", id: "main") {
             ContentView(model: model)
         }
         .windowResizability(.contentMinSize)
