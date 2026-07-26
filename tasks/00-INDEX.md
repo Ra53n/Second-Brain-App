@@ -66,6 +66,24 @@
 | 60 | [Цикл прогона: smoke-all, скилл /smoke-cycle, интеграция](60-smoke-cycle.md) | 59 | [x] |
 | 61 | [Смоук: одно окно, один запуск, один сводный HTML](61-smoke-single-report.md) | 60 | [x] |
 | 62 | [Гибкий конвейер и экономия токенов: caveman, ast-index](62-pipeline-flex-tokens.md) | — | [x] |
+| 63 | [Пул задач + Execution Loop: готовность флоу к автономному циклу](63-execution-loop-readiness.md) | — | [x] |
+| 64 | [`CLAUDE.md` для `Pipelines/`](64-pipelines-claude-md.md) | — | [ ] |
+| 65 | [`CLAUDE.md` для `LocalRuntime/`](65-localruntime-claude-md.md) | — | [ ] |
+| 66 | [`CLAUDE.md` для `MCP/`](66-mcp-claude-md.md) | — | [ ] |
+| 67 | [`RagVector.cosine` → NaN при Infinity-компоненте](67-ragvector-nan-fix.md) | — | [ ] |
+| 68 | [`CodeRegionDetector`: незакрытый код-блок не защищает контент](68-coderegiondetector-unclosed-block.md) | — | [ ] |
+| 69 | [`FrontmatterParser`: пустой frontmatter теряется при сериализации](69-frontmatter-empty-roundtrip.md) | — | [ ] |
+| 70 | [Deep-link открывает новое окно вместо навигации в существующем](70-deeplink-reuse-window.md) | — | [ ] |
+| 71 | [Тесты на `AppModel.swift`](71-appmodel-tests.md) | — | [ ] |
+| 72 | [Тесты на `MCPConnection.swift`](72-mcpconnection-tests.md) | — | [ ] |
+| 73 | [Тесты на `ProviderToolSupport.swift`](73-providertoolsupport-tests.md) | — | [ ] |
+| 74 | [Тесты на `VaultWatcher.swift`](74-vaultwatcher-tests.md) | — | [ ] |
+| 75 | [Разбить `ChatViews.swift`: `MessageBubble`, `ReviewPostSheet`](75-chatviews-split.md) | — | [ ] |
+| 76 | [Разбить `ChatViewModel.swift`: вынести bridge-классы](76-chatviewmodel-bridges-split.md) | — | [ ] |
+| 77 | [Разбить `SettingsViews.swift` по вкладкам](77-settingsviews-split.md) | — | [ ] |
+| 78 | [Переименование заметки с обновлением ссылок](78-note-rename-links.md) | — | [ ] |
+| 79 | [Шаблоны заметок](79-note-templates.md) | — | [ ] |
+| 80 | [Настраиваемый бюджет контекста `/help`](80-help-context-budget-setting.md) | — | [ ] |
 
 ## Рекомендуемый порядок
 
