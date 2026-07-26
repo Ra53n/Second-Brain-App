@@ -5,6 +5,14 @@
 import XCTest
 @testable import SecondBrain
 
+/// Эмбеддер, всегда падающий с ошибкой — проверка проброса ошибки rebuild (задача 47).
+private final class FailingEmbedder: EmbeddingProvider {
+    let dimension = 8
+    func embed(_ texts: [String], model: String?) async throws -> [[Float]] {
+        throw LLMError.providerUnavailable(ProviderID("openai"))
+    }
+}
+
 /// Детерминированный мок-эмбеддер: вектор из хешей слов — тексты с общими
 /// словами ближе друг к другу, чем разные (хватает для проверки ретрива).
 private final class MockEmbedder: EmbeddingProvider {
@@ -158,10 +166,40 @@ final class ProjectDocsRagTests: XCTestCase {
         XCTAssertEqual(stats?.files, 2)
         XCTAssertGreaterThan(stats?.chunks ?? 0, 0)
         XCTAssertNotNil(stats?.updatedAt)
+        XCTAssertEqual(stats?.embeddingTag, "mock|8")
 
         await service.reset(repoRoot: repoRoot)
         let statsAfter = await service.stats(repoRoot: repoRoot)
         XCTAssertEqual(statsAfter?.chunks, 0)
+    }
+
+    /// Задача 47: кнопка «Перестроить индекс» — reset + полная переиндексация
+    /// без вопроса; после rebuild цифры снова заполнены.
+    func testRebuildResetsThenReindexesFully() async throws {
+        _ = await service.helpBlock(repoRoot: repoRoot, embedder: embedder,
+                                    model: nil, tag: "mock|8", question: "вопрос")
+        let before = await service.stats(repoRoot: repoRoot)
+        XCTAssertGreaterThan(before?.chunks ?? 0, 0)
+        let callsBefore = embedder.embedCallCount
+
+        try await service.rebuild(repoRoot: repoRoot, embedder: embedder, model: nil, tag: "mock|8")
+
+        let after = await service.stats(repoRoot: repoRoot)
+        XCTAssertGreaterThan(after?.chunks ?? 0, 0, "индекс перестроен")
+        XCTAssertGreaterThan(embedder.embedCallCount, callsBefore,
+                             "rebuild переэмбеддил файлы заново, а не пропустил как неизменённые")
+    }
+
+    /// Задача 47 (важное 1 ревью): ошибка эмбеддера по кнопке — явное действие
+    /// пользователя, rebuild её не глотает, а пробрасывает вызывающему (P6).
+    func testRebuildPropagatesEmbeddingError() async {
+        do {
+            try await service.rebuild(repoRoot: repoRoot, embedder: FailingEmbedder(),
+                                      model: nil, tag: "mock|8")
+            XCTFail("ожидалась ошибка эмбеддера")
+        } catch {
+            XCTAssertNotNil((error as? LocalizedError)?.errorDescription)
+        }
     }
 
     /// helpContext без роутера (нет эмбеддера) — фолбэк на полный контекст.
@@ -189,6 +227,97 @@ final class ProjectDocsRagTests: XCTestCase {
         let provider = ProjectToolsProvider(settingsStore: SettingsStore(fileURL: settingsURL))
         let context = await provider.helpContext(question: "вопрос")
         XCTAssertNil(context)
+    }
+}
+
+// MARK: - Статус секции «Документация проекта» (задача 47)
+
+final class ProjectDocsIndexUIStatusTests: XCTestCase {
+
+    private let builtStats = ProjectDocsIndexService.DocsIndexStats(
+        files: 12, chunks: 84, updatedAt: Date(timeIntervalSince1970: 0),
+        embeddingTag: "text-embedding-3-small|1536")
+
+    /// Все восемь сочетаний «репо / индекс / эмбеддер» дают предсказуемый
+    /// кейс и доступность кнопки «Перестроить индекс».
+    func testAllCombinations() {
+        struct Case {
+            let hasRepo: Bool
+            let hasEmbedder: Bool
+            let stats: ProjectDocsIndexService.DocsIndexStats?
+            let expected: ProjectDocsIndexUIStatus
+            let name: String
+        }
+        let cases: [Case] = [
+            Case(hasRepo: false, hasEmbedder: false, stats: nil,
+                 expected: .noRepo, name: "нет репо, нет эмбеддера, нет индекса"),
+            Case(hasRepo: false, hasEmbedder: true, stats: nil,
+                 expected: .noRepo, name: "нет репо, есть эмбеддер, нет индекса"),
+            Case(hasRepo: false, hasEmbedder: false, stats: builtStats,
+                 expected: .noRepo, name: "нет репо, есть индекс (не должно бывать, но не падаем)"),
+            Case(hasRepo: false, hasEmbedder: true, stats: builtStats,
+                 expected: .noRepo, name: "нет репо, всё остальное есть"),
+            Case(hasRepo: true, hasEmbedder: false, stats: nil,
+                 expected: .notBuilt(embedderAvailable: false),
+                 name: "есть репо, нет эмбеддера, индекс не строился"),
+            Case(hasRepo: true, hasEmbedder: true, stats: nil,
+                 expected: .notBuilt(embedderAvailable: true),
+                 name: "есть репо, есть эмбеддер, индекс не строился"),
+            Case(hasRepo: true, hasEmbedder: false, stats: builtStats,
+                 expected: .built(statusLine: "12 файлов · 84 чанков · text-embedding-3-small|1536 · обновлён "
+                                   + DateFormatter.docsStatsFormatterForTest.string(from: builtStats.updatedAt!),
+                                  embedderAvailable: false),
+                 name: "есть репо и индекс, эмбеддер пропал"),
+            Case(hasRepo: true, hasEmbedder: true, stats: builtStats,
+                 expected: .built(statusLine: "12 файлов · 84 чанков · text-embedding-3-small|1536 · обновлён "
+                                   + DateFormatter.docsStatsFormatterForTest.string(from: builtStats.updatedAt!),
+                                  embedderAvailable: true),
+                 name: "есть репо, эмбеддер и индекс — готово")
+        ]
+        for c in cases {
+            let actual = ProjectDocsIndexUIStatus.classify(hasRepo: c.hasRepo,
+                                                            hasEmbedder: c.hasEmbedder,
+                                                            stats: c.stats)
+            XCTAssertEqual(actual, c.expected, c.name)
+        }
+    }
+
+    func testRebuildDisabledWithoutRepoOrEmbedder() {
+        XCTAssertTrue(ProjectDocsIndexUIStatus.noRepo.rebuildDisabled)
+        XCTAssertTrue(ProjectDocsIndexUIStatus.notBuilt(embedderAvailable: false).rebuildDisabled)
+        XCTAssertFalse(ProjectDocsIndexUIStatus.notBuilt(embedderAvailable: true).rebuildDisabled)
+        XCTAssertTrue(ProjectDocsIndexUIStatus.built(statusLine: "x", embedderAvailable: false).rebuildDisabled)
+        XCTAssertFalse(ProjectDocsIndexUIStatus.built(statusLine: "x", embedderAvailable: true).rebuildDisabled)
+    }
+
+    func testUnavailableReasonText() {
+        XCTAssertEqual(ProjectDocsIndexUIStatus.noRepo.unavailableReason, "репозиторий проекта не выбран")
+        XCTAssertEqual(ProjectDocsIndexUIStatus.notBuilt(embedderAvailable: false).unavailableReason,
+                       "нет провайдера эмбеддингов: запустите Ollama или добавьте ключ")
+        XCTAssertEqual(ProjectDocsIndexUIStatus.built(statusLine: "x", embedderAvailable: false).unavailableReason,
+                       "нет провайдера эмбеддингов: запустите Ollama или добавьте ключ")
+        XCTAssertNil(ProjectDocsIndexUIStatus.notBuilt(embedderAvailable: true).unavailableReason)
+        XCTAssertNil(ProjectDocsIndexUIStatus.built(statusLine: "x", embedderAvailable: true).unavailableReason)
+    }
+
+    /// Без даты обновления (теоретически не бывает у построенного индекса,
+    /// но stats.updatedAt — Optional) строка не ломается лишним разделителем.
+    func testStatusLineWithoutUpdatedAt() {
+        let stats = ProjectDocsIndexService.DocsIndexStats(files: 3, chunks: 5,
+                                                            updatedAt: nil, embeddingTag: nil)
+        let status = ProjectDocsIndexUIStatus.classify(hasRepo: true, hasEmbedder: true, stats: stats)
+        XCTAssertEqual(status, .built(statusLine: "3 файлов · 5 чанков", embedderAvailable: true))
+    }
+}
+
+private extension DateFormatter {
+    /// Тот же формат, что в ProjectDocsIndexUIStatus (short/short) — свежий
+    /// инстанс на каждый тест, чтобы не зависеть от private static форматтера.
+    static var docsStatsFormatterForTest: DateFormatter {
+        let f = DateFormatter()
+        f.dateStyle = .short
+        f.timeStyle = .short
+        return f
     }
 }
 

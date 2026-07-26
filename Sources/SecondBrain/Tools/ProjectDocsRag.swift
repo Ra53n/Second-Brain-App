@@ -103,11 +103,13 @@ actor ProjectDocsIndexService {
         }
     }
 
-    /// Статистика индекса доков для вкладки «Инструменты» (задача 28).
+    /// Статистика индекса доков для вкладки «Инструменты» (задачи 28, 47).
     struct DocsIndexStats: Equatable {
         let files: Int
         let chunks: Int
         let updatedAt: Date?
+        /// Тег модели эмбеддинга («model|dim»), которой построен индекс.
+        let embeddingTag: String?
     }
 
     /// nil — индекс ещё не строился (файла БД нет). Пустую БД НЕ создаёт.
@@ -117,7 +119,7 @@ actor ProjectDocsIndexService {
         guard let index = try? openIndex(repoRoot: repoRoot),
               let stats = try? index.stats() else { return nil }
         return DocsIndexStats(files: stats.files, chunks: stats.chunks,
-                              updatedAt: index.updatedAt)
+                              updatedAt: index.updatedAt, embeddingTag: index.embeddingTag)
     }
 
     /// Полный сброс индекса доков (кнопка «Сбросить индекс» в настройках).
@@ -126,6 +128,16 @@ actor ProjectDocsIndexService {
         try? index.clearAll()
         index.embeddingTag = nil
         index.updatedAt = nil
+    }
+
+    /// Сброс + немедленная полная переиндексация по кнопке «Перестроить
+    /// индекс» (задача 47). В отличие от ленивой `sync` в `helpBlock` —
+    /// явное действие пользователя, ошибку не глотаем: пробрасываем вызывающему
+    /// для показа в UI (P6).
+    func rebuild(repoRoot: URL, embedder: EmbeddingProvider, model: String?, tag: String) async throws {
+        reset(repoRoot: repoRoot)
+        let index = try openIndex(repoRoot: repoRoot)
+        try await sync(index: index, repoRoot: repoRoot, embedder: embedder, model: model, tag: tag)
     }
 
     // MARK: - Внутренности
@@ -217,5 +229,58 @@ actor ProjectDocsIndexService {
     private nonisolated static func mtime(of url: URL) -> TimeInterval? {
         (try? FileManager.default.attributesOfItem(atPath: url.path))?[.modificationDate]
             .flatMap { ($0 as? Date)?.timeIntervalSince1970 }
+    }
+}
+
+/// Состояние секции «Документация проекта» в настройках (задача 47): чистая
+/// классификация «репо + индекс + эмбеддер → что показать», без ФС и сети —
+/// `ProjectDocsStatusSection` только отображает.
+enum ProjectDocsIndexUIStatus: Equatable {
+    case noRepo
+    case notBuilt(embedderAvailable: Bool)
+    case built(statusLine: String, embedderAvailable: Bool)
+
+    static func classify(hasRepo: Bool, hasEmbedder: Bool,
+                         stats: ProjectDocsIndexService.DocsIndexStats?) -> ProjectDocsIndexUIStatus {
+        guard hasRepo else { return .noRepo }
+        guard let stats else { return .notBuilt(embedderAvailable: hasEmbedder) }
+        return .built(statusLine: Self.statusLine(for: stats), embedderAvailable: hasEmbedder)
+    }
+
+    /// Кнопка «Перестроить индекс» неактивна без репозитория или эмбеддера.
+    var rebuildDisabled: Bool {
+        switch self {
+        case .noRepo: return true
+        case let .notBuilt(embedderAvailable), let .built(_, embedderAvailable):
+            return !embedderAvailable
+        }
+    }
+
+    /// Причина недоступности кнопки текстом; nil — кнопка активна.
+    var unavailableReason: String? {
+        switch self {
+        case .noRepo:
+            return "репозиторий проекта не выбран"
+        case .notBuilt(false), .built(_, false):
+            return "нет провайдера эмбеддингов: запустите Ollama или добавьте ключ"
+        case .notBuilt(true), .built(_, true):
+            return nil
+        }
+    }
+
+    private static let dateFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateStyle = .short
+        f.timeStyle = .short
+        return f
+    }()
+
+    private static func statusLine(for stats: ProjectDocsIndexService.DocsIndexStats) -> String {
+        var line = "\(stats.files) файлов · \(stats.chunks) чанков"
+        if let tag = stats.embeddingTag { line += " · \(tag)" }
+        if let updated = stats.updatedAt {
+            line += " · обновлён \(dateFormatter.string(from: updated))"
+        }
+        return line
     }
 }

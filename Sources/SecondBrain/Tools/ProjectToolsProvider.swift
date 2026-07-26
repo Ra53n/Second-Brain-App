@@ -95,6 +95,23 @@ final class ProjectToolsProvider {
         await docsIndex.reset(repoRoot: root)
     }
 
+    /// Доступен ли провайдер эмбеддингов для ретрива/переиндексации доков
+    /// (задача 47: определяет доступность кнопки «Перестроить индекс»).
+    func hasEmbeddingProvider() -> Bool {
+        router?.resolveEmbeddingProvider(for: .embedding) != nil
+    }
+
+    /// Полная переиндексация доков по кнопке «Перестроить индекс» (задача 47).
+    /// Без репозитория/эмбеддера — no-op: кнопка в UI и так задизейблена.
+    /// Ошибку синхронизации пробрасывает вызывающему для показа в UI (P6).
+    func rebuildDocsIndex() async throws {
+        guard let root = currentRepoRoot(),
+              let resolved = router?.resolveEmbeddingProvider(for: .embedding) else { return }
+        let tag = "\(resolved.model)|\(resolved.provider.dimension)"
+        try await docsIndex.rebuild(repoRoot: root, embedder: resolved.provider,
+                                    model: resolved.model, tag: tag)
+    }
+
     /// Корень выбранного репозитория; nil — путь не задан (для /help, задача 22).
     func currentRepoRoot() -> URL? {
         effectiveRootURL(override: nil)

@@ -472,17 +472,17 @@ struct ToolsSettingsTab: View {
     @ObservedObject var settingsStore: SettingsStore
     /// Для кнопки «Текущий vault».
     @ObservedObject var vaultManager: VaultManager
-    /// Статус RAG-индекса документации проекта (задача 28).
+    /// Статус RAG-индекса документации проекта (задачи 28, 47).
     let projectToolsProvider: ProjectToolsProvider
     /// Реестр баз знаний (задача 34): секция управления папочными базами.
     @ObservedObject var knowledgeBaseStore: KnowledgeBaseStore
     let knowledgeBaseManager: KnowledgeBaseManager
 
+    @Environment(\.openSettings) private var openSettings
+
     /// Предупреждение «выбранная папка — не git-репозиторий» (не блокирует:
     /// list_files/read_file работают и без git).
     @State private var projectRepoWarning: String?
-    /// Статистика индекса доков; nil — не строился или репозиторий не выбран.
-    @State private var docsStats: ProjectDocsIndexService.DocsIndexStats?
 
     /// Каталог встроенных инструментов статичен — считается один раз.
     private static let builtinCatalog = ToolRegistry.projectToolCatalog()
@@ -490,6 +490,11 @@ struct ToolsSettingsTab: View {
     var body: some View {
         Form {
             builtinToolsSection
+            ProjectDocsStatusSection(provider: projectToolsProvider,
+                                     repoPath: settingsStore.settings.projectRepoPath,
+                                     onOpenSettingsTab: { tab in
+                SettingsTabRouter.open(tab, openSettings: { openSettings() })
+            })
             KnowledgeBasesSection(store: knowledgeBaseStore,
                                   folderService: knowledgeBaseManager.folderService)
             MCPServersSection(viewModel: viewModel,
@@ -497,48 +502,10 @@ struct ToolsSettingsTab: View {
             GitHubTokenSection()
         }
         .formStyle(.grouped)
-        // Проверка «папка — git-репозиторий?» + статистика индекса доков
-        // при каждом изменении пути.
+        // Проверка «папка — git-репозиторий?» при каждом изменении пути.
         .task(id: settingsStore.settings.projectRepoPath) {
             await refreshProjectRepoWarning()
-            docsStats = await projectToolsProvider.docsIndexStats()
         }
-    }
-
-    /// Строка статуса RAG-индекса документации (задача 28): доки индексируются
-    /// лениво при /help — здесь только наблюдение и сброс.
-    @ViewBuilder
-    private var docsIndexRow: some View {
-        if !settingsStore.settings.projectRepoPath.isEmpty {
-            HStack {
-                if let stats = docsStats {
-                    Text(Self.docsStatsLine(stats))
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    Spacer()
-                    Button("Сбросить индекс") {
-                        Task {
-                            await projectToolsProvider.resetDocsIndex()
-                            docsStats = await projectToolsProvider.docsIndexStats()
-                        }
-                    }
-                    .controlSize(.small)
-                    .help("Индекс перестроится при следующем /help")
-                } else {
-                    Text("RAG по документации: индекс построится при первом /help (нужна модель эмбеддингов)")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-            }
-        }
-    }
-
-    private static func docsStatsLine(_ stats: ProjectDocsIndexService.DocsIndexStats) -> String {
-        var line = "RAG по документации: \(stats.files) файлов · \(stats.chunks) чанков"
-        if let updated = stats.updatedAt {
-            line += " · обновлён " + updated.formatted(date: .abbreviated, time: .shortened)
-        }
-        return line
     }
 
     private var builtinToolsSection: some View {
@@ -578,7 +545,6 @@ struct ToolsSettingsTab: View {
                 .font(.caption)
                 .foregroundStyle(settingsStore.settings.projectRepoPath.isEmpty
                                  ? Color.secondary : .green)
-            docsIndexRow
             // Каталог: что именно умеет ассистент (только чтение).
             ForEach(Self.builtinCatalog, id: \.name) { definition in
                 VStack(alignment: .leading, spacing: 1) {
