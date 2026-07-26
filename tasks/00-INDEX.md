@@ -76,7 +76,7 @@
 | 70 | [Deep-link открывает новое окно вместо навигации в существующем](70-deeplink-reuse-window.md) | — | [x] |
 | 71 | [Тесты на `AppModel.swift`](71-appmodel-tests.md) | — | [x] |
 | 72 | [Тесты на `MCPConnection.swift`](72-mcpconnection-tests.md) | — | [x] |
-| 73 | [Тесты на `ProviderToolSupport.swift`](73-providertoolsupport-tests.md) | — | [ ] |
+| 73 | [Тесты на `ProviderToolSupport.swift`](73-providertoolsupport-tests.md) | — | [x] |
 | 74 | [Тесты на `VaultWatcher.swift`](74-vaultwatcher-tests.md) | — | [ ] |
 | 75 | [Разбить `ChatViews.swift`: `MessageBubble`, `ReviewPostSheet`](75-chatviews-split.md) | — | [ ] |
 | 76 | [Разбить `ChatViewModel.swift`: вынести bridge-классы](76-chatviewmodel-bridges-split.md) | — | [ ] |
