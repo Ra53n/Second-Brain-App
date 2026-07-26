@@ -87,6 +87,8 @@ struct VaultTreeView: View {
     /// Узел, который переименовываем (nil — диалог закрыт), и черновик имени.
     @State private var renameTarget: VaultNode?
     @State private var renameDraft = ""
+    /// Шит выбора шаблона для «Новая заметка из шаблона».
+    @State private var showingTemplatePicker = false
 
     var body: some View {
         // ScrollViewReader + рекурсивные DisclosureGroup вместо OutlineGroup:
@@ -131,6 +133,11 @@ struct VaultTreeView: View {
         } message: {
             Text("Расширение — часть имени (например, «Заметка.md»).")
         }
+        .sheet(isPresented: $showingTemplatePicker) {
+            TemplatePickerSheet(templates: manager.templateFiles) { template, title in
+                manager.createNote(fromTemplate: template, title: title)
+            }
+        }
     }
 
     /// Строка дерева: иконка + имя + контекстное меню узла.
@@ -150,6 +157,10 @@ struct VaultTreeView: View {
         Button("Новая заметка") {
             manager.selection = node.url
             manager.createNote()
+        }
+        Button("Новая заметка из шаблона…") {
+            manager.selection = node.url
+            showingTemplatePicker = true
         }
         Button("Новая папка") {
             manager.selection = node.url
@@ -199,6 +210,7 @@ struct VaultTreeView: View {
     @ViewBuilder
     private var rootContextMenu: some View {
         Button("Новая заметка") { manager.createNote() }
+        Button("Новая заметка из шаблона…") { showingTemplatePicker = true }
         Button("Новая папка") { manager.createFolder() }
     }
 
@@ -213,6 +225,13 @@ struct VaultTreeView: View {
                 Label("Новая заметка", systemImage: "square.and.pencil")
             }
             .help("Новая заметка")
+
+            Button {
+                showingTemplatePicker = true
+            } label: {
+                Label("Новая заметка из шаблона", systemImage: "doc.badge.plus")
+            }
+            .help("Новая заметка из шаблона")
 
             Button {
                 manager.createFolder()
@@ -232,6 +251,53 @@ struct VaultTreeView: View {
                 Label("Ещё", systemImage: "ellipsis.circle")
             }
         }
+    }
+}
+
+/// Шит «Новая заметка из шаблона»: выбор файла из `Templates/` + имя заметки.
+/// Папки нет или она пуста — templates пуст, показываем подсказку вместо краша
+/// или пустого алерта (задача 79).
+private struct TemplatePickerSheet: View {
+    let templates: [VaultNode]
+    let onCreate: (VaultNode, String) -> Void
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var selected: VaultNode?
+    @State private var title = ""
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Новая заметка из шаблона").font(.headline)
+            if templates.isEmpty {
+                ContentUnavailableView(
+                    "Нет шаблонов",
+                    systemImage: "doc.badge.plus",
+                    description: Text("Создайте .md-файлы в папке «\(NoteTemplate.folderName)» в корне vault — они появятся здесь.")
+                )
+            } else {
+                Picker("Шаблон", selection: $selected) {
+                    ForEach(templates) { template in
+                        Text(template.name).tag(Optional(template))
+                    }
+                }
+                TextField("Имя заметки", text: $title)
+            }
+            HStack {
+                Spacer()
+                Button("Отмена", role: .cancel) { dismiss() }
+                Button("Создать") {
+                    if let selected {
+                        onCreate(selected, title)
+                    }
+                    dismiss()
+                }
+                .keyboardShortcut(.defaultAction)
+                .disabled(selected == nil || title.trimmingCharacters(in: .whitespaces).isEmpty)
+            }
+        }
+        .padding()
+        .frame(minWidth: 320)
+        .onAppear { selected = templates.first }
     }
 }
 

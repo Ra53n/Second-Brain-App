@@ -229,6 +229,27 @@ final class VaultManager: ObservableObject {
         perform { try VaultFileOperations.createNote(in: folder) }
     }
 
+    /// Файлы `Templates/` в корне vault (не рекурсивно) — источник для «Новая
+    /// заметка из шаблона». Нет папки или она пуста — пустой список, UI сам
+    /// покажет подсказку (не алерт без объяснения).
+    var templateFiles: [VaultNode] {
+        let folder = root?.children?.first { $0.isDirectory && $0.name == NoteTemplate.folderName }
+        return (folder?.children ?? []).filter { !$0.isDirectory }
+    }
+
+    /// Создаёт заметку из выбранного шаблона: содержимое — шаблон с
+    /// подставленными {{date}}/{{title}}; пустой шаблон → пустая заметка,
+    /// без ошибки (задача 79).
+    func createNote(fromTemplate template: VaultNode, title: String) {
+        guard let folder = targetFolderForCreation else { return }
+        let name = title.trimmingCharacters(in: .whitespaces).isEmpty ? "Без названия" : title
+        perform {
+            let raw = (try? String(contentsOf: template.url, encoding: .utf8)) ?? ""
+            let content = NoteTemplate.render(raw, title: title)
+            return try VaultFileOperations.createNote(in: folder, named: name, content: content)
+        }
+    }
+
     func createFolder() {
         guard let folder = targetFolderForCreation else { return }
         perform { try VaultFileOperations.createFolder(in: folder) }

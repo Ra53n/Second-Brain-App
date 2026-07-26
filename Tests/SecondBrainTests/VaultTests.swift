@@ -331,6 +331,54 @@ final class VaultManagerTests: VaultTestCase {
         manager.closeVault()
     }
 
+    /// Путь UI задачи 79: TemplatePickerSheet.onCreate → VaultManager.createNote(fromTemplate:title:).
+    /// Без папки Templates/ — пустой список, обычное создание заметки не ломается.
+    func testTemplateFilesEmptyWithoutFolderAndCreateNoteUnaffected() throws {
+        let suiteName = "VaultManagerTests-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let manager = VaultManager(defaults: defaults, restoreLast: false)
+        manager.openVault(at: tempDir)
+
+        XCTAssertEqual(manager.templateFiles, [])
+        manager.createNote()
+        XCTAssertEqual(manager.selection?.lastPathComponent, "Без названия.md")
+        manager.closeVault()
+    }
+
+    /// Шаблон с {{date}}/{{title}} подставляется; пустой шаблон → пустая заметка без ошибки.
+    func testCreateNoteFromTemplateSubstitutesPlaceholdersAndHandlesEmptyTemplate() throws {
+        let suiteName = "VaultManagerTests-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        try makeFile("Templates/Дневная.md", contents: "# {{title}}\nДата: {{date}}")
+        try makeFile("Templates/Пустой.md", contents: "")
+
+        let manager = VaultManager(defaults: defaults, restoreLast: false)
+        manager.openVault(at: tempDir)
+
+        let templates = manager.templateFiles
+        XCTAssertEqual(Set(templates.map(\.name)), ["Дневная.md", "Пустой.md"])
+
+        let daily = try XCTUnwrap(templates.first { $0.name == "Дневная.md" })
+        manager.createNote(fromTemplate: daily, title: "Планёрка")
+        let noteURL = try XCTUnwrap(manager.selection)
+        XCTAssertEqual(noteURL.lastPathComponent, "Планёрка.md")
+        let content = try String(contentsOf: noteURL, encoding: .utf8)
+        XCTAssertTrue(content.hasPrefix("# Планёрка\nДата: "), content)
+        XCTAssertNil(manager.lastError)
+
+        let empty = try XCTUnwrap(templates.first { $0.name == "Пустой.md" })
+        manager.createNote(fromTemplate: empty, title: "Черновик")
+        let emptyNoteURL = try XCTUnwrap(manager.selection)
+        XCTAssertEqual(emptyNoteURL.lastPathComponent, "Черновик.md")
+        XCTAssertEqual(try String(contentsOf: emptyNoteURL, encoding: .utf8), "")
+        XCTAssertNil(manager.lastError)
+
+        manager.closeVault()
+    }
+
     /// Регрессия задачи 03: правка ТОЛЬКО содержимого файла (дерево не меняется)
     /// обязана двигать diskChangeTick — на него подписан редактор для
     /// checkExternalChange. Реальный FSEvents, поэтому щедрый таймаут.

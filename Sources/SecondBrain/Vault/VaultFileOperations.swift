@@ -36,13 +36,14 @@ enum VaultError: LocalizedError, Equatable {
 /// вызывающий (VaultManager) перестраивает дерево и обновляет selection.
 enum VaultFileOperations {
 
-    /// Создаёт пустую заметку `<name>.md` в папке, подбирая уникальное имя
-    /// («Без названия.md» → «Без названия 2.md» → …). Никогда не перезаписывает.
+    /// Создаёт заметку `<name>.md` в папке с заданным содержимым (по умолчанию
+    /// пустая), подбирая уникальное имя («Без названия.md» → «Без названия 2.md»
+    /// → …). Никогда не перезаписывает.
     @discardableResult
-    static func createNote(in folder: URL, named name: String = "Без названия") throws -> URL {
+    static func createNote(in folder: URL, named name: String = "Без названия", content: String = "") throws -> URL {
         let url = try uniqueURL(in: folder, baseName: name, ext: "md")
         // createFile не бросает — проверяем результат сами, чтобы донести ошибку.
-        guard FileManager.default.createFile(atPath: url.path, contents: Data()) else {
+        guard FileManager.default.createFile(atPath: url.path, contents: Data(content.utf8)) else {
             throw VaultError.operationFailed("не удалось создать «\(url.lastPathComponent)»")
         }
         return url

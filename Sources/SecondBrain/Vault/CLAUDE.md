@@ -9,6 +9,8 @@
 - `VaultScanner` / `VaultTree` / `VaultWatcher` — скан, модель узлов, FSEvents.
 - `VaultFileOperations` — единственная точка создания/переименования/удаления/перемещения.
 - `VaultPath` — чистые вычисления путей (breadcrumb, предки для раскрытия дерева).
+- `NoteTemplate` — чистая подстановка `{{date}}`/`{{title}}` для «Новая заметка из
+  шаблона» (`Templates/` в корне vault, зарезервированное имя как у `Meetings/`).
 - `VaultViews`, `NoteBreadcrumbView` — дерево, breadcrumb, содержимое папки.
 
 ## Инварианты
