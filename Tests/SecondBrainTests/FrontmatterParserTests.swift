@@ -10,7 +10,8 @@
 // непарные кавычки, в т.ч. внутри блок-списка), наивный comma-split инлайн-
 // списка, отрицательные/нулевые числа, невалидная календарная дата, subscript
 // remove отсутствующего ключа и set в документ без frontmatter вовсе, raw-строка
-// «: без ключа», пустой блок frontmatter (round-trip НЕ байт-в-байт).
+// «: без ключа», пустой блок frontmatter (round-trip через hasEmptyFrontmatterBlock,
+// задача 69).
 
 import XCTest
 @testable import SecondBrain
@@ -203,23 +204,6 @@ final class FrontmatterParserAdditionalTests: XCTestCase {
         XCTAssertEqual(doc.serialized(), text, "raw-строка переживает round-trip")
     }
 
-    /// НАХОДКА: «пустой» блок frontmatter (открывающий и закрывающий «---» есть,
-    /// полей между ними нет) парсится в entries=[] — состояние неотличимо от
-    /// «frontmatter вообще нет». serialized() для entries=[] всегда возвращает
-    /// только body (`guard !entries.isEmpty else { return body }`), поэтому
-    /// исходные маркеры «---\n---\n» при сериализации теряются: единственный
-    /// найденный случай НЕ байт-точного round-trip (в отличие от всех остальных
-    /// форм — см. LinksTests.testRoundTripIsByteExact и testUnknownLinesPreservedVerbatim).
-    func testEmptyFrontmatterBlockDoesNotRoundTripByteExact() {
-        let text = "---\n---\nТело."
-        let doc = FrontmatterParser.parse(text)
-
-        XCTAssertTrue(doc.entries.isEmpty)
-        XCTAssertEqual(doc.body, "Тело.")
-        XCTAssertEqual(doc.serialized(), "Тело.", "маркеры пустого блока теряются при сериализации")
-        XCTAssertNotEqual(doc.serialized(), text, "фиксирует потерю round-trip именно для этого входа")
-    }
-
     /// «title:» (без значения, без списка ниже) и «title: ""» (явная пустая
     /// строка в кавычках) дают ОДИНАКОВОЕ типизированное значение .string(""),
     /// но через разные ветки парсера — и с разными rawLines, различие в
@@ -232,5 +216,52 @@ final class FrontmatterParserAdditionalTests: XCTestCase {
         XCTAssertEqual(emptyQuoted["title"], .string(""))
         XCTAssertEqual(bareColon.entries[0].rawLines, ["title:"])
         XCTAssertEqual(emptyQuoted.entries[0].rawLines, ["title: \"\""])
+    }
+
+    /// НАХОДКА (задача 69, fixed): «пустой» блок frontmatter («---\n---\n») парсился
+    /// в entries=[] неотличимо от «frontmatter вообще нет», поэтому serialized()
+    /// теряла маркеры. Флаг hasEmptyFrontmatterBlock различает эти состояния;
+    /// тест фиксирует byte-exact round-trip как регрессию на этот баг.
+    func testEmptyFrontmatterBlockRoundTripsCorrectly() {
+        let text = "---\n---\nТело."
+        let doc = FrontmatterParser.parse(text)
+
+        XCTAssertTrue(doc.entries.isEmpty, "пустой блок парсится в entries=[]")
+        XCTAssertEqual(doc.body, "Тело.")
+        XCTAssertTrue(doc.hasEmptyFrontmatterBlock, "флаг различает пустой блок от отсутствия фронтматтера")
+        XCTAssertEqual(doc.serialized(), text, "сериализация воспроизводит маркеры ---\\n---\\n")
+
+        let reparsed = FrontmatterParser.parse(doc.serialized())
+        XCTAssertEqual(reparsed, doc, "parse → serialize → parse даёт идентичный результат")
+        XCTAssertTrue(reparsed.hasEmptyFrontmatterBlock, "флаг переживает round-trip")
+    }
+
+    /// Документ без frontmatter вовсе имеет hasEmptyFrontmatterBlock=false,
+    /// отличие от пустого блока проверяется при сериализации.
+    func testDocumentWithoutFrontmatterDoesNotGetEmptyBlockMarkers() {
+        let text = "Просто текст без frontmatter."
+        let doc = FrontmatterParser.parse(text)
+
+        XCTAssertTrue(doc.entries.isEmpty)
+        XCTAssertFalse(doc.hasEmptyFrontmatterBlock, "отсутствие фронтматтера имеет флаг=false")
+        XCTAssertEqual(doc.serialized(), text, "сериализация НЕ добавляет маркеры для документа без фронтматтера")
+    }
+
+    /// Когда к документу с пустым фронтматтером добавляют поле через subscript,
+    /// фронтматтер становится непустым и сохраняется как обычный блок.
+    func testAddingFieldToEmptyFrontmatterBlockPreservesFrontmatter() {
+        var doc = FrontmatterParser.parse("---\n---\nТело.")
+        XCTAssertTrue(doc.entries.isEmpty)
+        XCTAssertTrue(doc.hasEmptyFrontmatterBlock)
+
+        doc["title"] = .string("Новый")
+
+        XCTAssertFalse(doc.entries.isEmpty, "после добавления поля entries не пустые")
+        XCTAssertTrue(doc.hasEmptyFrontmatterBlock, "флаг остаётся на месте (не меняется subscript)")
+        XCTAssertEqual(doc.serialized(), "---\ntitle: Новый\n---\nТело.", "фронтматтер сохраняется с новым полем")
+
+        let reparsed = FrontmatterParser.parse(doc.serialized())
+        XCTAssertFalse(reparsed.hasEmptyFrontmatterBlock, "переразобранный документ уже с полем, флаг=false")
+        XCTAssertEqual(reparsed["title"], .string("Новый"))
     }
 }

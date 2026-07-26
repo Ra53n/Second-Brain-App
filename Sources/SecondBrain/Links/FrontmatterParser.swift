@@ -36,6 +36,14 @@ struct FrontmatterDocument: Equatable {
     var entries: [Entry]
     /// Текст после frontmatter (или весь файл, если frontmatter нет/битый).
     var body: String
+    /// Была ли в исходном файле пустая frontmatter-заготовка (---\n---\n)
+    /// без единого поля внутри. Различает "нет frontmatter вовсе" от
+    /// "есть пустой блок frontmatter", без чего round-trip теряет маркеры.
+    /// Умышленно не трогается subscript-мутацией: отражает только состояние на
+    /// момент parse, не путь программного изменения (см. LinksTests.
+    /// testEmptyFrontmatterSerializesToBodyOnly — удаление последнего поля
+    /// схлопывает блок в body, а не сохраняет пустые маркеры).
+    var hasEmptyFrontmatterBlock: Bool = false
 
     /// Значение поля по ключу (первое совпадение).
     subscript(key: String) -> FrontmatterValue? {
@@ -59,9 +67,13 @@ struct FrontmatterDocument: Equatable {
     }
 
     /// Собирает файл обратно: «---» + записи (raw-строки дословно) + «---» + тело.
-    /// Без единой записи блок frontmatter не пишется вовсе.
+    /// Без единой записи блок frontmatter не пишется вовсе, кроме случая
+    /// пустой заготовки (hasEmptyFrontmatterBlock=true) — тогда выдаёт маркеры
+    /// «---\n---\n» для round-trip.
     func serialized() -> String {
-        guard !entries.isEmpty else { return body }
+        if entries.isEmpty {
+            return hasEmptyFrontmatterBlock ? "---\n---\n" + body : body
+        }
         let lines = entries.flatMap(\.rawLines)
         return "---\n" + lines.joined(separator: "\n") + "\n---\n" + body
     }
@@ -108,7 +120,10 @@ enum FrontmatterParser {
 
         let fieldLines = Array(lines[1..<closingIndex])
         let body = lines[(closingIndex + 1)...].joined(separator: "\n")
-        return FrontmatterDocument(entries: parseEntries(fieldLines), body: body)
+        let entries = parseEntries(fieldLines)
+        var doc = FrontmatterDocument(entries: entries, body: body)
+        doc.hasEmptyFrontmatterBlock = fieldLines.isEmpty
+        return doc
     }
 
     // MARK: - Внутреннее
