@@ -14,13 +14,17 @@ final class CodeRegionDetectorExcludedRangesTests: XCTestCase {
         XCTAssertTrue(CodeRegionDetector.excludedRanges(in: "").isEmpty)
     }
 
-    /// НАХОДКА: незакрытый ``` не даёт НИКАКОЙ защиты содержимому после себя —
-    /// регэксп codeBlockRegex требует парную закрывающую ``` на начале строки;
-    /// без неё совпадения нет вообще (не «до конца файла», а «нет совпадения»).
-    /// Остальные лёгкие парсеры (wikilinks и т.п.) отработают этот текст как обычный.
-    func testUnclosedCodeBlockFenceExcludesNothing() {
+    /// Незакрытый ``` считается открытым до конца документа: если пользователь откроет
+    /// код-блок, весь остаток файла защищён от интерпретации как разметка (wikilinks, чеклисты).
+    /// Это соответствует VS Code и Obsidian: явно открытый код должен быть защищён,
+    /// даже если забыт закрывающий маркер.
+    func testUnclosedCodeBlockFenceExcludesUntilEndOfDocument() {
         let text = "```\nкод без закрывающей тройки\nещё текст"
-        XCTAssertTrue(CodeRegionDetector.excludedRanges(in: text).isEmpty)
+        let ranges = CodeRegionDetector.excludedRanges(in: text)
+        let ns = text as NSString
+
+        XCTAssertEqual(ranges.count, 1, "незакрытый блок должен быть найден как один регион")
+        XCTAssertEqual(ns.substring(with: ranges[0]), text, "весь текст от открытия до конца считается кодом")
     }
 
     func testClosedCodeBlockExcludesWholeFenceIncludingContent() {
@@ -30,6 +34,20 @@ final class CodeRegionDetectorExcludedRangesTests: XCTestCase {
 
         XCTAssertEqual(ranges.count, 1)
         XCTAssertEqual(ns.substring(with: ranges[0]), "```\nстрока 1\nстрока 2\n```")
+    }
+
+    /// Регрессия: wikilinks внутри незакрытого код-блока должны быть защищены.
+    /// Баг был в том, что незакрытый блок вообще не считался кодом, поэтому `[[link]]`
+    /// интерпретировался как разметка. Теперь блок открыт до конца документа.
+    func testUnclosedCodeBlockProtectsWikilinksInsideUntilEnd() {
+        let text = "```\n[[wikilink]] и другой [[текст]] без закрытия"
+        let ranges = CodeRegionDetector.excludedRanges(in: text)
+
+        XCTAssertEqual(ranges.count, 1, "одна защищённая область")
+        XCTAssertTrue(CodeRegionDetector.isExcluded(
+            NSRange(location: 5, length: 10), // диапазон [[wikilink]]
+            from: ranges
+        ), "wikilink внутри незакрытого блока должен быть исключён")
     }
 
     /// ``` не в начале строки — не код-блок (anchorsMatchLines требует ^ на строке).

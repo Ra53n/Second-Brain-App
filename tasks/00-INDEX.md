@@ -71,7 +71,7 @@
 | 65 | [`CLAUDE.md` для `LocalRuntime/`](65-localruntime-claude-md.md) | — | [x] |
 | 66 | [`CLAUDE.md` для `MCP/`](66-mcp-claude-md.md) | — | [x] |
 | 67 | [`RagVector.cosine` → NaN при Infinity-компоненте](67-ragvector-nan-fix.md) | — | [x] |
-| 68 | [`CodeRegionDetector`: незакрытый код-блок не защищает контент](68-coderegiondetector-unclosed-block.md) | — | [ ] |
+| 68 | [`CodeRegionDetector`: незакрытый код-блок не защищает контент](68-coderegiondetector-unclosed-block.md) | — | [x] |
 | 69 | [`FrontmatterParser`: пустой frontmatter теряется при сериализации](69-frontmatter-empty-roundtrip.md) | — | [ ] |
 | 70 | [Deep-link открывает новое окно вместо навигации в существующем](70-deeplink-reuse-window.md) | — | [ ] |
 | 71 | [Тесты на `AppModel.swift`](71-appmodel-tests.md) | — | [ ] |
