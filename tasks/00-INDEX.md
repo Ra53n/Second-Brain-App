@@ -65,7 +65,7 @@
 | 59 | [Смоук-каталог, HTML-отчёт по AX, карта импакта (уровень 2)](59-smoke-catalog.md) | 49, 50, 58 | [x] |
 | 60 | [Цикл прогона: smoke-all, скилл /smoke-cycle, интеграция](60-smoke-cycle.md) | 59 | [x] |
 | 61 | [Смоук: одно окно, один запуск, один сводный HTML](61-smoke-single-report.md) | 60 | [x] |
-| 61 | [Гибкий конвейер и экономия токенов: caveman, ast-index](61-pipeline-flex-tokens.md) | — | [x] |
+| 62 | [Гибкий конвейер и экономия токенов: caveman, ast-index](62-pipeline-flex-tokens.md) | — | [x] |
 
 ## Рекомендуемый порядок
 
