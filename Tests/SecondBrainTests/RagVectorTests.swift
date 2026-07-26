@@ -98,14 +98,25 @@ final class VectorCosineTests: XCTestCase {
         XCTAssertEqual(Vector.cosine([1, 1], [Float.nan, 1]), 0)
     }
 
-    /// НАХОДКА: Infinity в компоненте идёт другим путём, чем NaN. norm(a) тоже
-    /// становится Infinity (Infinity > 0 истинно, guard проходит), а
-    /// dot(a,b)/(∞·finite) = ∞, и итоговое ∞/∞ по IEEE 754 — NaN, а не 0.
-    /// Комментарий функции обещает диапазон «в [-1, 1]» — для Infinity это не так,
-    /// защиты, симметричной NaN-случаю, здесь нет.
-    func testCosineWithInfiniteComponentProducesNaNNotZero() {
-        let result = Vector.cosine([Float.infinity, 1], [1, 1])
-        XCTAssertTrue(result.isNaN, "фактическое поведение: ∞/∞ = NaN, вопреки диапазону [-1,1] из комментария")
+    /// Infinity в компоненте → норма Infinity, дефектный вектор, косинус=0
+    /// (семантика: нет сходства с дефектным вектором).
+    func testCosineWithInfiniteComponentFallsBackToZero() {
+        XCTAssertEqual(Vector.cosine([Float.infinity, 1], [1, 1]), 0)
+        XCTAssertEqual(Vector.cosine([1, 1], [Float.infinity, 1]), 0)
+        XCTAssertEqual(Vector.cosine([Float.infinity, 1], [Float.infinity, 1]), 0)
+    }
+
+    /// Граничный случай: смешанные Infinity и NaN. Оба считаются дефектными.
+    func testCosineWithMixedNaNAndInfinity() {
+        XCTAssertEqual(Vector.cosine([Float.nan, 1], [Float.infinity, 1]), 0)
+        XCTAssertEqual(Vector.cosine([Float.infinity, 1], [Float.nan, 1]), 0)
+        XCTAssertEqual(Vector.cosine([Float.nan, Float.infinity], [1, 1]), 0)
+    }
+
+    /// Отрицательная бесконечность тоже дефектная.
+    func testCosineWithNegativeInfinity() {
+        XCTAssertEqual(Vector.cosine([-Float.infinity, 1], [1, 1]), 0)
+        XCTAssertEqual(Vector.cosine([1, 1], [-Float.infinity, 1]), 0)
     }
 }
 
@@ -172,14 +183,17 @@ final class VectorTopKTests: XCTestCase {
         }
     }
 
-    /// Вектор с Infinity даёт NaN-score (см. VectorCosineTests) — topK не должен
-    /// падать и не должен терять элементы из-за непредсказуемого сравнения с NaN;
-    /// порядок именно NaN-элемента не гарантирован и не проверяется.
-    func testTopKDoesNotLoseElementsWhenScoreIsNaN() {
-        let matrixWithNaN: [[Float]] = [[1, 0], [Float.infinity, 1], [-1, 0]]
-        let result = Vector.topK(query: query, matrix: matrixWithNaN, k: 3)
+    /// Вектор с Infinity или NaN даёт score=0 — topK правильно обращается
+    /// с дефектными векторами, они получают наименьший приоритет.
+    func testTopKHandlesDefectiveVectorsCorrectly() {
+        let matrixWithDefects: [[Float]] = [[1, 0], [Float.infinity, 1], [Float.nan, 0], [-1, 0]]
+        let result = Vector.topK(query: query, matrix: matrixWithDefects, k: 4)
 
-        XCTAssertEqual(result.count, 3, "NaN-score не должен приводить к потере элементов")
-        XCTAssertEqual(Set(result.map(\.index)), Set([0, 1, 2]))
+        XCTAssertEqual(result.count, 4, "дефектные векторы не теряются")
+        XCTAssertEqual(Set(result.map(\.index)), Set([0, 1, 2, 3]))
+        // Вектор [1, 0] — самый близкий (score=1.0), затем [-1, 0] (score=-1.0),
+        // дефектные [Infinity, 1] и [NaN, 0] получают score=0, порядок между ними не определён.
+        XCTAssertEqual(result[0].index, 0, "вектор с score=1 на первом месте")
+        XCTAssertEqual(result[result.count - 1].index, 3, "вектор с score=-1 на последнем месте")
     }
 }

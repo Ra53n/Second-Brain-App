@@ -28,9 +28,10 @@ enum Vector {
     }
 
     /// Косинусная близость в [-1, 1] (1 — сонаправлены, 0 — ортогональны).
+    /// Защита: если норма NaN или Infinity, вектор дефектный — косинус=0 (нет сходства).
     static func cosine(_ a: [Float], _ b: [Float]) -> Float {
         let na = norm(a), nb = norm(b)
-        guard na > 0, nb > 0 else { return 0 }
+        guard na > 0, na.isFinite, nb > 0, nb.isFinite else { return 0 }
         return dot(a, b) / (na * nb)
     }
 
