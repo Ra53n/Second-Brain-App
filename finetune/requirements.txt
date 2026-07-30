@@ -1,0 +1,5 @@
+# Тюн и инференс LoRA на Apple Silicon.
+# Ставить в отдельный venv — системный Python 3.9 не подходит, нужен 3.10+.
+#   python3 -m venv finetune/.venv && finetune/.venv/bin/pip install -r finetune/requirements.txt
+mlx-lm>=0.21.0
+

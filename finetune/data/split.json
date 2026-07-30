@@ -1,0 +1,13 @@
+{
+  "seed": 20260729,
+  "eval_fraction_target": 0.2,
+  "eval_posts": [
+    "anons_boosty",
+    "anons_habr",
+    "itogi_2025"
+  ],
+  "counts": {
+    "train": 38,
+    "valid": 12
+  }
+}

@@ -22,3 +22,14 @@ icon/icon_1024.png
 
 # Смоук-отчёты (задача 60) — генерируются, не коммитим
 smoke/out/
+
+# finetune: окружение и веса. data/ и baseline/ коммитим — это и есть
+# зафиксированная точка отсчёта, пересборка дала бы уже другие числа.
+finetune/.venv/
+finetune/__pycache__/
+finetune/adapters/
+finetune/runs/
+finetune/tuned/
+finetune/dictation/adapters/
+finetune/dictation/runs/
+finetune/dictation/tuned/
