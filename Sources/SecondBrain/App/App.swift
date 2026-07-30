@@ -53,6 +53,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         true
     }
 
+    /// Тюн длится часами (задача 81) — молча убить его по случайному Cmd+Q нельзя,
+    /// молча оставить жить — тоже. FineTuneQuitGuard.probe (мост, ставит AppModel.wire())
+    /// — nil, если живого прогона нет.
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        guard let active = FineTuneQuitGuard.probe?() else { return .terminateNow }
+
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "Обучение «\(active.datasetTitle)» ещё идёт"
+        alert.informativeText = active.progress
+        alert.addButton(withTitle: "Остановить обучение")
+        alert.addButton(withTitle: "Оставить работать")
+        alert.addButton(withTitle: "Отмена")
+
+        switch alert.runModal() {
+        case .alertFirstButtonReturn:
+            active.stop()
+            return .terminateNow
+        case .alertSecondButtonReturn:
+            active.detach()
+            return .terminateNow
+        default:
+            return .terminateCancel
+        }
+    }
+
     /// Инвариант №2 (ARCHITECTURE.md): любой фоновый процесс, запущенный
     /// приложением (Ollama и т.п.), гарантированно гасится при выходе.
     /// Хук существует с первого дня; реальная логика появится в задаче 09.

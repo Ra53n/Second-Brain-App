@@ -13,6 +13,7 @@ enum AppSection: String, CaseIterable, Identifiable {
     case meetings = "Встречи"
     case chat = "Чат"
     case pipelines = "Пайплайны"
+    case finetune = "Тюнинг"
     case settings = "Настройки"
 
     var id: String { rawValue }
@@ -24,6 +25,7 @@ enum AppSection: String, CaseIterable, Identifiable {
         case .meetings: return "mic"
         case .chat: return "bubble.left.and.bubble.right"
         case .pipelines: return "gearshape.arrow.triangle.2.circlepath"
+        case .finetune: return "slider.horizontal.3"
         case .settings: return "gearshape"
         }
     }
@@ -141,6 +143,11 @@ struct ContentView: View {
             PipelinesPane(store: model.pipelineStore,
                           engine: model.pipelineEngine,
                           watcher: model.prWatcher)
+        case .finetune:
+            // Средней колонке нужна ширина под счётчики строк и статус прогона
+            // (дефолт превращает список в вертикальную кашу, как в задаче 41).
+            FineTunePane(store: model.fineTuneStore, viewModel: model.fineTuneViewModel)
+                .navigationSplitViewColumnWidth(min: 320, ideal: 380, max: 560)
         case .settings:
             // Настройки живут в стандартном окне Settings (задача 17).
             ContentUnavailableView {
@@ -183,6 +190,8 @@ struct ContentView: View {
                                chatViewModel: model.chatViewModel,
                                mcpViewModel: model.mcpServersViewModel,
                                knowledgeBaseStore: model.knowledgeBaseStore)
+        } else if selection == .finetune {
+            FineTuneDetailView(store: model.fineTuneStore, viewModel: model.fineTuneViewModel)
         } else if selection == .notes {
             if let url = vaultManager.selection,
                let node = vaultManager.root?.find(url) {

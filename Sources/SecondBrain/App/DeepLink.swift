@@ -66,6 +66,7 @@ extension AppSection {
         case .meetings: return "meetings"
         case .chat: return "chat"
         case .pipelines: return "pipelines"
+        case .finetune: return "finetune"
         case .settings: return "settings"
         }
     }

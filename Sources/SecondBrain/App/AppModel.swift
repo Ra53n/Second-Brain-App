@@ -38,6 +38,11 @@ final class AppModel: ObservableObject {
     let prWatcher: PRWatcher
     /// Code review (задача 37): общий раннер /review, пресета и локального диффа.
     let codeReviewRunner: CodeReviewRunner
+    /// Тюнинг локальных LLM (задача 81): датасеты и прогоны CLI-тулчейна finetune/
+    /// поверх репозитория из ProjectToolsProvider.currentRepoRoot() — своей настройки нет.
+    let fineTuneStore: FineTuneStore
+    let fineTuneRunner: FineTuneRunner
+    let fineTuneViewModel: FineTuneViewModel
 
     private var cancellables: Set<AnyCancellable> = []
 
@@ -88,6 +93,22 @@ final class AppModel: ObservableObject {
         codeReviewRunner = CodeReviewRunner(chatViewModel: chatViewModel,
                                             projectToolsProvider: projectToolsProvider,
                                             router: router)
+
+        // Тюнинг (задача 81): корень — <projectRepoPath>/finetune, отдельной настройки
+        // не заводим (ProjectToolsProvider уже резолвит projectRepoPath). ViewModel
+        // сам @MainActor — замыкание в него безопасно; раннер — actor, ему передаём
+        // снимок URL, обновляемый из wire() (updateRoot), а не замыкание на
+        // MainActor-состояние (settingsStore читался бы с кооперативного пула).
+        let toolsProviderForFineTune = projectToolsProvider
+        let fineTuneRoot: () -> URL? = {
+            toolsProviderForFineTune.currentRepoRoot()?.appendingPathComponent("finetune")
+        }
+        let fineTuneStore = FineTuneStore()
+        self.fineTuneStore = fineTuneStore
+        let fineTuneRunner = FineTuneRunner(fineTuneRoot: fineTuneRoot())
+        self.fineTuneRunner = fineTuneRunner
+        fineTuneViewModel = FineTuneViewModel(store: fineTuneStore, runner: fineTuneRunner,
+                                              fineTuneRoot: fineTuneRoot)
 
         wire()
     }
@@ -142,6 +163,25 @@ final class AppModel: ObservableObject {
             .sink { [weak self] url in self?.syncViewModel.attach(vaultURL: url) }
             .store(in: &cancellables)
 
+        // Смена репозитория проекта (задача 81): обновить снимок корня в раннере
+        // (В4 — раннер не должен читать MainActor-состояние из своего актора) и
+        // пересканировать датасеты тюнинга — finetune/ лежит внутри того же
+        // репозитория, что и остальные project-инструменты. Срабатывает и сразу
+        // на подписке — это же подхватывает прогон, оставленный «работать» в
+        // прошлой сессии, без открытия раздела «Тюнинг».
+        settingsStore.$settings
+            .map(\.projectRepoPath)
+            .removeDuplicates()
+            .sink { [weak self] _ in
+                guard let self else { return }
+                let root = self.projectToolsProvider.currentRepoRoot()?.appendingPathComponent("finetune")
+                let runner = self.fineTuneRunner
+                let viewModel = self.fineTuneViewModel
+                Task { await runner.updateRoot(root) }
+                Task { await viewModel.refreshDatasets() }
+            }
+            .store(in: &cancellables)
+
         // Мосты инструментов чата — здесь, а не в ContentView.onAppear
         // (задача 36): пайплайн, сработавший до первого открытия раздела
         // «Чат», иначе бежал бы без инструментов и RAG.
@@ -154,6 +194,19 @@ final class AppModel: ObservableObject {
         // может сразу запустить прогон). Гашение — по willTerminate внутри.
         pipelineScheduler.start()
         prWatcher.start()
+
+        // Диалог выхода при живом прогоне тюнинга (задача 81): probe пересобирает
+        // Active заново на каждый Cmd+Q — прогресс должен быть свежим в этот момент.
+        FineTuneQuitGuard.probe = { [weak fineTuneStore, weak fineTuneRunner] in
+            guard let store = fineTuneStore, let runner = fineTuneRunner,
+                  let run = FineTuneQuitGuard.activeRun(in: store.runs) else { return nil }
+            let iter = run.points.last?.iter ?? 0
+            return FineTuneQuitGuard.Active(
+                datasetTitle: run.datasetTitle,
+                progress: "iter \(iter)/\(run.hyperparameters.iters)",
+                stop: { FineTuneQuitGuard.waitFor { await runner.stop(workdir: run.workdir) } },
+                detach: { FineTuneQuitGuard.waitFor { await runner.detachAllFromQuit() } })
+        }
     }
 
     // MARK: - Мосты чата (задачи 14, 15, 21, 34)

@@ -17,7 +17,7 @@ final class DeepLinkTests: XCTestCase {
     func testВсеРазделыОткрываютсяПоСлагу() {
         let expected: [(String, AppSection)] = [
             ("notes", .notes), ("meetings", .meetings), ("chat", .chat),
-            ("pipelines", .pipelines), ("settings", .settings)
+            ("pipelines", .pipelines), ("finetune", .finetune), ("settings", .settings)
         ]
         for (slug, section) in expected {
             XCTAssertEqual(parse("secondbrain://section/\(slug)"), .section(section), slug)

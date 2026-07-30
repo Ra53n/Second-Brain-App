@@ -32,4 +32,5 @@ Settings/**	Настройки	smoke/settings.txt	Settings|RoutingValidator|KeyV
 LLM/**	Настройки	smoke/settings.txt	FunctionRout|HashingEmbedder|KeyStore|LLMDTO|Provider|RagRouting|AudioChunker|MultipartFormData|SSEStream|AudioMIME|DeepgramQueryItems
 LocalRuntime/**	Настройки	smoke/settings.txt	BackgroundProcessRegistry|IdleShutdownPolicy|Ollama|Whisper
 GitSync/**	Настройки	smoke/settings.txt	AutoBackup|GitClientIntegration|GitRemoteURL|GitStatusParser|GitignoreAdvisor
+FineTune/**	Тюнинг	smoke/finetune.txt	FineTune
 App/**	*	*	*
