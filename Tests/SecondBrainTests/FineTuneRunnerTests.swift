@@ -5,6 +5,11 @@
 // которому шлём реальные сигналы, — используем getpid() как "живой", детач перед
 // любым сигналом. Живость процесса в реестре проверяется через registry.runningCount
 // (что реально видит terminateAll()), не через приватное состояние актора.
+//
+// Задача 83 дополняет: snapshotBaseline (argv, успех/провал), cancelBaseline на пустом
+// словаре, start() отклоняется guard'ом «идёт baseline» (инжектированный CLI подвешен
+// на continuation); ревью 83 — второй snapshotBaseline на том же workdir, пока первый
+// не завершился, отклоняется guard'ом, а не стартует параллельный процесс.
 
 import XCTest
 @testable import SecondBrain
@@ -259,6 +264,110 @@ final class FineTuneRunnerTests: XCTestCase {
         XCTAssertEqual(result.status, 1)
         XCTAssertEqual(registry.runningCount, 1, "провалившийся stop — процесс всё ещё может быть жив")
     }
+
+    // MARK: - snapshotBaseline() / cancelBaseline() (задача 83)
+
+    func testSnapshotBaselineBuildsArgumentsFromDatasetAndCount() async {
+        var captured: [String]?
+        let dataset = makeDataset()
+        let runner = FineTuneRunner(fineTuneRoot: tempDir, baselineCLI: { args in
+            captured = args
+            return .init(status: 0, output: "")
+        }, registry: BackgroundProcessRegistry())
+
+        _ = await runner.snapshotBaseline(dataset: dataset, count: 3)
+
+        XCTAssertEqual(captured, [
+            "--data", dataset.dataURL.path,
+            "--out", dataset.rootURL.appendingPathComponent("baseline").path,
+            "--count", "3"
+        ])
+    }
+
+    func testSnapshotBaselineSuccessReturnsZeroStatus() async {
+        let dataset = makeDataset()
+        let runner = FineTuneRunner(fineTuneRoot: tempDir, baselineCLI: { _ in
+            .init(status: 0, output: "Записано 3 файлов в baseline")
+        }, registry: BackgroundProcessRegistry())
+
+        let result = await runner.snapshotBaseline(dataset: dataset, count: 3)
+
+        XCTAssertEqual(result.status, 0)
+        XCTAssertEqual(result.output, "Записано 3 файлов в baseline")
+    }
+
+    func testSnapshotBaselineFailureReturnsNonZeroStatusWithOutput() async {
+        let dataset = makeDataset()
+        let runner = FineTuneRunner(fineTuneRoot: tempDir, baselineCLI: { _ in
+            .init(status: 1, output: "", stderr: "Провайдер не готов.")
+        }, registry: BackgroundProcessRegistry())
+
+        let result = await runner.snapshotBaseline(dataset: dataset, count: 3)
+
+        XCTAssertEqual(result.status, 1)
+        XCTAssertEqual(result.stderr, "Провайдер не готов.")
+    }
+
+    func testCancelBaselineOnEmptyDictionaryDoesNotCrash() async {
+        let runner = FineTuneRunner(fineTuneRoot: tempDir, registry: BackgroundProcessRegistry())
+        await runner.cancelBaseline(workdir: ".") // не должно падать/бросать
+    }
+
+    /// mlx не тянет тюн и снятие baseline одновременно — start() отклоняется, пока
+    /// внутри снятия. Инжектированный CLI подвешивается на continuation, чтобы
+    /// детерминированно поймать момент «занято» без сна и гонок.
+    func testStartThrowsBaselineRunningWhileSnapshotInProgress() async throws {
+        let dataset = makeDataset()
+        let box = ContinuationBox()
+        let runner = FineTuneRunner(fineTuneRoot: tempDir, baselineCLI: { _ in
+            await withCheckedContinuation { box.continuation = $0 }
+            return .init(status: 0, output: "")
+        }, registry: BackgroundProcessRegistry())
+
+        let snapshotTask = Task { await runner.snapshotBaseline(dataset: dataset, count: 2) }
+        while box.continuation == nil { await Task.yield() }
+
+        do {
+            _ = try await runner.start(dataset: dataset, model: "m", hyperparameters: FineTuneHyperparameters())
+            XCTFail("ожидался baselineRunning")
+        } catch {
+            XCTAssertEqual(error as? FineTuneError, .baselineRunning)
+        }
+
+        box.continuation?.resume()
+        _ = await snapshotTask.value
+    }
+
+    /// Ревью задачи 83: второй `snapshotBaseline` на том же workdir, пока первый ещё не
+    /// завершился (моделируем continuation'ом, как cancelBaseline-окно ~3 с), обязан
+    /// вернуться ошибкой, а не стартовать второй baseline.py параллельно.
+    func testSecondSnapshotBaselineOnSameWorkdirWhileFirstInProgressReturnsErrorWithoutStarting() async {
+        let dataset = makeDataset()
+        let box = ContinuationBox()
+        var baselineCallCount = 0
+        let runner = FineTuneRunner(fineTuneRoot: tempDir, baselineCLI: { _ in
+            baselineCallCount += 1
+            await withCheckedContinuation { box.continuation = $0 }
+            return .init(status: 0, output: "")
+        }, registry: BackgroundProcessRegistry())
+
+        let firstTask = Task { await runner.snapshotBaseline(dataset: dataset, count: 2) }
+        while box.continuation == nil { await Task.yield() }
+
+        let second = await runner.snapshotBaseline(dataset: dataset, count: 2)
+        XCTAssertNotEqual(second.status, 0, "второй вызов на занятом workdir не должен успевать")
+        XCTAssertTrue(second.output.contains("ещё завершается"), second.output)
+        XCTAssertEqual(baselineCallCount, 1, "второй вызов не должен звать baselineCLI вовсе")
+
+        box.continuation?.resume()
+        _ = await firstTask.value
+    }
+}
+
+/// Тестовый мост для ручного управления моментом возврата инжектированного CLI —
+/// `@unchecked Sendable`, доступ только последовательный (yield-цикл ждёт установки).
+private final class ContinuationBox: @unchecked Sendable {
+    var continuation: CheckedContinuation<Void, Never>?
 }
 
 // MARK: - FineTuneCLIRun — снисходительный декодер run.json

@@ -9,6 +9,9 @@
 // min-assistant по наличию system_prompt.txt, makeDocument — общая точка сборки
 // документа для persistNow() и дебаунс-автосохранения (ревью: раньше эти пути могли
 // разойтись по набору полей).
+//
+// Задача 83 дополняет: миграция без baselineCountOverrides, round-trip через
+// setBaselineCount, makeDocument — четвёртое поле.
 
 import XCTest
 @testable import SecondBrain
@@ -299,20 +302,42 @@ final class FineTuneStoreTests: XCTestCase {
                        "дефолт определяется наличием system_prompt.txt, не именем workdir")
     }
 
-    // MARK: - makeDocument (задача 82, регрессия дебаунс-подписки)
+    // MARK: - makeDocument (задача 82, регрессия дебаунс-подписки; задача 83 — четвёртое поле)
 
     /// $runs.sink раньше строил документ только из runs — с общей функцией это
     /// невозможно: и persistNow(), и дебаунс-автосохранение зовут её же.
-    func testMakeDocumentCombinesAllThreeFields() {
+    func testMakeDocumentCombinesAllFourFields() {
         let run = makeRun()
         let validations = ["a": FineTuneValidationRecord(isValid: true, notes: ["ok"], issues: [])]
-        let overrides = ["a": 55]
+        let minAssistantOverrides = ["a": 55]
+        let baselineCountOverrides = ["a": 5]
 
         let document = FineTuneStore.makeDocument(runs: [run], validations: validations,
-                                                  minAssistantOverrides: overrides)
+                                                  minAssistantOverrides: minAssistantOverrides,
+                                                  baselineCountOverrides: baselineCountOverrides)
 
         XCTAssertEqual(document.runs, [run])
         XCTAssertEqual(document.validations, validations)
-        XCTAssertEqual(document.minAssistantOverrides, overrides)
+        XCTAssertEqual(document.minAssistantOverrides, minAssistantOverrides)
+        XCTAssertEqual(document.baselineCountOverrides, baselineCountOverrides)
+    }
+
+    // MARK: - baselineCountOverrides (задача 83)
+
+    /// Документ без нового поля (версия до задачи 83) — грузится с пустым словарём,
+    /// не падает и не квалифицирует файл как битый.
+    func testMigrationWithoutBaselineCountOverridesLoadsWithEmptyDefault() throws {
+        try Data(#"{"runs":[]}"#.utf8).write(to: url)
+        let store = makeStore()
+        XCTAssertEqual(store.baselineCountOverrides, [:], "старый документ без этого поля — пустой словарь, не потеря")
+    }
+
+    func testSetBaselineCountPersistsAcrossStoreInstances() {
+        let store = makeStore()
+        store.setBaselineCount(3, workdir: "dictation")
+        store.persistNow() // setBaselineCount не пишет синхронно — полагается на дебаунс
+
+        let reloaded = makeStore()
+        XCTAssertEqual(reloaded.baselineCountOverrides["dictation"], 3)
     }
 }

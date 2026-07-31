@@ -3,7 +3,8 @@
 // Признак датасета — <dir>/data/train.jsonl; корень и подкаталоги глубины 1;
 // split.json может отсутствовать (реальный кейс dictation); sidecar короче основного
 // файла — без краша; отсутствующий finetune/ — пустой список, не ошибка. Задача 82
-// дополняет: baselineURL/criteriaURL, включая nil-ветки (нет каталога/файла).
+// дополняет: baselineURL/criteriaURL, включая nil-ветки (нет каталога/файла). Задача 83:
+// tunedURL — тот же принцип, плюс отдельный nil-кейс на пустой каталог tuned/.
 
 import XCTest
 @testable import SecondBrain
@@ -135,6 +136,29 @@ final class FineTuneDatasetScannerTests: XCTestCase {
         try write(jsonl([exampleLine("1")]), to: tempDir.appendingPathComponent("data/train.jsonl"))
         let datasets = FineTuneDatasetScanner.scan(fineTuneRoot: tempDir)
         XCTAssertNil(datasets.first?.criteriaURL, "нет criteria.md — понятная подсказка, не ошибка")
+    }
+
+    // MARK: - tunedURL (задача 83) — как baselineURL, но нужен хотя бы один файл внутри
+
+    func testTunedURLSetWhenDirectoryHasFile() throws {
+        try write(jsonl([exampleLine("1")]), to: tempDir.appendingPathComponent("data/train.jsonl"))
+        try write("# ответ", to: tempDir.appendingPathComponent("tuned/answer-1.md"))
+        let datasets = FineTuneDatasetScanner.scan(fineTuneRoot: tempDir)
+        XCTAssertEqual(datasets.first?.tunedURL?.path, tempDir.appendingPathComponent("tuned").path)
+    }
+
+    func testTunedURLNilWhenDirectoryMissing() throws {
+        try write(jsonl([exampleLine("1")]), to: tempDir.appendingPathComponent("data/train.jsonl"))
+        let datasets = FineTuneDatasetScanner.scan(fineTuneRoot: tempDir)
+        XCTAssertNil(datasets.first?.tunedURL, "нет tuned/ — понятная подсказка, не ошибка")
+    }
+
+    func testTunedURLNilWhenDirectoryEmpty() throws {
+        try write(jsonl([exampleLine("1")]), to: tempDir.appendingPathComponent("data/train.jsonl"))
+        try FileManager.default.createDirectory(at: tempDir.appendingPathComponent("tuned"),
+                                                withIntermediateDirectories: true)
+        let datasets = FineTuneDatasetScanner.scan(fineTuneRoot: tempDir)
+        XCTAssertNil(datasets.first?.tunedURL, "пустой tuned/ — снимок ещё не снят")
     }
 
     // MARK: - lineCount()

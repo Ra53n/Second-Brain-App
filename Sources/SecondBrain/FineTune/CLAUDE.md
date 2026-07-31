@@ -29,7 +29,19 @@
   поколения `.md` (`## Вход` в свежих, `## Задание` в закоммиченных).
 - `FineTuneOutputsIO` — чтение каталога снимка с диска (I/O, отдельно от чистого ядра).
 - `FineTuneStore` (P2) / `FineTuneViewModel` — персистентность прогонов, результатов
-  валидации и порогов `--min-assistant`, плюс состояние экрана.
+  валидации, порогов `--min-assistant` и счётчиков baseline, плюс состояние экрана.
+- `FineTuneTabBar` — вкладки датасета (задача 83): Обзор | Примеры | Baseline |
+  Критерии | Прогоны. Кнопки контент-области НЕ отдают AX ни name, ни description
+  (ни plain, ни bordered, ни `.accessibilityLabel`) — до System Events доходит только
+  `accessibilityValue`, поэтому имя вкладки лежит в нём (активная — `"<имя> — выбрано"`).
+- `FineTunePipelineStatus` — чистое ядро (P1): входные факты датасета → шаги пайплайна
+  со статусами и действиями для вкладки «Обзор».
+- `FineTuneImportCore` (P1) / `FineTuneDatasetImporter` (I/O) — импорт внешнего JSONL:
+  разбор, детерминированный сплит (SplitMix64), синтез meta; запись полного набора
+  файлов, которых требует python-тулчейн.
+- `FineTuneCriteriaPrompts` (P1) / `FineTuneCriteriaGenerator` — генерация `criteria.md`
+  по примерам датасета через `FunctionRouter` (`AppFunction.finetuneCriteria`), фоллбэк
+  по кандидатам как в `MeetingPipeline.summarizeStep`.
 
 ## Инварианты
 
@@ -40,7 +52,10 @@
 2. **Обучение — не наш child-процесс.** `train.py start` спавнит через
    `Popen(start_new_session=True)` и сразу выходит; у нас только pid из `run.json`, и он
    лидер сессии (`killpg` гасит и воркеров). Поэтому в `BackgroundProcessRegistry`
-   регистрируется `FineTunePidProcess`, а не `Process`.
+   регистрируется `FineTunePidProcess`, а не `Process`. **Baseline — наоборот, наш
+   child-процесс**: `baseline.py` живёт до конца генерации, регистрируется как обычный
+   `Process` (после `run()`) и гасится при выходе; одновременный тюн и baseline
+   запрещены взаимными guard'ами (mlx-память).
 3. **pid ≤ 1 не превращается в сигнал.** `FineTunePidProcess.init?` отвергает такой pid:
    `killpg(0, …)` бьёт по группе процессов самого приложения, `killpg(1, …)` — по launchd.
    Битый или недописанный `run.json` (декодер даёт -1 при отсутствии поля) обязан приводить
@@ -134,9 +149,13 @@
 ## Куда не лезть
 
 Сборку датасета из vault (`build_dataset.py`), регистрацию адаптера в `FunctionRouter`,
-генерацию ответов из приложения (`baseline.py`), перенос автопроверок
-`style_checks.py`/`dictation_checks.py` в Swift, слепое сравнение baseline и тюна с
-историей замеров — см. `tasks/BACKLOG.md` (48).
+перенос автопроверок `style_checks.py`/`dictation_checks.py` в Swift, слепое сравнение
+baseline и тюна с историей замеров — см. `tasks/BACKLOG.md` (48). Снятие baseline из
+приложения (`baseline.py`) и генерация/правка `criteria.md` — сделаны задачей 83.
+
+Контракт импорта (задача 83): импортированный датасет обязан проходить `validate.py`
+без правок python — синтетический sidecar `*.meta.jsonl` (уникальный `source_post` на
+пример), `system_prompt.txt` из канонического system первой строки, доля train 80%.
 
 Просмотр baseline-ответов и рендер `criteria.md` — уже сделаны задачей 82, это не
 «сравнение»: раздел показывает артефакты и ничего не пересчитывает. Числа в `criteria.md`

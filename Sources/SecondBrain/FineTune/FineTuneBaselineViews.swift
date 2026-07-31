@@ -1,15 +1,21 @@
-// FineTuneBaselineViews.swift — детальный экран «Baseline» (задача 82).
+// FineTuneBaselineViews.swift — детальный экран «Baseline» (задача 82, снятие — 83).
 //
-// Список из 10 снятых ответов датасета: слева строки (номер, тип задания, начало
-// задания), справа выбранный — «Задание», «Ответ модели», «Эталон (текст автора)».
-// Тумблер «Показать различия» — тот же UnifiedDiff/DiffTextView, что на экране
-// «Датасет». Разбор outputs.json/*.md — FineTuneOutputsReader (чистое ядро),
-// здесь только отображение готового FineTuneOutputsReader.Snapshot.
+// Список снятых ответов датасета: слева строки (номер, тип задания, начало задания),
+// справа выбранный — «Задание», «Ответ модели», «Эталон (текст автора)». Тумблер
+// «Показать различия» — тот же UnifiedDiff/DiffTextView, что на экране «Датасет».
+// Разбор outputs.json/*.md — FineTuneOutputsReader (чистое ядро), здесь только
+// отображение готового FineTuneOutputsReader.Snapshot.
+//
+// Кнопка «Снять baseline» запускает `finetune/baseline.py` из приложения (задача 83):
+// тулбар, не инлайн-Button — та же причина, что и у «Проверить датасет»
+// (FineTuneDatasetViews.swift). Прогресса внутри прогона нет (baseline.py пишет
+// результат только в конце) — indeterminate ProgressView + elapsed-таймер.
 
 import SwiftUI
 
 struct FineTuneBaselineDetailView: View {
     let dataset: FineTuneDataset
+    @ObservedObject var store: FineTuneStore
     @ObservedObject var viewModel: FineTuneViewModel
 
     @State private var selectedAnswerID: String?
@@ -19,16 +25,93 @@ struct FineTuneBaselineDetailView: View {
     /// время прогона, `UnifiedDiff.make` в body пересчитывался бы с той же частотой
     /// (antipattern 5, второе вхождение, ревью задачи 82).
     @State private var diffText = ""
+    @State private var showsOverwriteConfirm = false
+    @State private var snapshotStartedAt: Date?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             header
             Divider()
+            if viewModel.isSnapshottingBaseline {
+                snapshotBanner
+                Divider()
+            }
+            if let error = viewModel.baselineErrorText {
+                Text(error).font(.caption).foregroundStyle(.red).padding(10)
+                Divider()
+            }
             content
+        }
+        .toolbar { toolbarContent }
+        .confirmationDialog("Перезаписать снятый baseline?", isPresented: $showsOverwriteConfirm,
+                            titleVisibility: .visible) {
+            Button("Перезаписать", role: .destructive) { startSnapshot() }
+            Button("Отмена", role: .cancel) {}
+        } message: {
+            Text("Существующие ответы в baseline/ будут заменены новым прогоном baseline.py.")
         }
         .task { await load() }
         .onChange(of: selectedAnswerID) { _, _ in refreshDiff() }
         .onChange(of: showsDiff) { _, _ in refreshDiff() }
+    }
+
+    @ToolbarContentBuilder
+    private var toolbarContent: some ToolbarContent {
+        ToolbarItemGroup(placement: .primaryAction) {
+            Stepper("Примеров: \(countBinding.wrappedValue)", value: countBinding, in: countRange)
+                .disabled(viewModel.isSnapshottingBaseline)
+            if viewModel.isSnapshottingBaseline {
+                ProgressView().controlSize(.small)
+                Button {
+                    Task { await viewModel.cancelBaselineSnapshot(dataset: dataset) }
+                } label: {
+                    Label("Отменить", systemImage: "xmark.circle")
+                }
+            } else {
+                Button {
+                    if dataset.baselineURL != nil { showsOverwriteConfirm = true } else { startSnapshot() }
+                } label: {
+                    Label("Снять baseline", systemImage: "camera.viewfinder")
+                }
+                .disabled(!canSnapshot)
+                .help(snapshotHelp)
+            }
+        }
+    }
+
+    private var countBinding: Binding<Int> {
+        Binding(get: { store.baselineCountOverrides[dataset.workdir] ?? 10 },
+                set: { store.setBaselineCount($0, workdir: dataset.workdir) })
+    }
+
+    private var countRange: ClosedRange<Int> { 1...max(dataset.validCount, 1) }
+
+    private var isAnyTuneRunning: Bool { store.runs.contains { $0.status == .running } }
+
+    private var canSnapshot: Bool { !viewModel.isSnapshottingBaseline && !isAnyTuneRunning }
+
+    private var snapshotHelp: String {
+        isAnyTuneRunning ? "Идёт обучение — дождитесь или остановите тюн."
+                         : "Запустить finetune/baseline.py на этом датасете."
+    }
+
+    private func startSnapshot() {
+        snapshotStartedAt = Date()
+        Task { await viewModel.snapshotBaseline(dataset: dataset) }
+    }
+
+    private var snapshotBanner: some View {
+        HStack(spacing: 8) {
+            ProgressView().controlSize(.small)
+            Text("Генерация \(countBinding.wrappedValue) ответов локальной моделью — " +
+                 "это долго (минуты—десятки минут).")
+                .font(.caption)
+            Spacer()
+            if let started = snapshotStartedAt {
+                Text(started, style: .timer).font(.caption.monospaced()).foregroundStyle(.secondary)
+            }
+        }
+        .padding(10)
     }
 
     private func load() async {
@@ -175,24 +258,19 @@ struct FineTuneBaselineDetailView: View {
         }
     }
 
+    // Кнопка здесь дублирует тулбарную для удобства — сама она AX-подпись не отдаёт
+    // (кнопка в контент-области, см. FineTuneTabBar.swift), для смоука значима только
+    // тулбарная «Снять baseline».
     private var emptyState: some View {
         ContentUnavailableView {
             Label("Baseline-ответы не сняты", systemImage: "tray")
         } description: {
-            Text("Снимите ответы командой из finetune/README.md:\n" +
-                 "finetune/.venv/bin/python finetune/baseline.py --data \(dataURLHint) " +
-                 "--out \(baselineURLHint) --count 10 --temperature 0.3")
+            Text("Снимите ответы кнопкой «Снять baseline» в тулбаре.")
+        } actions: {
+            Button("Снять baseline") {
+                if dataset.baselineURL != nil { showsOverwriteConfirm = true } else { startSnapshot() }
+            }
+            .disabled(!canSnapshot)
         }
-    }
-
-    /// `baseline.py` резолвит `--data`/`--out` относительно своего каталога
-    /// (`finetune/`), не относительно cwd — как в finetune/README.md, префикс
-    /// "finetune/" здесь лишний и увёл бы в несуществующий finetune/finetune/….
-    private var dataURLHint: String {
-        dataset.workdir == "." ? "data" : "\(dataset.workdir)/data"
-    }
-
-    private var baselineURLHint: String {
-        dataset.workdir == "." ? "baseline" : "\(dataset.workdir)/baseline"
     }
 }

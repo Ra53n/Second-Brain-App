@@ -59,6 +59,7 @@ enum FineTuneDatasetScanner {
         let systemPromptURL = rootURL.appendingPathComponent("system_prompt.txt")
         let baselineURL = rootURL.appendingPathComponent("baseline")
         let criteriaURL = rootURL.appendingPathComponent("criteria.md")
+        let tunedURL = rootURL.appendingPathComponent("tuned")
 
         return FineTuneDataset(
             id: workdir,
@@ -72,11 +73,21 @@ enum FineTuneDatasetScanner {
             systemPromptPath: FileManager.default.fileExists(atPath: systemPromptURL.path)
                 ? systemPromptURL.path : nil,
             baselineURL: isDirectory(baselineURL) ? baselineURL : nil,
-            criteriaURL: FileManager.default.fileExists(atPath: criteriaURL.path) ? criteriaURL : nil)
+            criteriaURL: FileManager.default.fileExists(atPath: criteriaURL.path) ? criteriaURL : nil,
+            tunedURL: hasFiles(in: tunedURL) ? tunedURL : nil)
     }
 
     private static func isDirectory(_ url: URL) -> Bool {
         var flag: ObjCBool = false
         return FileManager.default.fileExists(atPath: url.path, isDirectory: &flag) && flag.boolValue
+    }
+
+    /// Пустой каталог `tuned/` (например, только что созданный) не считается снятым
+    /// снимком — нужен хотя бы один файл внутри.
+    private static func hasFiles(in url: URL) -> Bool {
+        guard isDirectory(url) else { return false }
+        let entries = (try? FileManager.default.contentsOfDirectory(
+            at: url, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles])) ?? []
+        return !entries.isEmpty
     }
 }

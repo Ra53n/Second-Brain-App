@@ -23,12 +23,14 @@ struct FineTuneDataset: Identifiable, Equatable {
     /// Артефакты домашки задачи 82 (nil — файла/каталога нет).
     let baselineURL: URL?
     let criteriaURL: URL?
+    /// Ответы тюна, снятые тем же `baseline.py --adapter` (задача 83, вкладка «Обзор»).
+    let tunedURL: URL?
 
     /// `let`-свойство с дефолтом Swift исключил бы из мемберайз-инициализатора совсем —
     /// явный init нужен, чтобы старые вызовы без новых полей продолжали собираться.
     init(id: String, title: String, workdir: String, rootURL: URL, dataURL: URL, trainCount: Int,
          validCount: Int, split: FineTuneSplitInfo?, systemPromptPath: String?,
-         baselineURL: URL? = nil, criteriaURL: URL? = nil) {
+         baselineURL: URL? = nil, criteriaURL: URL? = nil, tunedURL: URL? = nil) {
         self.id = id
         self.title = title
         self.workdir = workdir
@@ -40,6 +42,7 @@ struct FineTuneDataset: Identifiable, Equatable {
         self.systemPromptPath = systemPromptPath
         self.baselineURL = baselineURL
         self.criteriaURL = criteriaURL
+        self.tunedURL = tunedURL
     }
 }
 
@@ -352,6 +355,12 @@ enum FineTuneError: LocalizedError, Equatable {
     case alreadyRunning(pid: Int32)
     case startFailed(String)
     case datasetUnreadable(String)
+    /// mlx не тянет тюн и снятие baseline одновременно (задача 83).
+    case baselineRunning
+    /// Генерация критериев (задача 83): ни одного chat-провайдера не настроено.
+    case noChatProvider
+    /// Модель ответила пустым текстом на генерацию критериев.
+    case emptyCriteriaResponse
 
     var errorDescription: String? {
         switch self {
@@ -367,6 +376,12 @@ enum FineTuneError: LocalizedError, Equatable {
             return "Не удалось запустить тюн: \(detail)"
         case let .datasetUnreadable(path):
             return "Не удалось прочитать датасет: \(path)"
+        case .baselineRunning:
+            return "Идёт снятие baseline — дождитесь или отмените."
+        case .noChatProvider:
+            return "Нет доступного провайдера чата — настройте модель в Настройки → Модели."
+        case .emptyCriteriaResponse:
+            return "Модель вернула пустой ответ."
         }
     }
 }

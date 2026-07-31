@@ -3,6 +3,11 @@
 // чекпоинт»/«остановить» на ПОКАЗАННОМ прогоне, а не на внутреннем tailedRunID (В2),
 // неуспешные stop/installBest не лгут об успехе. Реальный Process не запускается —
 // CLIRunner инжектирован.
+//
+// Задача 83 дополняет: snapshotBaseline() блокируется при идущем тюне без обращения к раннеру.
+// Ревью 83: поздний результат раннера после cancelBaselineSnapshot не воскрешает
+// isSnapshottingBaseline; generateCriteria на пустом датасете; saveCriteria сбрасывает
+// criteriaGenErrorText на успехе.
 
 import XCTest
 @testable import SecondBrain
@@ -226,4 +231,176 @@ final class FineTuneViewModelTests: XCTestCase {
         XCTAssertEqual(recordedWorkdir, ".", "stop идёт над переданным прогоном независимо от тайлинга")
         XCTAssertEqual(store.runs.first?.status, .stopped)
     }
+
+    // MARK: - snapshotBaseline() блокируется при идущем тюне (задача 83)
+
+    /// mlx не тянет тюн и baseline одновременно — раннер вообще не зовём, дорогой
+    /// процесс не должен стартовать ради заведомо отклонённой попытки.
+    func testSnapshotBaselineBlockedWhileTuneIsRunningDoesNotCallRunner() async {
+        let store = makeStore()
+        var running = makeRun(workdir: ".")
+        running.status = .running
+        store.appendRun(running)
+        var runnerCalled = false
+        let runner = FineTuneRunner(fineTuneRoot: nil, baselineCLI: { _ in
+            runnerCalled = true
+            return .init(status: 0, output: "")
+        }, registry: BackgroundProcessRegistry())
+        let viewModel = FineTuneViewModel(store: store, runner: runner, fineTuneRoot: { nil })
+        let dataset = FineTuneDataset(id: ".", title: "finetune", workdir: ".", rootURL: tempDir,
+                                      dataURL: tempDir.appendingPathComponent("data"),
+                                      trainCount: 10, validCount: 2, split: nil, systemPromptPath: nil)
+
+        await viewModel.snapshotBaseline(dataset: dataset)
+
+        XCTAssertFalse(runnerCalled, "идёт тюн — раннер snapshotBaseline вообще не зовётся")
+        XCTAssertFalse(viewModel.isSnapshottingBaseline)
+        XCTAssertEqual(viewModel.baselineErrorText,
+                       "Идёт обучение — mlx не потянет два процесса, дождитесь или остановите тюн.")
+    }
+
+    // MARK: - cancelBaselineSnapshot(): гонка с поздним результатом раннера (задача 83, ревью)
+
+    /// Поколение (snapshotGen) сдвигается ДО остановки процесса — ответ ещё идущего
+    /// runner.snapshotBaseline, пришедший ПОСЛЕ cancelBaselineSnapshot, не должен
+    /// перезаписать isSnapshottingBaseline/baselineErrorText, выставленные отменой.
+    func testCancelBaselineSnapshotIgnoresLateRunnerResult() async throws {
+        try writeDataset()
+        let store = makeStore()
+        let box = FineTuneViewModelContinuationBox()
+        // root обязателен: snapshotBaseline проверяет fineTuneRoot ДО инжектированного
+        // CLI, с nil он вернулся бы сразу и continuation не поставился бы никогда.
+        let runner = FineTuneRunner(fineTuneRoot: tempDir, baselineCLI: { _ in
+            await withCheckedContinuation { box.continuation = $0 }
+            return .init(status: 0, output: "готово")
+        }, registry: BackgroundProcessRegistry())
+        let viewModel = FineTuneViewModel(store: store, runner: runner, fineTuneRoot: { [tempDir] in tempDir })
+        let dataset = makeDataset()
+
+        let snapshotTask = Task { await viewModel.snapshotBaseline(dataset: dataset) }
+        // Предохранитель от вечного спина: CLI не вызвался — падаем, а не висим.
+        var spins = 0
+        while box.continuation == nil {
+            await Task.yield()
+            spins += 1
+            if spins > 2_000_000 {
+                XCTFail("runner так и не дошёл до инжектированного baseline-CLI")
+                snapshotTask.cancel()
+                return
+            }
+        }
+        XCTAssertTrue(viewModel.isSnapshottingBaseline)
+
+        await viewModel.cancelBaselineSnapshot(dataset: dataset)
+        XCTAssertFalse(viewModel.isSnapshottingBaseline)
+        XCTAssertEqual(viewModel.baselineErrorText, "Снятие baseline отменено.")
+
+        box.continuation?.resume()
+        _ = await snapshotTask.value
+
+        XCTAssertFalse(viewModel.isSnapshottingBaseline,
+                       "поздний результат раннера не должен воскресить isSnapshottingBaseline")
+        XCTAssertEqual(viewModel.baselineErrorText, "Снятие baseline отменено.",
+                       "поздний результат не должен затирать текст отмены")
+    }
+
+    // MARK: - generateCriteria() / saveCriteria() (задача 83)
+
+    private func makeDataset() -> FineTuneDataset {
+        FineTuneDataset(id: ".", title: "finetune", workdir: ".", rootURL: tempDir,
+                        dataURL: tempDir.appendingPathComponent("data"),
+                        trainCount: 1, validCount: 1, split: nil, systemPromptPath: nil)
+    }
+
+    /// Генератор через инжектированный providers-провайдер (без сети): пишет
+    /// criteria.md в rootURL датасета и обновляет criteriaText.
+    func testGenerateCriteriaWritesFileAndUpdatesCriteriaText() async throws {
+        try writeDataset()
+        let store = makeStore()
+        let runner = FineTuneRunner(fineTuneRoot: nil, registry: BackgroundProcessRegistry())
+        let provider = MockChatProvider(responses: ["# Критерии\n\nсгенерировано"])
+        let resolved = ResolvedChatProvider(provider: provider, model: "m",
+                                            providerID: ProviderID(rawValue: "mock"), displayName: "Mock")
+        let viewModel = FineTuneViewModel(store: store, runner: runner, fineTuneRoot: { [tempDir] in tempDir },
+                                          criteriaProviders: { [resolved] })
+
+        await viewModel.generateCriteria(dataset: makeDataset())
+
+        XCTAssertFalse(viewModel.isGeneratingCriteria)
+        XCTAssertNil(viewModel.criteriaGenErrorText)
+        XCTAssertEqual(viewModel.criteriaText, "# Критерии\n\nсгенерировано")
+        let onDisk = try String(contentsOf: tempDir.appendingPathComponent("criteria.md"), encoding: .utf8)
+        XCTAssertEqual(onDisk, "# Критерии\n\nсгенерировано")
+    }
+
+    /// Нет доступного провайдера — понятная ошибка в criteriaGenErrorText, файл не пишется.
+    func testGenerateCriteriaWithNoProviderSetsErrorText() async throws {
+        try writeDataset()
+        let store = makeStore()
+        let runner = FineTuneRunner(fineTuneRoot: nil, registry: BackgroundProcessRegistry())
+        let viewModel = FineTuneViewModel(store: store, runner: runner, fineTuneRoot: { [tempDir] in tempDir })
+
+        await viewModel.generateCriteria(dataset: makeDataset())
+
+        XCTAssertFalse(viewModel.isGeneratingCriteria)
+        XCTAssertEqual(viewModel.criteriaGenErrorText, FineTuneError.noChatProvider.errorDescription)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: tempDir.appendingPathComponent("criteria.md").path))
+    }
+
+    /// saveCriteria — редактор пишет тот же файл и перечитывает его обратно.
+    func testSaveCriteriaRoundTrips() async throws {
+        try writeDataset()
+        let store = makeStore()
+        let runner = FineTuneRunner(fineTuneRoot: nil, registry: BackgroundProcessRegistry())
+        let viewModel = FineTuneViewModel(store: store, runner: runner, fineTuneRoot: { [tempDir] in tempDir })
+
+        let ok = await viewModel.saveCriteria(dataset: makeDataset(), text: "# Правки вручную\n")
+
+        XCTAssertTrue(ok)
+        XCTAssertEqual(viewModel.criteriaText, "# Правки вручную\n")
+        let onDisk = try String(contentsOf: tempDir.appendingPathComponent("criteria.md"), encoding: .utf8)
+        XCTAssertEqual(onDisk, "# Правки вручную\n")
+    }
+
+    /// Ревью задачи 83: saveCriteria на успехе сбрасывает criteriaGenErrorText —
+    /// иначе успешное сохранение из редактора не убирает баннер прошлой ошибки генерации.
+    func testSaveCriteriaSuccessClearsCriteriaGenErrorText() async throws {
+        try writeDataset()
+        let store = makeStore()
+        let runner = FineTuneRunner(fineTuneRoot: nil, registry: BackgroundProcessRegistry())
+        let viewModel = FineTuneViewModel(store: store, runner: runner, fineTuneRoot: { [tempDir] in tempDir })
+        viewModel.criteriaGenErrorText = "прошлая ошибка генерации"
+
+        let ok = await viewModel.saveCriteria(dataset: makeDataset(), text: "# Правки\n")
+
+        XCTAssertTrue(ok)
+        XCTAssertNil(viewModel.criteriaGenErrorText)
+    }
+
+    /// Ревью задачи 83: пустой train.jsonl (нет примеров) — понятная ошибка без
+    /// обращения к LLM.
+    func testGenerateCriteriaOnEmptyDatasetSetsErrorWithoutCallingGenerator() async throws {
+        // writeDataset() не зовём — train.jsonl отсутствует, examples() вернёт [].
+        let store = makeStore()
+        let runner = FineTuneRunner(fineTuneRoot: nil, registry: BackgroundProcessRegistry())
+        var generatorCalled = false
+        let provider = MockChatProvider(responses: ["не должно быть вызвано"])
+        let resolved = ResolvedChatProvider(provider: provider, model: "m",
+                                            providerID: ProviderID(rawValue: "mock"), displayName: "Mock")
+        let viewModel = FineTuneViewModel(store: store, runner: runner, fineTuneRoot: { [tempDir] in tempDir },
+                                          criteriaProviders: { generatorCalled = true; return [resolved] })
+
+        await viewModel.generateCriteria(dataset: makeDataset())
+
+        XCTAssertFalse(viewModel.isGeneratingCriteria)
+        XCTAssertEqual(viewModel.criteriaGenErrorText, "В датасете нет примеров — нечего анализировать.")
+        XCTAssertFalse(generatorCalled, "провайдеры не должны запрашиваться без примеров")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: tempDir.appendingPathComponent("criteria.md").path))
+    }
+}
+
+/// Тестовый мост для ручного управления моментом возврата инжектированного CLI —
+/// `@unchecked Sendable`, доступ только последовательный (yield-цикл ждёт установки).
+private final class FineTuneViewModelContinuationBox: @unchecked Sendable {
+    var continuation: CheckedContinuation<Void, Never>?
 }

@@ -13,21 +13,25 @@ struct FineTuneDocument: Codable {
     var validations: [String: FineTuneValidationRecord] = [:]
     /// Настройка `--min-assistant` на датасет (задача 82), ключ — workdir.
     var minAssistantOverrides: [String: Int] = [:]
+    /// Настройка `--count` для `baseline.py` на датасет (задача 83), ключ — workdir.
+    var baselineCountOverrides: [String: Int] = [:]
 
     init(runs: [FineTuneRun] = [], validations: [String: FineTuneValidationRecord] = [:],
-         minAssistantOverrides: [String: Int] = [:]) {
+         minAssistantOverrides: [String: Int] = [:], baselineCountOverrides: [String: Int] = [:]) {
         self.runs = runs
         self.validations = validations
         self.minAssistantOverrides = minAssistantOverrides
+        self.baselineCountOverrides = baselineCountOverrides
     }
 
-    enum CodingKeys: String, CodingKey { case runs, validations, minAssistantOverrides }
+    enum CodingKeys: String, CodingKey { case runs, validations, minAssistantOverrides, baselineCountOverrides }
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         runs = try c.decodeIfPresent([FineTuneRun].self, forKey: .runs) ?? []
         validations = try c.decodeIfPresent([String: FineTuneValidationRecord].self, forKey: .validations) ?? [:]
         minAssistantOverrides = try c.decodeIfPresent([String: Int].self, forKey: .minAssistantOverrides) ?? [:]
+        baselineCountOverrides = try c.decodeIfPresent([String: Int].self, forKey: .baselineCountOverrides) ?? [:]
     }
 }
 
@@ -115,29 +119,6 @@ enum FineTunePersistence {
 /// Выбор в разделе «Тюнинг» (runtime, не персистится).
 enum FineTuneSelection: Hashable {
     case dataset(String)
-    case run(UUID)
-}
-
-/// Активный сегмент средней колонки раздела «Тюнинг» (runtime, не персистится,
-/// задача 82). Живёт в сторе, а не в `@State` `FineTunePane`: `FineTuneDetailView` —
-/// отдельный экземпляр View (middle/detail колонки NavigationSplitView), и для
-/// «Baseline»/«Критерии» ему нужно знать активный сегмент — при той же выбранной
-/// записи (`.dataset(id)`) он показывает разный контент в зависимости от сегмента.
-enum FineTuneScreen: String, CaseIterable, Identifiable {
-    case datasets = "Датасеты"
-    case runs = "Прогоны"
-    case baseline = "Baseline"
-    case criteria = "Критерии"
-    var id: String { rawValue }
-
-    var systemImage: String {
-        switch self {
-        case .datasets: return "tray.full"
-        case .runs: return "chart.xyaxis.line"
-        case .baseline: return "checklist"
-        case .criteria: return "list.bullet.clipboard"
-        }
-    }
 }
 
 /// Владелец истории прогонов тюнинга в рантайме.
@@ -145,9 +126,13 @@ enum FineTuneScreen: String, CaseIterable, Identifiable {
 final class FineTuneStore: ObservableObject {
     @Published private(set) var runs: [FineTuneRun] = []
     @Published var selection: FineTuneSelection?
-    @Published var screen: FineTuneScreen = .datasets
+    /// Активная вкладка выбранного датасета (runtime, не персистится, задача 83).
+    @Published var datasetTab: FineTuneDatasetTab = .overview
+    /// Прогон, открытый на вкладке «Прогоны» (runtime, не персистится).
+    @Published var selectedRunID: UUID?
     @Published private(set) var validations: [String: FineTuneValidationRecord] = [:]
     @Published private(set) var minAssistantOverrides: [String: Int] = [:]
+    @Published private(set) var baselineCountOverrides: [String: Int] = [:]
 
     /// Кап истории: прогоны — операционный лог, старое не нужно.
     static let runsCap = 50
@@ -168,13 +153,15 @@ final class FineTuneStore: ObservableObject {
         runs = document.runs
         validations = document.validations
         minAssistantOverrides = document.minAssistantOverrides
+        baselineCountOverrides = document.baselineCountOverrides
         normalize()
 
-        saveCancellable = Publishers.CombineLatest3($runs, $validations, $minAssistantOverrides)
+        saveCancellable = Publishers.CombineLatest4($runs, $validations, $minAssistantOverrides, $baselineCountOverrides)
             .debounce(for: .milliseconds(300), scheduler: DispatchQueue.main)
-            .sink { [url] runs, validations, minAssistantOverrides in
+            .sink { [url] runs, validations, minAssistantOverrides, baselineCountOverrides in
                 let document = FineTuneStore.makeDocument(runs: runs, validations: validations,
-                                                          minAssistantOverrides: minAssistantOverrides)
+                                                          minAssistantOverrides: minAssistantOverrides,
+                                                          baselineCountOverrides: baselineCountOverrides)
                 DispatchQueue.global(qos: .utility).async {
                     FineTunePersistence.save(document, to: url)
                 }
@@ -186,14 +173,17 @@ final class FineTuneStore: ObservableObject {
     /// только из `runs`, что на диске тихо стирало `validations`/`minAssistantOverrides`
     /// (регрессия задачи 82, покрыта `FineTuneStoreTests.testMakeDocumentCombinesAllThreeFields`).
     static func makeDocument(runs: [FineTuneRun], validations: [String: FineTuneValidationRecord],
-                            minAssistantOverrides: [String: Int]) -> FineTuneDocument {
-        FineTuneDocument(runs: runs, validations: validations, minAssistantOverrides: minAssistantOverrides)
+                            minAssistantOverrides: [String: Int],
+                            baselineCountOverrides: [String: Int]) -> FineTuneDocument {
+        FineTuneDocument(runs: runs, validations: validations, minAssistantOverrides: minAssistantOverrides,
+                         baselineCountOverrides: baselineCountOverrides)
     }
 
     /// Синхронная запись без debounce — вокруг стартов/финалов прогонов и на выходе приложения.
     func persistNow() {
         FineTunePersistence.save(FineTuneStore.makeDocument(runs: runs, validations: validations,
-                                                            minAssistantOverrides: minAssistantOverrides), to: url)
+                                                            minAssistantOverrides: minAssistantOverrides,
+                                                            baselineCountOverrides: baselineCountOverrides), to: url)
     }
 
     func setValidation(_ record: FineTuneValidationRecord, workdir: String) {
@@ -213,6 +203,11 @@ final class FineTuneStore: ObservableObject {
     /// лишняя при уже работающем дебаунс-автосохранении выше.
     func setMinAssistant(_ value: Int, workdir: String) {
         minAssistantOverrides[workdir] = value
+    }
+
+    /// Без `persistNow()` — тот же резон, что у `setMinAssistant`: Stepper щёлкают часто.
+    func setBaselineCount(_ value: Int, workdir: String) {
+        baselineCountOverrides[workdir] = value
     }
 
     /// Новые прогоны — в начало (история показывается свежими вверх).
@@ -237,11 +232,10 @@ final class FineTuneStore: ObservableObject {
         runs.first { $0.workdir == workdir }
     }
 
-    /// «Baseline»/«Критерии» показывают ровно один датасет — без выбора первый
-    /// заход требовал бы лишнего клика (список датасетов через AX ненадёжен, задача
-    /// 82). Не трогает другие сегменты и не переключает уже валидный выбор.
+    /// Detail-экран существует только при выбранном датасете (список датасетов
+    /// через AX ненадёжен, задача 82) — автовыбор первого происходит всегда, не
+    /// только на части вкладок (задача 83). Не трогает уже валидный выбор.
     func selectFirstDatasetIfNeeded(datasets: [FineTuneDataset]) {
-        guard screen == .baseline || screen == .criteria else { return }
         if case .dataset(let id) = selection, datasets.contains(where: { $0.id == id }) { return }
         guard let first = datasets.first else { return }
         selection = .dataset(first.id)

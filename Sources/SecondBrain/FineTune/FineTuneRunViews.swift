@@ -1,29 +1,33 @@
-// FineTuneRunViews.swift — детальный экран «Прогон» (задача 81).
+// FineTuneRunViews.swift — вкладка «Прогоны» выбранного датасета (задача 81).
 //
-// Единая консоль: форма гиперпараметров (для нового прогона либо как читаемая
-// сводка выбранного/активного — блокируется, пока прогон идёт), кнопки
-// запуска/остановки/установки лучшего чекпоинта (в тулбаре — см. body), живой
-// прогресс, график train/val loss (Charts) с отметкой лучшего чекпоинта по val
-// loss (FineTuneCheckpointPicker — то же чистое ядро, что и у кнопки «Взять
+// Единая консоль на один датасет (задача 83: раньше — общий экран с Picker
+// «Датасет», теперь дублирует и фильтрует всё по `dataset.workdir`): история
+// прогонов этого датасета сверху, форма гиперпараметров (для нового прогона либо
+// как читаемая сводка выбранного/активного — блокируется, пока прогон идёт),
+// кнопки запуска/остановки/установки лучшего чекпоинта (в тулбаре — см. body),
+// живой прогресс, график train/val loss (Charts) с отметкой лучшего чекпоинта по
+// val loss (FineTuneCheckpointPicker — то же чистое ядро, что и у кнопки «Взять
 // лучший»), хвост лога, предупреждение о памяти.
 
 import Charts
 import SwiftUI
 
 struct FineTuneRunDetailView: View {
+    let dataset: FineTuneDataset
     @ObservedObject var store: FineTuneStore
     @ObservedObject var viewModel: FineTuneViewModel
 
-    @State private var draftDatasetID: String?
     @State private var draftModel: String = FineTuneViewModel.defaultModel
     @State private var draftHyperparameters = FineTuneHyperparameters()
 
+    /// Прогоны этого датасета, свежие вверх (`store.runs` уже так упорядочен).
+    private var datasetRuns: [FineTuneRun] { store.runs.filter { $0.workdir == dataset.workdir } }
     /// Активный прогон приоритетнее выбранного исторического — ViewModel в любой
     /// момент тянет лог только одного прогона, консоль всегда показывает именно его.
-    private var activeRun: FineTuneRun? { store.runs.first { $0.status == .running } }
+    private var activeRun: FineTuneRun? { datasetRuns.first { $0.status == .running } }
     private var selectedRun: FineTuneRun? {
-        if case .run(let id) = store.selection { return store.runs.first { $0.id == id } }
-        return nil
+        guard let id = store.selectedRunID else { return nil }
+        return datasetRuns.first { $0.id == id }
     }
     private var displayedRun: FineTuneRun? { activeRun ?? selectedRun }
     private var isLocked: Bool { activeRun != nil }
@@ -36,6 +40,7 @@ struct FineTuneRunDetailView: View {
 
     var body: some View {
         Form {
+            historySection
             if viewModel.environmentReady == false {
                 environmentBanner
             }
@@ -61,7 +66,7 @@ struct FineTuneRunDetailView: View {
                 } label: {
                     Label("Запустить тюн", systemImage: "play.fill")
                 }
-                .disabled(isLocked || viewModel.datasets.isEmpty || viewModel.environmentReady != true)
+                .disabled(isLocked || viewModel.environmentReady != true)
                 Button {
                     if let run = activeRun { Task { await viewModel.stopCurrent(run: run) } }
                 } label: {
@@ -82,9 +87,26 @@ struct FineTuneRunDetailView: View {
 
     private func syncDraft() {
         guard let run = displayedRun else { return }
-        draftDatasetID = run.workdir
         draftModel = run.model
         draftHyperparameters = run.hyperparameters
+    }
+
+    /// Клик по строке выбирает прогон для просмотра (не запускает и не мутирует его).
+    @ViewBuilder
+    private var historySection: some View {
+        if !datasetRuns.isEmpty {
+            Section("История") {
+                ForEach(datasetRuns) { run in
+                    FineTuneRunRow(run: run)
+                        .padding(.vertical, 2)
+                        .padding(.horizontal, 4)
+                        .background(run.id == displayedRun?.id ? Color.accentColor.opacity(0.15) : Color.clear,
+                                    in: RoundedRectangle(cornerRadius: 4))
+                        .contentShape(Rectangle())
+                        .onTapGesture { store.selectedRunID = run.id }
+                }
+            }
+        }
     }
 
     /// mlx-lm не найден — баннер именно здесь, экран «Датасет» работает и без него.
@@ -114,22 +136,9 @@ struct FineTuneRunDetailView: View {
         }
     }
 
-    private var draftDatasetBinding: Binding<String?> {
-        Binding(get: { draftDatasetID ?? viewModel.datasets.first?.id },
-                set: { draftDatasetID = $0 })
-    }
-
     @ViewBuilder
     private var configSection: some View {
         Section("Гиперпараметры") {
-            Picker("Датасет", selection: draftDatasetBinding) {
-                if viewModel.datasets.isEmpty {
-                    Text("Нет датасетов").tag(String?.none)
-                }
-                ForEach(viewModel.datasets) { dataset in
-                    Text(dataset.title).tag(String?.some(dataset.id))
-                }
-            }
             TextField("Модель", text: $draftModel)
             Stepper("Итерации: \(draftHyperparameters.iters)",
                     value: $draftHyperparameters.iters, in: 10...5000, step: 10)
@@ -167,13 +176,11 @@ struct FineTuneRunDetailView: View {
     }
 
     private func startTapped() async {
-        guard let id = draftDatasetBinding.wrappedValue,
-              let dataset = viewModel.datasets.first(where: { $0.id == id }) else { return }
         await viewModel.start(dataset: dataset, model: draftModel, hyperparameters: draftHyperparameters)
         // Успешный старт — сразу переключить выбор на новый прогон (appendRun
         // кладёт свежие в начало store.runs), чтобы прогресс был виден без клика.
-        if viewModel.errorText == nil, let newRun = store.runs.first {
-            store.selection = .run(newRun.id)
+        if viewModel.errorText == nil, let newRun = datasetRuns.first {
+            store.selectedRunID = newRun.id
         }
     }
 

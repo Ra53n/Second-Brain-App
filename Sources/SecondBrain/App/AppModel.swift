@@ -108,7 +108,8 @@ final class AppModel: ObservableObject {
         let fineTuneRunner = FineTuneRunner(fineTuneRoot: fineTuneRoot())
         self.fineTuneRunner = fineTuneRunner
         fineTuneViewModel = FineTuneViewModel(store: fineTuneStore, runner: fineTuneRunner,
-                                              fineTuneRoot: fineTuneRoot)
+                                              fineTuneRoot: fineTuneRoot,
+                                              criteriaProviders: { router.resolveChatProviders(for: .finetuneCriteria) })
 
         wire()
     }

@@ -32,13 +32,15 @@ enum AppFunction: String, Codable, CaseIterable {
     /// Переранжирование и переписывание запроса RAG (задача 28): раньше
     /// молча использовалась модель функции «чат» — теперь настраивается явно.
     case ragRerank
+    /// Генерация criteria.md на вкладке «Критерии» раздела «Тюнинг» (задача 83).
+    case finetuneCriteria
 
     /// Протокол провайдера, обязательный для этой функции — им валидируется
     /// назначение (нельзя поставить embedding-провайдер на транскрипцию).
     var requiredCapability: ProviderCapability {
         switch self {
         case .transcription: return .transcription
-        case .meetingSummary, .chat, .noteFiling, .ragRerank: return .chat
+        case .meetingSummary, .chat, .noteFiling, .ragRerank, .finetuneCriteria: return .chat
         case .embedding: return .embedding
         }
     }
@@ -51,6 +53,7 @@ enum AppFunction: String, Codable, CaseIterable {
         case .embedding: return "Эмбеддинги"
         case .noteFiling: return "Раскладка заметок"
         case .ragRerank: return "RAG: переранжирование и переписывание запроса"
+        case .finetuneCriteria: return "Тюнинг: критерии качества"
         }
     }
 }
