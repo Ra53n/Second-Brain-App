@@ -2,7 +2,8 @@
 //
 // Признак датасета — <dir>/data/train.jsonl; корень и подкаталоги глубины 1;
 // split.json может отсутствовать (реальный кейс dictation); sidecar короче основного
-// файла — без краша; отсутствующий finetune/ — пустой список, не ошибка.
+// файла — без краша; отсутствующий finetune/ — пустой список, не ошибка. Задача 82
+// дополняет: baselineURL/criteriaURL, включая nil-ветки (нет каталога/файла).
 
 import XCTest
 @testable import SecondBrain
@@ -98,6 +99,42 @@ final class FineTuneDatasetScannerTests: XCTestCase {
     func testMissingFineTuneRootYieldsEmptyList() {
         let missing = tempDir.appendingPathComponent("does-not-exist")
         XCTAssertEqual(FineTuneDatasetScanner.scan(fineTuneRoot: missing), [])
+    }
+
+    // MARK: - baselineURL / criteriaURL (задача 82) — «отсутствие даёт понятную подсказку»
+
+    func testBaselineURLSetWhenDirectoryExists() throws {
+        try write(jsonl([exampleLine("1")]), to: tempDir.appendingPathComponent("data/train.jsonl"))
+        let baselineDir = tempDir.appendingPathComponent("baseline")
+        try FileManager.default.createDirectory(at: baselineDir, withIntermediateDirectories: true)
+        let datasets = FineTuneDatasetScanner.scan(fineTuneRoot: tempDir)
+        XCTAssertEqual(datasets.first?.baselineURL?.path, baselineDir.path)
+    }
+
+    func testBaselineURLNilWhenDirectoryMissing() throws {
+        try write(jsonl([exampleLine("1")]), to: tempDir.appendingPathComponent("data/train.jsonl"))
+        let datasets = FineTuneDatasetScanner.scan(fineTuneRoot: tempDir)
+        XCTAssertNil(datasets.first?.baselineURL, "нет baseline/ — понятная подсказка, не ошибка")
+    }
+
+    func testBaselineURLNilWhenPathIsAFileNotDirectory() throws {
+        try write(jsonl([exampleLine("1")]), to: tempDir.appendingPathComponent("data/train.jsonl"))
+        try write("не каталог", to: tempDir.appendingPathComponent("baseline"))
+        let datasets = FineTuneDatasetScanner.scan(fineTuneRoot: tempDir)
+        XCTAssertNil(datasets.first?.baselineURL, "baseline — файл, не каталог")
+    }
+
+    func testCriteriaURLSetWhenFileExists() throws {
+        try write(jsonl([exampleLine("1")]), to: tempDir.appendingPathComponent("data/train.jsonl"))
+        try write("# Критерии", to: tempDir.appendingPathComponent("criteria.md"))
+        let datasets = FineTuneDatasetScanner.scan(fineTuneRoot: tempDir)
+        XCTAssertEqual(datasets.first?.criteriaURL?.path, tempDir.appendingPathComponent("criteria.md").path)
+    }
+
+    func testCriteriaURLNilWhenFileMissing() throws {
+        try write(jsonl([exampleLine("1")]), to: tempDir.appendingPathComponent("data/train.jsonl"))
+        let datasets = FineTuneDatasetScanner.scan(fineTuneRoot: tempDir)
+        XCTAssertNil(datasets.first?.criteriaURL, "нет criteria.md — понятная подсказка, не ошибка")
     }
 
     // MARK: - lineCount()

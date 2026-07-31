@@ -20,6 +20,27 @@ struct FineTuneDataset: Identifiable, Equatable {
     let validCount: Int
     let split: FineTuneSplitInfo?
     let systemPromptPath: String?
+    /// Артефакты домашки задачи 82 (nil — файла/каталога нет).
+    let baselineURL: URL?
+    let criteriaURL: URL?
+
+    /// `let`-свойство с дефолтом Swift исключил бы из мемберайз-инициализатора совсем —
+    /// явный init нужен, чтобы старые вызовы без новых полей продолжали собираться.
+    init(id: String, title: String, workdir: String, rootURL: URL, dataURL: URL, trainCount: Int,
+         validCount: Int, split: FineTuneSplitInfo?, systemPromptPath: String?,
+         baselineURL: URL? = nil, criteriaURL: URL? = nil) {
+        self.id = id
+        self.title = title
+        self.workdir = workdir
+        self.rootURL = rootURL
+        self.dataURL = dataURL
+        self.trainCount = trainCount
+        self.validCount = validCount
+        self.split = split
+        self.systemPromptPath = systemPromptPath
+        self.baselineURL = baselineURL
+        self.criteriaURL = criteriaURL
+    }
 }
 
 /// `split.json` — может отсутствовать (у `dictation` его нет).

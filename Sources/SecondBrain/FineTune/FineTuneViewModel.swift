@@ -27,10 +27,20 @@ final class FineTuneViewModel: ObservableObject {
     @Published var taskTypeFilter: String?
     @Published var logTail: String = ""
     @Published var statusText: String = ""
+    /// Ошибка start()/stopCurrent()/installBest() — про прогон, не про валидацию
+    /// датасета (см. `validationErrorText`, разведены ревью задачи 82: общий errorText
+    /// прятал результат последней проверки под «не удалось остановить тюн»).
     @Published var errorText: String?
+    /// Ошибка именно validate() — сам процесс не запустился/завис (P6, отдельно от
+    /// результата проверки, который лежит в FineTuneStore и не про сбой приложения).
+    @Published var validationErrorText: String?
     /// id прогона, который сейчас реально тайлится — лог/статус в UI показываются
     /// только для него (В4): у ViewModel один хвост лога на все прогоны сразу.
     @Published private(set) var tailedRunID: UUID?
+    /// Кнопка «Проверить датасет» блокируется, пока true (второй параллельный запуск не нужен).
+    @Published private(set) var isValidating = false
+    @Published private(set) var baselineSnapshot: FineTuneOutputsReader.Snapshot?
+    @Published private(set) var criteriaText: String?
 
     nonisolated static let defaultModel = "mlx-community/Qwen2.5-7B-Instruct-4bit"
     private static let logTailLimit = 200
@@ -43,6 +53,9 @@ final class FineTuneViewModel: ObservableObject {
     private var environmentGen = 0
     private var datasetsGen = 0
     private var examplesGen = 0
+    private var validateGen = 0
+    private var baselineGen = 0
+    private var criteriaGen = 0
     private var tailTimer: Timer?
     private var tail: FineTuneLogTail?
     /// Кольцевой буфер отображаемого хвоста лога — readNew() отдаёт только НОВЫЙ
@@ -101,6 +114,10 @@ final class FineTuneViewModel: ObservableObject {
     }
 
     func loadExamples(dataset: FineTuneDataset) async {
+        // Сбой валидации относится к тому датасету, на котором её жали: без сброса
+        // блок валидации нового датасета показал бы чужую ошибку и спрятал под ней
+        // собственный сохранённый результат.
+        validationErrorText = nil
         let trainURL = dataset.dataURL.appendingPathComponent("train.jsonl")
         let metaURL = dataset.dataURL.appendingPathComponent("train.meta.jsonl")
         let hasMeta = FileManager.default.fileExists(atPath: metaURL.path)
@@ -112,6 +129,59 @@ final class FineTuneViewModel: ObservableObject {
         }.value
         guard gen == examplesGen else { return }
         examples = filter.map { f in all.filter { $0.meta?.taskType == f } } ?? all
+    }
+
+    /// `--min-assistant` берётся из FineTuneStore (per-датасет настройка, задача 82);
+    /// результат парсится FineTuneValidationParser и сохраняется в стор — виден без
+    /// повторного запуска. status < 0 — сам процесс не удалось запустить/он завис
+    /// (не «датасет невалиден»), это ошибка уровня приложения, а не результат проверки.
+    func validate(dataset: FineTuneDataset) async {
+        guard !isValidating else { return }
+        validateGen += 1
+        let gen = validateGen
+        isValidating = true
+        validationErrorText = nil
+
+        let minAssistant = store.minAssistant(workdir: dataset.workdir,
+                                              hasOwnSystemPrompt: dataset.systemPromptPath != nil)
+        let result = await runner.validate(dataset: dataset, minAssistant: minAssistant,
+                                           systemPromptPath: dataset.systemPromptPath)
+        guard gen == validateGen else { return }
+        isValidating = false
+
+        guard result.status >= 0 else {
+            validationErrorText = result.output
+            return
+        }
+        let parsed = FineTuneValidationParser.parse(status: result.status, stdout: result.stdout, stderr: result.stderr)
+        store.setValidation(FineTuneValidationRecord(result: parsed), workdir: dataset.workdir)
+    }
+
+    /// Каталога baseline/ нет (например, tuned/ у диктовки) → nil, не ошибка —
+    /// экран показывает подсказку, а не пустой список.
+    func loadBaseline(dataset: FineTuneDataset) async {
+        baselineGen += 1
+        let gen = baselineGen
+        guard let baselineURL = dataset.baselineURL else {
+            baselineSnapshot = nil
+            return
+        }
+        let snapshot = await Task.detached { FineTuneOutputsIO.readSnapshot(directory: baselineURL) }.value
+        guard gen == baselineGen else { return }
+        baselineSnapshot = snapshot
+    }
+
+    /// criteria.md может весить десятки килобайт — читается один раз при выборе датасета.
+    func loadCriteria(dataset: FineTuneDataset) async {
+        criteriaGen += 1
+        let gen = criteriaGen
+        guard let criteriaURL = dataset.criteriaURL else {
+            criteriaText = nil
+            return
+        }
+        let text = await Task.detached { try? String(contentsOf: criteriaURL, encoding: .utf8) }.value
+        guard gen == criteriaGen else { return }
+        criteriaText = text
     }
 
     func start(dataset: FineTuneDataset, model: String, hyperparameters: FineTuneHyperparameters) async {

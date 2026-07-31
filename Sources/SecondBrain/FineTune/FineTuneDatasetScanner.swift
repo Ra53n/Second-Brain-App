@@ -57,6 +57,8 @@ enum FineTuneDatasetScanner {
         let split: FineTuneSplitInfo? = (try? Data(contentsOf: splitURL))
             .flatMap { try? JSONDecoder().decode(FineTuneSplitInfo.self, from: $0) }
         let systemPromptURL = rootURL.appendingPathComponent("system_prompt.txt")
+        let baselineURL = rootURL.appendingPathComponent("baseline")
+        let criteriaURL = rootURL.appendingPathComponent("criteria.md")
 
         return FineTuneDataset(
             id: workdir,
@@ -68,6 +70,13 @@ enum FineTuneDatasetScanner {
             validCount: lineCount(of: dataURL.appendingPathComponent("valid.jsonl")),
             split: split,
             systemPromptPath: FileManager.default.fileExists(atPath: systemPromptURL.path)
-                ? systemPromptURL.path : nil)
+                ? systemPromptURL.path : nil,
+            baselineURL: isDirectory(baselineURL) ? baselineURL : nil,
+            criteriaURL: FileManager.default.fileExists(atPath: criteriaURL.path) ? criteriaURL : nil)
+    }
+
+    private static func isDirectory(_ url: URL) -> Bool {
+        var flag: ObjCBool = false
+        return FileManager.default.fileExists(atPath: url.path, isDirectory: &flag) && flag.boolValue
     }
 }

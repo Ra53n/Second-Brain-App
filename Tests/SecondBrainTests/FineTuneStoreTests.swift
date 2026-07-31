@@ -3,6 +3,12 @@
 // Round-trip через persistNow()/второй стор, карантин битого файла, миграция
 // минимального JSON, безопасный дефолт незнакомого статуса, кап истории,
 // normalize() зависшего running с мёртвым pid.
+//
+// Задача 82 дополняет: миграция без validations/minAssistantOverrides, round-trip
+// обоих новых полей, регрессия «appendRun не должен стирать их на диске», дефолт
+// min-assistant по наличию system_prompt.txt, makeDocument — общая точка сборки
+// документа для persistNow() и дебаунс-автосохранения (ревью: раньше эти пути могли
+// разойтись по набору полей).
 
 import XCTest
 @testable import SecondBrain
@@ -226,5 +232,87 @@ final class FineTuneStoreTests: XCTestCase {
         store.appendRun(second)
         store.appendRun(makeRun()) // workdir "." — чужой
         XCTAssertEqual(store.latestRun(workdir: "dictation")?.datasetTitle, "второй")
+    }
+
+    // MARK: - validations / minAssistantOverrides (задача 82)
+
+    /// Документ без обоих новых полей (версия до задачи 82) — грузится с пустыми
+    /// словарями, а не падает и не квалифицирует файл как битый.
+    func testMigrationWithoutValidationsOrOverridesLoadsWithEmptyDefaults() throws {
+        try Data(#"{"runs":[]}"#.utf8).write(to: url)
+        let store = makeStore()
+        XCTAssertEqual(store.runs, [])
+        XCTAssertEqual(store.validations, [:], "старый документ без этого поля — пустой словарь, не потеря")
+        XCTAssertEqual(store.minAssistantOverrides, [:])
+    }
+
+    func testValidationRoundTripThroughPersistNowAndSecondStore() {
+        let store = makeStore()
+        let record = FineTuneValidationRecord(
+            isValid: false, notes: ["note"],
+            issues: [.init(file: "a.jsonl", line: 3, text: "text")],
+            checkedAt: Date(timeIntervalSince1970: 1_700_000_000))
+        store.setValidation(record, workdir: "dictation")
+
+        let reloaded = makeStore()
+        XCTAssertEqual(reloaded.validationRecord(workdir: "dictation"), record)
+        XCTAssertNil(reloaded.validationRecord(workdir: "."), "запись привязана к своему workdir, не глобальна")
+    }
+
+    func testMinAssistantOverrideRoundTrip() {
+        let store = makeStore()
+        store.setMinAssistant(42, workdir: "dictation")
+        store.persistNow() // setMinAssistant не пишет синхронно — полагается на дебаунс
+
+        let reloaded = makeStore()
+        XCTAssertEqual(reloaded.minAssistant(workdir: "dictation"), 42)
+    }
+
+    /// Регрессия (синхронный путь persistNow()/appendRun): изменение `runs` не должно
+    /// затирать validations/minAssistantOverrides на диске. Дебаунс-автосохранение
+    /// защищено структурно — оба пути зовут `makeDocument`, см.
+    /// `testMakeDocumentCombinesAllThreeFields`.
+    func testAppendingRunDoesNotEraseValidationsOrOverridesOnDisk() {
+        let store = makeStore()
+        let record = FineTuneValidationRecord(isValid: true, notes: ["ok"], issues: [])
+        store.setValidation(record, workdir: ".")
+        store.setMinAssistant(77, workdir: ".")
+
+        store.appendRun(makeRun())
+
+        let reloaded = makeStore()
+        XCTAssertEqual(reloaded.runs.count, 1)
+        XCTAssertEqual(reloaded.validationRecord(workdir: "."), record,
+                       "новый прогон не должен стирать результат валидации на диске")
+        XCTAssertEqual(reloaded.minAssistantOverrides["."], 77,
+                       "новый прогон не должен стирать пользовательский порог min-assistant")
+    }
+
+    /// Дефолт `--min-assistant`: 30 у датасета со своим system_prompt.txt (диктовка —
+    /// частный случай, не привязка к имени каталога), 120 у всех прочих без
+    /// пользовательского переопределения.
+    func testDefaultMinAssistantDependsOnOwnSystemPromptNotWorkdirName() {
+        let store = makeStore()
+        XCTAssertEqual(store.minAssistant(workdir: "dictation", hasOwnSystemPrompt: true), 30)
+        XCTAssertEqual(store.minAssistant(workdir: "."), 120, "hasOwnSystemPrompt по умолчанию false")
+        XCTAssertEqual(store.minAssistant(workdir: "some-other-dataset", hasOwnSystemPrompt: true), 30,
+                       "дефолт определяется наличием system_prompt.txt, не именем workdir")
+    }
+
+    // MARK: - makeDocument (задача 82, регрессия дебаунс-подписки)
+
+    /// $runs.sink раньше строил документ только из runs — с общей функцией это
+    /// невозможно: и persistNow(), и дебаунс-автосохранение зовут её же.
+    func testMakeDocumentCombinesAllThreeFields() {
+        let run = makeRun()
+        let validations = ["a": FineTuneValidationRecord(isValid: true, notes: ["ok"], issues: [])]
+        let overrides = ["a": 55]
+
+        let document = FineTuneStore.makeDocument(runs: [run], validations: validations,
+                                                  minAssistantOverrides: overrides)
+
+        XCTAssertEqual(document.runs, [run])
+        XCTAssertEqual(document.validations, validations)
+        XCTAssertEqual(document.minAssistantOverrides, overrides)
     }
 }

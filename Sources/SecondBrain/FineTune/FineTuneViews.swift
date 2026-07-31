@@ -1,19 +1,24 @@
 // FineTuneViews.swift — раздел «Тюнинг»: средняя колонка + роутинг detail (задача 81).
 //
-// Средняя колонка — переключатель «Датасеты» | «Прогоны» над List(selection:),
-// привязанным к общему FineTuneStore.selection (образец — PipelineViews.swift,
-// PipelineStore.selectedPipelineID): выбор живёт в сторе, не в @State.
-// Переключатель — ДВЕ кнопки тулбара (Label с иконкой), а не
+// Средняя колонка — переключатель «Датасеты» | «Прогоны» | «Baseline» | «Критерии»
+// над List(selection:), привязанным к общему FineTuneStore.selection (образец —
+// PipelineViews.swift, PipelineStore.selectedPipelineID): выбор живёт в сторе, не
+// в @State. Переключатель — кнопки тулбара (Label с иконкой), а не
 // `Picker(.pickerStyle(.segmented))`: сегменты такого Picker на macOS не отдают
 // подпись Accessibility вообще (ни name, ни value, ни description — та же
 // природа, что у отсутствующего label DisclosureGroup) — проверено на этом
 // экране эмпирически, оба варианта дают пустой AX. Кнопки тулбара (как
-// «Новый пайплайн» у Пайплайнов) подпись отдают надёжно.
+// «Новый пайплайн» у Пайплайнов) подпись отдают надёжно. Сам активный сегмент —
+// `FineTuneScreen`, `store.screen` (задача 82): нужен и в FineTuneDetailView.
 //
-// Detail (FineTuneDetailView) роутит по типу выбора: датасет → просмотр
-// (FineTuneDatasetViews.swift), всё остальное → консоль прогона
-// (FineTuneRunViews.swift), которая сама умеет и стартовать новый прогон, и
-// показывать выбранный/активный.
+// Detail (FineTuneDetailView) роутит строго по активному сегменту, не по selection:
+// «Прогоны» — всегда консоль прогона (FineTuneRunViews.swift, сама умеет и
+// стартовать новый, и показывать выбранный/активный), «Датасеты» — выбранный
+// датасет → просмотр (FineTuneDatasetViews.swift) либо подсказка выбрать,
+// «Baseline»/«Критерии» — их артефакты выбранного датасета (FineTuneBaselineViews.swift /
+// FineTuneCriteriaViews.swift). Раньше detail смотрел на selection напрямую —
+// автовыбор датасета для Baseline/Критерии подменял его так, что «Прогоны» после
+// такого захода показывали экран датасета вместо консоли (ревью задачи 82).
 
 import SwiftUI
 
@@ -23,37 +28,22 @@ struct FineTunePane: View {
     @ObservedObject var store: FineTuneStore
     @ObservedObject var viewModel: FineTuneViewModel
 
-    private enum Screen: String, CaseIterable, Identifiable {
-        case datasets = "Датасеты"
-        case runs = "Прогоны"
-        var id: String { rawValue }
-
-        var systemImage: String {
-            switch self {
-            case .datasets: return "tray.full"
-            case .runs: return "chart.xyaxis.line"
-            }
-        }
-    }
-
-    @State private var screen: Screen = .datasets
-
     var body: some View {
         Group {
-            switch screen {
-            case .datasets: datasetsList
+            switch store.screen {
+            case .datasets, .baseline, .criteria: datasetsList
             case .runs: runsList
             }
         }
         .toolbar {
             ToolbarItemGroup(placement: .primaryAction) {
-                ForEach(Screen.allCases) { option in
+                ForEach(FineTuneScreen.allCases) { option in
                     Button {
-                        screen = option
+                        store.screen = option
                     } label: {
                         Label(option.rawValue, systemImage: option.systemImage)
                     }
-                    .fontWeight(screen == option ? .bold : .regular)
+                    .fontWeight(store.screen == option ? .bold : .regular)
                     .help(option.rawValue)
                 }
             }
@@ -200,14 +190,52 @@ struct FineTuneDetailView: View {
     @ObservedObject var viewModel: FineTuneViewModel
 
     var body: some View {
-        if case .dataset(let id) = store.selection,
-           let dataset = viewModel.datasets.first(where: { $0.id == id }) {
-            FineTuneDatasetDetailView(dataset: dataset, viewModel: viewModel)
-                .id(dataset.id) // смена выбора пересоздаёт вид (сбрасывает @State)
-        } else {
-            // Всё остальное (выбран прогон или ничего не выбрано) — единая консоль
-            // «Прогон»: сама стартует новый тюн и показывает активный/выбранный.
-            FineTuneRunDetailView(store: store, viewModel: viewModel)
+        Group {
+            switch store.screen {
+            // Сегмент однозначно определяет detail — «Прогоны» всегда отдаёт консоль
+            // запуска, независимо от того, что осталось выбранным на других сегментах
+            // (иначе автовыбор датасета для «Baseline»/«Критерии» ниже застревал бы на
+            // экране «Датасет» вместо консоли, найдено ревью задачи 82).
+            case .runs:
+                FineTuneRunDetailView(store: store, viewModel: viewModel)
+            case .datasets:
+                if let dataset = selectedDataset {
+                    FineTuneDatasetDetailView(dataset: dataset, viewModel: viewModel, store: store)
+                        .id(dataset.id) // смена выбора пересоздаёт вид (сбрасывает @State)
+                } else {
+                    selectDatasetPrompt
+                }
+            case .baseline:
+                if let dataset = selectedDataset {
+                    FineTuneBaselineDetailView(dataset: dataset, viewModel: viewModel)
+                        .id(dataset.id)
+                } else {
+                    selectDatasetPrompt
+                }
+            case .criteria:
+                if let dataset = selectedDataset {
+                    FineTuneCriteriaDetailView(dataset: dataset, viewModel: viewModel)
+                        .id(dataset.id)
+                } else {
+                    selectDatasetPrompt
+                }
+            }
         }
+        // «Baseline»/«Критерии» — экраны только просмотра одного датасета: без
+        // автовыбора первый заход всегда требовал бы лишнего клика ради «Датасет не
+        // выбран». Решение и мутация selection — в сторе (View только зовёт).
+        .onAppear { store.selectFirstDatasetIfNeeded(datasets: viewModel.datasets) }
+        .onChange(of: store.screen) { _, _ in store.selectFirstDatasetIfNeeded(datasets: viewModel.datasets) }
+        .onChange(of: viewModel.datasets) { _, _ in store.selectFirstDatasetIfNeeded(datasets: viewModel.datasets) }
+    }
+
+    private var selectedDataset: FineTuneDataset? {
+        guard case .dataset(let id) = store.selection else { return nil }
+        return viewModel.datasets.first { $0.id == id }
+    }
+
+    private var selectDatasetPrompt: some View {
+        ContentUnavailableView("Датасет не выбран", systemImage: "tray.full",
+                               description: Text("Выберите датасет в средней колонке."))
     }
 }

@@ -13,26 +13,43 @@ actor FineTuneRunner {
     struct CLIResult: Equatable {
         let status: Int32
         let output: String
+        /// Раздельные stdout/stderr — нужны FineTuneValidationParser (заметки в stdout,
+        /// ошибки в stderr); train.py-команды пишут оба в один pipe и оставляют их пустыми.
+        let stdout: String
+        let stderr: String
+
+        init(status: Int32, output: String, stdout: String = "", stderr: String = "") {
+            self.status = status
+            self.output = output
+            self.stdout = stdout
+            self.stderr = stderr
+        }
     }
     typealias CLIRunner = (_ workdir: String, _ arguments: [String]) async -> CLIResult
+    typealias ValidateCLIRunner = (_ arguments: [String]) async -> CLIResult
 
     /// Команды CLI без явного проброса Process — щедрее обычной (`train.py start`
     /// делает до двух пробных `--help` с импортом mlx, см. lora_command в train.py).
     private static let defaultCLITimeoutSeconds: TimeInterval = 30
     private static let startCLITimeoutSeconds: TimeInterval = 180
+    /// validate.py — секунды, чистый stdlib: таймаут короче обычного CLI.
+    private static let validateCLITimeoutSeconds: TimeInterval = 15
 
     /// Снимок корня finetune/ (не замыкание на MainActor-состояние — см. частые
     /// ошибки в FineTune/CLAUDE.md): обновляется извне через `updateRoot(_:)`.
     private var fineTuneRoot: URL?
     private let injectedRunCLI: CLIRunner?
+    private let injectedValidateCLI: ValidateCLIRunner?
     private let registry: BackgroundProcessRegistry
     /// Проба python дорогая (десятки секунд) — кэш живёт, пока жив раннер.
     private var cachedPython: URL?
     private var liveProcesses: [String: FineTunePidProcess] = [:]
 
-    init(fineTuneRoot: URL?, runCLI: CLIRunner? = nil, registry: BackgroundProcessRegistry = .shared) {
+    init(fineTuneRoot: URL?, runCLI: CLIRunner? = nil, validateCLI: ValidateCLIRunner? = nil,
+         registry: BackgroundProcessRegistry = .shared) {
         self.fineTuneRoot = fineTuneRoot
         self.injectedRunCLI = runCLI
+        self.injectedValidateCLI = validateCLI
         self.registry = registry
     }
 
@@ -116,6 +133,23 @@ actor FineTuneRunner {
         await runCLI(workdir: workdir, arguments: ["best", "--install"])
     }
 
+    /// `validate.py <data>/train.jsonl <data>/valid.jsonl [--system …] [--min-assistant N]`,
+    /// рабочий каталог — сам finetune/ (не dataset.workdir, у validate.py нет `--workdir`).
+    func validate(dataset: FineTuneDataset, minAssistant: Int?, systemPromptPath: String?) async -> CLIResult {
+        guard let root = fineTuneRoot else {
+            return CLIResult(status: -1, output: "Каталог finetune/ не найден.")
+        }
+        var arguments = [
+            dataset.dataURL.appendingPathComponent("train.jsonl").path,
+            dataset.dataURL.appendingPathComponent("valid.jsonl").path
+        ]
+        if let systemPromptPath { arguments += ["--system", systemPromptPath] }
+        if let minAssistant { arguments += ["--min-assistant", String(minAssistant)] }
+
+        if let injectedValidateCLI { return await injectedValidateCLI(arguments) }
+        return await defaultRunValidate(root: root, arguments: arguments)
+    }
+
     /// «Оставить работать» при выходе приложения — прогоны больше не наши, terminateAll их пропускает.
     func detachAllFromQuit() {
         for process in liveProcesses.values { process.detachFromQuit() }
@@ -197,6 +231,75 @@ actor FineTuneRunner {
                              output: "train.py \(arguments.joined(separator: " ")) не завершился за \(Int(timeout)) с и был остановлен.\(tail)")
         }
         return CLIResult(status: process.terminationStatus, output: output)
+    }
+
+    /// validate.py — чистый stdlib, mlx-lm ему не нужен: не пробуем импорт (дорого и
+    /// не по делу), берём первый исполняемый кандидат из того же списка, что и train.py.
+    private func defaultRunValidate(root: URL, arguments: [String]) async -> CLIResult {
+        let validatePy = root.appendingPathComponent("validate.py")
+        var environment = ProcessInfo.processInfo.environment
+        environment["PATH"] = MCPEnv.augmentedPATH(extra: environment["PATH"] ?? "")
+        guard let python = FineTuneEnvironment.candidates(fineTuneRoot: root, environment: environment)
+            .first(where: { FileManager.default.isExecutableFile(atPath: $0.path) })
+        else {
+            return CLIResult(status: -1, output: FineTuneEnvironment.installHint)
+        }
+
+        let process = Process()
+        process.currentDirectoryURL = root
+        process.environment = environment
+        process.executableURL = python
+        process.arguments = [validatePy.path] + arguments
+
+        let stdoutPipe = Pipe()
+        let stderrPipe = Pipe()
+        process.standardOutput = stdoutPipe
+        process.standardError = stderrPipe
+        process.standardInput = FileHandle.nullDevice
+
+        let terminated = AsyncStream<Void> { continuation in
+            process.terminationHandler = { _ in
+                continuation.yield(())
+                continuation.finish()
+            }
+        }
+
+        do {
+            try process.run()
+        } catch {
+            return CLIResult(status: -1, output: "не удалось запустить validate.py: \(error.localizedDescription)")
+        }
+        // После run(), а не до: у реестра нет снятия с регистрации, и незапущенный
+        // Process остался бы в нём навсегда — по записи на каждый клик кнопки.
+        registry.register(process)
+
+        let stdoutHandle = stdoutPipe.fileHandleForReading
+        let stderrHandle = stderrPipe.fileHandleForReading
+        let stdoutReader = Task.detached(priority: .utility) { (try? stdoutHandle.readToEnd()) ?? Data() }
+        let stderrReader = Task.detached(priority: .utility) { (try? stderrHandle.readToEnd()) ?? Data() }
+        let watchdog = Task.detached { [timeout = Self.validateCLITimeoutSeconds] in
+            try? await Task.sleep(nanoseconds: UInt64(timeout) * 1_000_000_000)
+            guard !Task.isCancelled, process.isRunning else { return false }
+            process.sendTerminationSignal()
+            try? await Task.sleep(nanoseconds: 2_000_000_000)
+            if process.isRunning { process.sendKillSignal() }
+            return true
+        }
+
+        for await _ in terminated { break }
+        watchdog.cancel()
+        let timedOut = await watchdog.value
+        let stdoutData = await stdoutReader.value
+        let stderrData = await stderrReader.value
+        let stdout = String(data: stdoutData, encoding: .utf8) ?? String(decoding: stdoutData, as: UTF8.self)
+        let stderr = String(data: stderrData, encoding: .utf8) ?? String(decoding: stderrData, as: UTF8.self)
+
+        if timedOut {
+            return CLIResult(status: -1,
+                             output: "validate.py не завершился за \(Int(Self.validateCLITimeoutSeconds)) с и был остановлен.",
+                             stdout: stdout, stderr: stderr)
+        }
+        return CLIResult(status: process.terminationStatus, output: stdout + stderr, stdout: stdout, stderr: stderr)
     }
 
     private func resolvePython(root: URL, environment: [String: String]) async -> URL? {
