@@ -11,7 +11,9 @@
 import sys
 from typing import Callable, List, Tuple
 
+import actionitem_checks as ac
 import build_dataset
+import build_meetings_dataset as bm
 import dictation_checks as dc
 import style_checks as sc
 import train
@@ -133,8 +135,105 @@ def test_markdown_cleaner() -> None:
     check("чистка: разбивка на абзацы", paras == ["Первый", "Второй", "Третий"], str(paras))
 
 
+ACTION_REFERENCE = ('{"action_items": [{"assignee": "Industrial Designer", '
+                    '"task": "prepare the working design", "due": "by the next meeting"}]}')
+EMPTY_REFERENCE = '{"action_items": []}'
+
+
+def test_actionitem_catches_defects() -> None:
+    ok, _ = result(ac, ACTION_REFERENCE, ACTION_REFERENCE, "валидный JSON")
+    check("поручения: эталон валиден", ok)
+
+    ok, detail = result(ac, "Вот поручения: " + ACTION_REFERENCE, ACTION_REFERENCE, "без прозы")
+    check("поручения: ловит прозу вокруг JSON", ok is False, detail)
+
+    ok, detail = result(ac, "```json\n%s\n```" % ACTION_REFERENCE, ACTION_REFERENCE, "без прозы")
+    check("поручения: ловит ```-обёртку", ok is False, detail)
+
+    ok, detail = result(ac, "не JSON вовсе", ACTION_REFERENCE, "валидный JSON")
+    check("поручения: ловит невалидный JSON", ok is False, detail)
+
+    ok, detail = result(ac, '{"items": []}', EMPTY_REFERENCE, "валидный JSON")
+    check("поручения: ловит чужой ключ верхнего уровня", ok is False, detail)
+
+    # Главный дефект задачи: поручение, которого во фрагменте не было.
+    ok, detail = result(ac, ACTION_REFERENCE, EMPTY_REFERENCE, "ничего не выдумано")
+    check("поручения: ловит выдуманное поручение", ok is False, detail)
+
+    ok, detail = result(ac, EMPTY_REFERENCE, ACTION_REFERENCE, "ничего не упущено")
+    check("поручения: ловит пропущенное поручение", ok is False, detail)
+
+    no_due = ACTION_REFERENCE.replace('"by the next meeting"', "null")
+    ok, detail = result(ac, ACTION_REFERENCE, no_due, "срок не выдуман")
+    check("поручения: ловит выдуманный срок", ok is False, detail)
+    ok, _ = result(ac, no_due, ACTION_REFERENCE, "срок не выдуман")
+    check("поручения: пропущенный срок не считается выдуманным", ok)
+
+    wrong_actor = ACTION_REFERENCE.replace("Industrial Designer", "Marketing Expert")
+    ok, detail = result(ac, wrong_actor, ACTION_REFERENCE, "ответственные")
+    check("поручения: ловит чужого ответственного", ok is False, detail)
+
+    ok, detail = result(ac, '{"action_items": [{"task": "prepare the working design"}]}',
+                        ACTION_REFERENCE, "схема элементов")
+    check("поручения: ловит неполную схему элемента", ok is False, detail)
+
+    other_task = ACTION_REFERENCE.replace("prepare the working design",
+                                          "order pizza for the office party")
+    ok, detail = result(ac, other_task, ACTION_REFERENCE, "формулировка задачи")
+    check("поручения: ловит подменённую задачу", ok is False, detail)
+
+    ok, _ = result(ac, EMPTY_REFERENCE, EMPTY_REFERENCE, "ничего не выдумано")
+    check("поручения: пустой эталон проходит сам себя", ok)
+
+
+def test_meetings_builder_parses_actions() -> None:
+    """Разбор предложения-поручения AMI: чистые функции сборщика."""
+    parsed = bm.split_action("The industrial designer will work on the working design.")
+    check("встречи: простое поручение разобрано",
+          parsed == [{"assignee": "Industrial Designer",
+                      "task": "work on the working design", "due": None}], str(parsed))
+
+    parsed = bm.split_action(
+        "The User Interface Designer and the Industrial Designer will build the prototype "
+        "for the next meeting.")
+    check("встречи: два исполнителя дают два поручения",
+          parsed is not None and len(parsed) == 2
+          and {item["assignee"] for item in parsed} == {"User Interface Designer",
+                                                        "Industrial Designer"}, str(parsed))
+    check("встречи: срок вынесен из формулировки",
+          parsed is not None and all(item["due"] == "for the next meeting"
+                                     and "next meeting" not in item["task"] for item in parsed),
+          str(parsed))
+
+    parsed = bm.split_action("The team will discuss the budget.")
+    check("встречи: поручение всем — assignee None",
+          parsed == [{"assignee": None, "task": "discuss the budget", "due": None}], str(parsed))
+
+    parsed = bm.split_action("The Marketing Expert was instructed to check the evaluations.")
+    check("встречи: пассив разобран",
+          parsed == [{"assignee": "Marketing Expert",
+                      "task": "check the evaluations", "due": None}], str(parsed))
+
+    parsed = bm.split_action(
+        "The Project Manager instructed the Industrial Designer to build the prototype.")
+    check("встречи: «X поручил Y» даёт исполнителем Y",
+          parsed is not None and len(parsed) == 1
+          and parsed[0]["assignee"] == "Industrial Designer", str(parsed))
+
+    check("встречи: заглушка *NA* — не поручение", bm.split_action("*NA*") == [])
+    check("встречи: чужая формулировка не выдумывается",
+          bm.split_action("Their personal coaches will give the rest of the information") is None)
+
+    # Пунктуация в words.xml лежит отдельным элементом: если её приклеить через
+    # пробел, транскрипт получит «слово . слово» и перевод споткнётся на строках.
+    joined = bm.join_words(["Okay", "\x00.", "", "Right", "\x00."], 0, 4)
+    check("встречи: пунктуация приклеена без пробела", joined == "Okay. Right.", repr(joined))
+
+
 def main() -> int:
     tests: List[Callable[[], None]] = [
+        test_actionitem_catches_defects,
+        test_meetings_builder_parses_actions,
         test_dictation_catches_defects,
         test_style_catches_defects,
         test_log_parser,

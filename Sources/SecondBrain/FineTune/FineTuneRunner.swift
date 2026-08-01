@@ -150,9 +150,10 @@ actor FineTuneRunner {
         await runCLI(workdir: workdir, arguments: ["best", "--install"])
     }
 
-    /// `validate.py <data>/train.jsonl <data>/valid.jsonl [--system …] [--min-assistant N]`,
-    /// рабочий каталог — сам finetune/ (не dataset.workdir, у validate.py нет `--workdir`).
-    func validate(dataset: FineTuneDataset, minAssistant: Int?, systemPromptPath: String?) async -> CLIResult {
+    /// `validate.py <data>/train.jsonl <data>/valid.jsonl [--system …] [--min-assistant N]
+    /// [--max-reuse N]`, рабочий каталог — сам finetune/ (у validate.py нет `--workdir`).
+    func validate(dataset: FineTuneDataset, minAssistant: Int?, maxReuse: Int?,
+                  systemPromptPath: String?) async -> CLIResult {
         guard let root = fineTuneRoot else {
             return CLIResult(status: -1, output: "Каталог finetune/ не найден.")
         }
@@ -162,14 +163,22 @@ actor FineTuneRunner {
         ]
         if let systemPromptPath { arguments += ["--system", systemPromptPath] }
         if let minAssistant { arguments += ["--min-assistant", String(minAssistant)] }
+        if let maxReuse { arguments += ["--max-reuse", String(maxReuse)] }
 
         if let injectedValidateCLI { return await injectedValidateCLI(arguments) }
         return await defaultRunValidate(root: root, arguments: arguments)
     }
 
-    /// `baseline.py --data <dataset>/data --out <dataset>/baseline --count N`, рабочий
-    /// каталог — сам finetune/ (как validate.py); python — тот же простой выбор, что
-    /// и у validate (первый исполняемый кандидат, без пробы импорта mlx-lm).
+    /// Температура снятия baseline. Дефолт `baseline.py` — 0.7, а все закоммиченные
+    /// снимки сделаны на 0.3 (criteria.md всех трёх датасетов). Без явного флага
+    /// снимок из приложения был бы несопоставим с зафиксированными числами, а на
+    /// строгом JSON разброс вреден прямо: см. задачу 84.
+    static let baselineTemperature = 0.3
+
+    /// `baseline.py --data <dataset>/data --out <dataset>/baseline --count N
+    /// --temperature 0.3`, рабочий каталог — сам finetune/ (как validate.py); python —
+    /// тот же простой выбор, что и у validate (первый исполняемый кандидат, без
+    /// пробы импорта mlx-lm).
     func snapshotBaseline(dataset: FineTuneDataset, count: Int) async -> CLIResult {
         guard let root = fineTuneRoot else {
             return CLIResult(status: -1, output: "Каталог finetune/ не найден.")
@@ -181,7 +190,9 @@ actor FineTuneRunner {
             return CLIResult(status: -1, output: "Предыдущее снятие baseline ещё завершается — подождите пару секунд.")
         }
         let outURL = dataset.rootURL.appendingPathComponent("baseline")
-        let arguments = ["--data", dataset.dataURL.path, "--out", outURL.path, "--count", String(count)]
+        let arguments = ["--data", dataset.dataURL.path, "--out", outURL.path,
+                         "--count", String(count),
+                         "--temperature", String(Self.baselineTemperature)]
 
         baselineWorkdirs.insert(dataset.workdir)
         defer { baselineWorkdirs.remove(dataset.workdir) }

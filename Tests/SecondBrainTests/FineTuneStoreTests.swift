@@ -12,6 +12,9 @@
 //
 // Задача 83 дополняет: миграция без baselineCountOverrides, round-trip через
 // setBaselineCount, makeDocument — четвёртое поле.
+//
+// Задача 84 дополняет: миграция без maxReuseOverrides, round-trip через setMaxReuse,
+// переключатель «датасет классификации» ↔ оба порога валидатора, makeDocument — пятое поле.
 
 import XCTest
 @testable import SecondBrain
@@ -274,7 +277,7 @@ final class FineTuneStoreTests: XCTestCase {
     /// Регрессия (синхронный путь persistNow()/appendRun): изменение `runs` не должно
     /// затирать validations/minAssistantOverrides на диске. Дебаунс-автосохранение
     /// защищено структурно — оба пути зовут `makeDocument`, см.
-    /// `testMakeDocumentCombinesAllThreeFields`.
+    /// `testMakeDocumentCombinesAllFields`.
     func testAppendingRunDoesNotEraseValidationsOrOverridesOnDisk() {
         let store = makeStore()
         let record = FineTuneValidationRecord(isValid: true, notes: ["ok"], issues: [])
@@ -306,20 +309,23 @@ final class FineTuneStoreTests: XCTestCase {
 
     /// $runs.sink раньше строил документ только из runs — с общей функцией это
     /// невозможно: и persistNow(), и дебаунс-автосохранение зовут её же.
-    func testMakeDocumentCombinesAllFourFields() {
+    func testMakeDocumentCombinesAllFields() {
         let run = makeRun()
         let validations = ["a": FineTuneValidationRecord(isValid: true, notes: ["ok"], issues: [])]
         let minAssistantOverrides = ["a": 55]
         let baselineCountOverrides = ["a": 5]
+        let maxReuseOverrides = ["a": 900]
 
         let document = FineTuneStore.makeDocument(runs: [run], validations: validations,
                                                   minAssistantOverrides: minAssistantOverrides,
-                                                  baselineCountOverrides: baselineCountOverrides)
+                                                  baselineCountOverrides: baselineCountOverrides,
+                                                  maxReuseOverrides: maxReuseOverrides)
 
         XCTAssertEqual(document.runs, [run])
         XCTAssertEqual(document.validations, validations)
         XCTAssertEqual(document.minAssistantOverrides, minAssistantOverrides)
         XCTAssertEqual(document.baselineCountOverrides, baselineCountOverrides)
+        XCTAssertEqual(document.maxReuseOverrides, maxReuseOverrides)
     }
 
     // MARK: - baselineCountOverrides (задача 83)
@@ -339,5 +345,64 @@ final class FineTuneStoreTests: XCTestCase {
 
         let reloaded = makeStore()
         XCTAssertEqual(reloaded.baselineCountOverrides["dictation"], 3)
+    }
+
+    // MARK: - maxReuseOverrides (задача 84)
+
+    /// Документ версии до задачи 84 — грузится с пустым словарём, порог берётся
+    /// дефолтный, файл не считается битым.
+    func testMigrationWithoutMaxReuseOverridesLoadsWithEmptyDefault() throws {
+        try Data(#"{"runs":[],"minAssistantOverrides":{"dictation":30}}"#.utf8).write(to: url)
+        let store = makeStore()
+        XCTAssertEqual(store.maxReuseOverrides, [:], "старый документ без этого поля — пустой словарь, не потеря")
+        XCTAssertEqual(store.maxReuse(workdir: "dictation"), FineTuneStore.defaultMaxReuse)
+        XCTAssertEqual(store.minAssistantOverrides["dictation"], 30, "соседнее поле не потеряно")
+    }
+
+    /// UI задаёт порог переключателем, а не числом: осмысленного «правильного»
+    /// значения нет, есть решение «повтор метки не дубль».
+    func testRepeatedAnswersToggleMapsToThreshold() {
+        let store = makeStore()
+        XCTAssertFalse(store.allowsRepeatedAnswers(workdir: "meetings"), "по умолчанию выключено")
+
+        store.setAllowsRepeatedAnswers(true, workdir: "meetings")
+        XCTAssertEqual(store.maxReuse(workdir: "meetings"), FineTuneStore.classificationMaxReuse)
+        XCTAssertTrue(store.allowsRepeatedAnswers(workdir: "meetings"))
+
+        store.setAllowsRepeatedAnswers(false, workdir: "meetings")
+        XCTAssertEqual(store.maxReuse(workdir: "meetings"), FineTuneStore.defaultMaxReuse)
+        XCTAssertFalse(store.allowsRepeatedAnswers(workdir: "meetings"))
+    }
+
+    /// Оба порога валидатора ломаются об один класс датасетов, поэтому переключатель
+    /// опускает их вместе: закрыть только повторы и оставить длину — оставить
+    /// валидацию красной ровно так же (замечание ревью задачи 84).
+    func testClassificationToggleAlsoLowersMinAssistant() {
+        let store = makeStore()
+        XCTAssertEqual(store.minAssistant(workdir: "meetings", hasOwnSystemPrompt: true),
+                       FineTuneStore.ownSystemPromptMinAssistant)
+
+        store.setAllowsRepeatedAnswers(true, workdir: "meetings")
+        XCTAssertEqual(store.minAssistant(workdir: "meetings", hasOwnSystemPrompt: true),
+                       FineTuneStore.classificationMinAssistant)
+        XCTAssertEqual(store.minAssistant(workdir: "dictation", hasOwnSystemPrompt: true),
+                       FineTuneStore.ownSystemPromptMinAssistant,
+                       "переключатель действует на свой датасет, не на все")
+
+        // Явная настройка пользователя сильнее переключателя: иначе Stepper переставал
+        // бы работать после включения галочки.
+        store.setMinAssistant(45, workdir: "meetings")
+        XCTAssertEqual(store.minAssistant(workdir: "meetings", hasOwnSystemPrompt: true), 45)
+    }
+
+    func testSetMaxReusePersistsAcrossStoreInstances() {
+        let store = makeStore()
+        store.setMaxReuse(900, workdir: "meetings")
+        store.persistNow() // setMaxReuse не пишет синхронно — полагается на дебаунс
+
+        let reloaded = makeStore()
+        XCTAssertEqual(reloaded.maxReuse(workdir: "meetings"), 900)
+        XCTAssertEqual(reloaded.maxReuse(workdir: "dictation"), FineTuneStore.defaultMaxReuse,
+                       "порог задан на датасет, не на все сразу")
     }
 }

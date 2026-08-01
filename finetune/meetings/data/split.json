@@ -1,0 +1,37 @@
+{
+  "seed": 20260801,
+  "eval_fraction_target": 0.2,
+  "eval_posts": [
+    "ES2002a",
+    "ES2002c",
+    "ES2002d",
+    "ES2004b",
+    "ES2004c",
+    "ES2005d",
+    "ES2007c",
+    "ES2008d",
+    "ES2010a",
+    "ES2010c",
+    "ES2014b",
+    "ES2015c",
+    "ES2016a",
+    "IS1000b",
+    "IS1000c",
+    "IS1002b",
+    "IS1003b",
+    "IS1004d",
+    "IS1005a",
+    "IS1008a",
+    "IS1009c",
+    "IS1009d",
+    "TS3005b",
+    "TS3007a",
+    "TS3007c",
+    "TS3008b",
+    "TS3008d"
+  ],
+  "counts": {
+    "train": 466,
+    "valid": 116
+  }
+}

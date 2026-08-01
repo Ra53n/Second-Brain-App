@@ -165,6 +165,7 @@ final class FineTuneViewModel: ObservableObject {
         let minAssistant = store.minAssistant(workdir: dataset.workdir,
                                               hasOwnSystemPrompt: dataset.systemPromptPath != nil)
         let result = await runner.validate(dataset: dataset, minAssistant: minAssistant,
+                                           maxReuse: store.maxReuse(workdir: dataset.workdir),
                                            systemPromptPath: dataset.systemPromptPath)
         guard gen == validateGen else { return }
         isValidating = false

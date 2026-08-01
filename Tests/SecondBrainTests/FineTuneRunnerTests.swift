@@ -280,8 +280,25 @@ final class FineTuneRunnerTests: XCTestCase {
         XCTAssertEqual(captured, [
             "--data", dataset.dataURL.path,
             "--out", dataset.rootURL.appendingPathComponent("baseline").path,
-            "--count", "3"
+            "--count", "3",
+            "--temperature", "0.3"
         ])
+    }
+
+    /// Задача 84: дефолт `baseline.py` — 0.7, а все закоммиченные снимки на 0.3.
+    /// Без явного флага снимок из приложения молча несопоставим с точкой отсчёта
+    /// (и однажды уже перезаписал её значениями с другой температурой).
+    func testSnapshotBaselinePassesCommittedTemperature() async {
+        var captured: [String]?
+        let runner = FineTuneRunner(fineTuneRoot: tempDir, baselineCLI: { args in
+            captured = args
+            return .init(status: 0, output: "")
+        }, registry: BackgroundProcessRegistry())
+
+        _ = await runner.snapshotBaseline(dataset: makeDataset(), count: 10)
+
+        XCTAssertEqual(captured?.suffix(2), ["--temperature", "0.3"])
+        XCTAssertEqual(FineTuneRunner.baselineTemperature, 0.3)
     }
 
     func testSnapshotBaselineSuccessReturnsZeroStatus() async {

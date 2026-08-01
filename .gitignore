@@ -33,3 +33,11 @@ finetune/tuned/
 finetune/dictation/adapters/
 finetune/dictation/runs/
 finetune/dictation/tuned/
+finetune/meetings/adapters/
+finetune/meetings/runs/
+finetune/meetings/tuned/
+# Исходный корпус AMI (23 МБ архива + XML) и кеш перевода: и то, и другое
+# восстанавливается скриптами, в репозитории только собранный датасет.
+finetune/meetings/source/
+finetune/meetings/data/translations.json
+finetune/meetings/translate.log

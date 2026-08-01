@@ -15,16 +15,22 @@ struct FineTuneDocument: Codable {
     var minAssistantOverrides: [String: Int] = [:]
     /// Настройка `--count` для `baseline.py` на датасет (задача 83), ключ — workdir.
     var baselineCountOverrides: [String: Int] = [:]
+    /// Настройка `--max-reuse` на датасет (задача 84), ключ — workdir.
+    var maxReuseOverrides: [String: Int] = [:]
 
     init(runs: [FineTuneRun] = [], validations: [String: FineTuneValidationRecord] = [:],
-         minAssistantOverrides: [String: Int] = [:], baselineCountOverrides: [String: Int] = [:]) {
+         minAssistantOverrides: [String: Int] = [:], baselineCountOverrides: [String: Int] = [:],
+         maxReuseOverrides: [String: Int] = [:]) {
         self.runs = runs
         self.validations = validations
         self.minAssistantOverrides = minAssistantOverrides
         self.baselineCountOverrides = baselineCountOverrides
+        self.maxReuseOverrides = maxReuseOverrides
     }
 
-    enum CodingKeys: String, CodingKey { case runs, validations, minAssistantOverrides, baselineCountOverrides }
+    enum CodingKeys: String, CodingKey {
+        case runs, validations, minAssistantOverrides, baselineCountOverrides, maxReuseOverrides
+    }
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -32,6 +38,7 @@ struct FineTuneDocument: Codable {
         validations = try c.decodeIfPresent([String: FineTuneValidationRecord].self, forKey: .validations) ?? [:]
         minAssistantOverrides = try c.decodeIfPresent([String: Int].self, forKey: .minAssistantOverrides) ?? [:]
         baselineCountOverrides = try c.decodeIfPresent([String: Int].self, forKey: .baselineCountOverrides) ?? [:]
+        maxReuseOverrides = try c.decodeIfPresent([String: Int].self, forKey: .maxReuseOverrides) ?? [:]
     }
 }
 
@@ -133,16 +140,31 @@ final class FineTuneStore: ObservableObject {
     @Published private(set) var validations: [String: FineTuneValidationRecord] = [:]
     @Published private(set) var minAssistantOverrides: [String: Int] = [:]
     @Published private(set) var baselineCountOverrides: [String: Int] = [:]
+    @Published private(set) var maxReuseOverrides: [String: Int] = [:]
 
     /// Кап истории: прогоны — операционный лог, старое не нужно.
     static let runsCap = 50
     /// `validate.py` по умолчанию требует ≥120 символов у assistant.
     static let defaultMinAssistant = 120
+    /// `validate.py` считает дублями повтор одного текста assistant чаще трёх раз.
+    /// Для генеративного датасета это верно, для классификации — нет: там повтор
+    /// метки норма, и без своего порога такой датасет валиден быть не может.
+    static let defaultMaxReuse = 3
+    /// Значение для датасета классификации: заведомо больше любого разумного числа
+    /// примеров, то есть проверка на дубли перестаёт срабатывать. Осмысленного
+    /// «правильного» порога здесь нет — есть решение «повтор метки не дубль»,
+    /// поэтому в UI это переключатель, а не число (Stepper до сотен — не контрол).
+    static let classificationMaxReuse = 1_000_000
+    /// Ответ классификатора короткий по своей природе: `{"action_items": []}` — 20
+    /// символов. Оба порога валидатора ломаются об один и тот же класс датасетов,
+    /// поэтому переключатель один и опускает их вместе: закрыть только повторы
+    /// и оставить длину — оставить валидацию красной ровно так же.
+    static let classificationMinAssistant = 20
     /// Датасет со своим `system_prompt.txt` рядом (например, диктовка) обычно снят
     /// под короткие ответы (finetune/README.md) — общий дефолт 120 валил бы там
     /// каждую строку ещё до первой настройки пользователем. Признак — наличие
     /// файла, не имя каталога: переименование workdir раньше тихо роняло порог.
-    private static let ownSystemPromptMinAssistant = 30
+    static let ownSystemPromptMinAssistant = 30
 
     private let url: URL
     private var saveCancellable: AnyCancellable?
@@ -154,14 +176,20 @@ final class FineTuneStore: ObservableObject {
         validations = document.validations
         minAssistantOverrides = document.minAssistantOverrides
         baselineCountOverrides = document.baselineCountOverrides
+        maxReuseOverrides = document.maxReuseOverrides
         normalize()
 
+        // CombineLatest4 исчерпан пятым полем, поэтому пары вложены: важно, что точка
+        // сборки документа осталась одна (`makeDocument`) — см. регрессию задачи 82.
         saveCancellable = Publishers.CombineLatest4($runs, $validations, $minAssistantOverrides, $baselineCountOverrides)
+            .combineLatest($maxReuseOverrides)
             .debounce(for: .milliseconds(300), scheduler: DispatchQueue.main)
-            .sink { [url] runs, validations, minAssistantOverrides, baselineCountOverrides in
+            .sink { [url] combined, maxReuseOverrides in
+                let (runs, validations, minAssistantOverrides, baselineCountOverrides) = combined
                 let document = FineTuneStore.makeDocument(runs: runs, validations: validations,
                                                           minAssistantOverrides: minAssistantOverrides,
-                                                          baselineCountOverrides: baselineCountOverrides)
+                                                          baselineCountOverrides: baselineCountOverrides,
+                                                          maxReuseOverrides: maxReuseOverrides)
                 DispatchQueue.global(qos: .utility).async {
                     FineTunePersistence.save(document, to: url)
                 }
@@ -171,19 +199,22 @@ final class FineTuneStore: ObservableObject {
     /// Единственное место сборки документа: и `persistNow()`, и дебаунс-автосохранение
     /// выше зовут именно эту функцию — раньше дебаунс-подписка строила документ вручную
     /// только из `runs`, что на диске тихо стирало `validations`/`minAssistantOverrides`
-    /// (регрессия задачи 82, покрыта `FineTuneStoreTests.testMakeDocumentCombinesAllThreeFields`).
+    /// (регрессия задачи 82, покрыта `FineTuneStoreTests.testMakeDocumentCombinesAllFields`).
     static func makeDocument(runs: [FineTuneRun], validations: [String: FineTuneValidationRecord],
                             minAssistantOverrides: [String: Int],
-                            baselineCountOverrides: [String: Int]) -> FineTuneDocument {
+                            baselineCountOverrides: [String: Int],
+                            maxReuseOverrides: [String: Int]) -> FineTuneDocument {
         FineTuneDocument(runs: runs, validations: validations, minAssistantOverrides: minAssistantOverrides,
-                         baselineCountOverrides: baselineCountOverrides)
+                         baselineCountOverrides: baselineCountOverrides,
+                         maxReuseOverrides: maxReuseOverrides)
     }
 
     /// Синхронная запись без debounce — вокруг стартов/финалов прогонов и на выходе приложения.
     func persistNow() {
         FineTunePersistence.save(FineTuneStore.makeDocument(runs: runs, validations: validations,
                                                             minAssistantOverrides: minAssistantOverrides,
-                                                            baselineCountOverrides: baselineCountOverrides), to: url)
+                                                            baselineCountOverrides: baselineCountOverrides,
+                                                            maxReuseOverrides: maxReuseOverrides), to: url)
     }
 
     func setValidation(_ record: FineTuneValidationRecord, workdir: String) {
@@ -196,7 +227,9 @@ final class FineTuneStore: ObservableObject {
     }
 
     func minAssistant(workdir: String, hasOwnSystemPrompt: Bool = false) -> Int {
-        minAssistantOverrides[workdir] ?? (hasOwnSystemPrompt ? Self.ownSystemPromptMinAssistant : Self.defaultMinAssistant)
+        if let explicit = minAssistantOverrides[workdir] { return explicit }
+        if allowsRepeatedAnswers(workdir: workdir) { return Self.classificationMinAssistant }
+        return hasOwnSystemPrompt ? Self.ownSystemPromptMinAssistant : Self.defaultMinAssistant
     }
 
     /// Без `persistNow()`: щёлкают Stepper часто, синхронная запись на каждый клик
@@ -208,6 +241,23 @@ final class FineTuneStore: ObservableObject {
     /// Без `persistNow()` — тот же резон, что у `setMinAssistant`: Stepper щёлкают часто.
     func setBaselineCount(_ value: Int, workdir: String) {
         baselineCountOverrides[workdir] = value
+    }
+
+    func maxReuse(workdir: String) -> Int {
+        maxReuseOverrides[workdir] ?? Self.defaultMaxReuse
+    }
+
+    /// Без `persistNow()` — тот же резон, что у `setMinAssistant`.
+    func setMaxReuse(_ value: Int, workdir: String) {
+        maxReuseOverrides[workdir] = value
+    }
+
+    func allowsRepeatedAnswers(workdir: String) -> Bool {
+        maxReuse(workdir: workdir) > Self.defaultMaxReuse
+    }
+
+    func setAllowsRepeatedAnswers(_ allowed: Bool, workdir: String) {
+        setMaxReuse(allowed ? Self.classificationMaxReuse : Self.defaultMaxReuse, workdir: workdir)
     }
 
     /// Новые прогоны — в начало (история показывается свежими вверх).

@@ -8,9 +8,14 @@
     # задача «пост в стиле канала»
     python3 evaluate.py --checks style
 
+    # задача «поручения из встречи»
+    python3 evaluate.py --checks actionitem --data meetings/data \\
+        --baseline meetings/baseline --tuned meetings/tuned
+
 Набор проверок выбирается флагом: `style` меряет стиль поста, `dictation` —
-точность пост-процессора относительно эталона. Критерии и правило приёмки —
-в criteria.md соответствующего раздела.
+точность пост-процессора относительно эталона, `actionitem` — строгость
+структурированного ответа. Критерии и правило приёмки — в criteria.md
+соответствующего раздела.
 """
 
 import argparse
@@ -19,11 +24,13 @@ import os
 import sys
 from typing import Dict, List, Optional
 
+import actionitem_checks
 import dictation_checks
 import style_checks
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-CHECK_SETS = {"style": style_checks, "dictation": dictation_checks}
+CHECK_SETS = {"style": style_checks, "dictation": dictation_checks,
+              "actionitem": actionitem_checks}
 
 
 def resolve(path: str) -> str:

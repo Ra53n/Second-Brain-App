@@ -19,7 +19,7 @@
 | `routing.json` | `FunctionRoutingStore` (LLM/FunctionRouting.swift) | JSON `FunctionRoutingConfig` |
 | `meetings.json` | `MeetingStore` (Meetings/) | JSON — прогоны пайплайна встреч |
 | `meeting_settings.json` | `MeetingSettingsStore` (Meetings/MeetingSettings.swift) | JSON — правила раскладки, промпт-правила |
-| `finetune-runs.json` | `FineTunePersistence` (FineTune/FineTuneStore.swift) | JSON — прогоны дообучения, гиперпараметры, разобранные точки loss; результаты последней валидации по датасету, пороги `--min-assistant` (задача 82) и счётчики примеров baseline `baselineCountOverrides` (задача 83) |
+| `finetune-runs.json` | `FineTunePersistence` (FineTune/FineTuneStore.swift) | JSON — прогоны дообучения, гиперпараметры, разобранные точки loss; результаты последней валидации по датасету, пороги `--min-assistant` (задача 82), счётчики примеров baseline `baselineCountOverrides` (задача 83) и пороги `--max-reuse` `maxReuseOverrides` (задача 84 — датасету классификации повтор ответа не дубль) |
 | `<vault-id>/search.sqlite` | `SearchIndex` (Search/) | SQLite FTS5 — полнотекстовый индекс заметок |
 | `<vault-id>/rag.sqlite` | `RagIndex` (RAG/) | SQLite — чанки и векторы RAG |
 | `<repo-id>/project-docs.sqlite` | `ProjectDocsIndexService` (Tools/) | SQLite (схема RagIndex) — RAG-индекс README+docs выбранного репозитория для /help |

@@ -34,7 +34,7 @@ final class FineTuneRunnerValidateTests: XCTestCase {
             return .init(status: 0, output: "")
         }, registry: BackgroundProcessRegistry())
 
-        _ = await runner.validate(dataset: makeDataset(), minAssistant: nil, systemPromptPath: nil)
+        _ = await runner.validate(dataset: makeDataset(), minAssistant: nil, maxReuse: nil, systemPromptPath: nil)
 
         XCTAssertEqual(captured, [
             tempDir.appendingPathComponent("data/train.jsonl").path,
@@ -49,7 +49,7 @@ final class FineTuneRunnerValidateTests: XCTestCase {
             return .init(status: 0, output: "")
         }, registry: BackgroundProcessRegistry())
 
-        _ = await runner.validate(dataset: makeDataset(), minAssistant: nil,
+        _ = await runner.validate(dataset: makeDataset(), minAssistant: nil, maxReuse: nil,
                                   systemPromptPath: "/x/system_prompt.txt")
 
         XCTAssertEqual(captured?.suffix(2), ["--system", "/x/system_prompt.txt"])
@@ -62,7 +62,7 @@ final class FineTuneRunnerValidateTests: XCTestCase {
             return .init(status: 0, output: "")
         }, registry: BackgroundProcessRegistry())
 
-        _ = await runner.validate(dataset: makeDataset(), minAssistant: nil, systemPromptPath: nil)
+        _ = await runner.validate(dataset: makeDataset(), minAssistant: nil, maxReuse: nil, systemPromptPath: nil)
 
         XCTAssertFalse(captured?.contains("--system") ?? true)
     }
@@ -74,9 +74,37 @@ final class FineTuneRunnerValidateTests: XCTestCase {
             return .init(status: 0, output: "")
         }, registry: BackgroundProcessRegistry())
 
-        _ = await runner.validate(dataset: makeDataset(), minAssistant: 30, systemPromptPath: nil)
+        _ = await runner.validate(dataset: makeDataset(), minAssistant: 30, maxReuse: nil, systemPromptPath: nil)
 
         XCTAssertEqual(captured?.suffix(2), ["--min-assistant", "30"])
+    }
+
+    /// Задача 84: без своего порога повторов датасет классификации валиден быть не может —
+    /// сотни примеров с одной меткой `validate.py` считает дублями.
+    func testMaxReuseFlagAddedOnlyWhenValueProvided() async {
+        var captured: [String]?
+        let runner = FineTuneRunner(fineTuneRoot: tempDir, validateCLI: { args in
+            captured = args
+            return .init(status: 0, output: "")
+        }, registry: BackgroundProcessRegistry())
+
+        _ = await runner.validate(dataset: makeDataset(), minAssistant: nil, maxReuse: 900,
+                                  systemPromptPath: nil)
+
+        XCTAssertEqual(captured?.suffix(2), ["--max-reuse", "900"])
+    }
+
+    func testMaxReuseFlagAbsentWhenValueIsNil() async {
+        var captured: [String]?
+        let runner = FineTuneRunner(fineTuneRoot: tempDir, validateCLI: { args in
+            captured = args
+            return .init(status: 0, output: "")
+        }, registry: BackgroundProcessRegistry())
+
+        _ = await runner.validate(dataset: makeDataset(), minAssistant: 30, maxReuse: nil,
+                                  systemPromptPath: nil)
+
+        XCTAssertFalse(captured?.contains("--max-reuse") ?? true)
     }
 
     func testMinAssistantFlagAbsentWhenValueIsNil() async {
@@ -86,7 +114,7 @@ final class FineTuneRunnerValidateTests: XCTestCase {
             return .init(status: 0, output: "")
         }, registry: BackgroundProcessRegistry())
 
-        _ = await runner.validate(dataset: makeDataset(), minAssistant: nil, systemPromptPath: nil)
+        _ = await runner.validate(dataset: makeDataset(), minAssistant: nil, maxReuse: nil, systemPromptPath: nil)
 
         XCTAssertFalse(captured?.contains("--min-assistant") ?? true)
     }
@@ -98,7 +126,7 @@ final class FineTuneRunnerValidateTests: XCTestCase {
             return .init(status: 0, output: "")
         }, registry: BackgroundProcessRegistry())
 
-        _ = await runner.validate(dataset: makeDataset(), minAssistant: 120,
+        _ = await runner.validate(dataset: makeDataset(), minAssistant: 120, maxReuse: nil,
                                   systemPromptPath: "/x/system_prompt.txt")
 
         XCTAssertEqual(captured, [
@@ -116,7 +144,7 @@ final class FineTuneRunnerValidateTests: XCTestCase {
             .init(status: 1, output: "", stdout: "заметка\n", stderr: "ОШИБКИ (1):\n  a.jsonl:1: текст")
         }, registry: BackgroundProcessRegistry())
 
-        let result = await runner.validate(dataset: makeDataset(), minAssistant: nil, systemPromptPath: nil)
+        let result = await runner.validate(dataset: makeDataset(), minAssistant: nil, maxReuse: nil, systemPromptPath: nil)
 
         XCTAssertEqual(result.stdout, "заметка\n")
         XCTAssertEqual(result.stderr, "ОШИБКИ (1):\n  a.jsonl:1: текст")
@@ -127,7 +155,7 @@ final class FineTuneRunnerValidateTests: XCTestCase {
             .init(status: 1, output: "boom")
         }, registry: BackgroundProcessRegistry())
 
-        let result = await runner.validate(dataset: makeDataset(), minAssistant: nil, systemPromptPath: nil)
+        let result = await runner.validate(dataset: makeDataset(), minAssistant: nil, maxReuse: nil, systemPromptPath: nil)
 
         XCTAssertEqual(result.status, 1)
     }
@@ -141,7 +169,7 @@ final class FineTuneRunnerValidateTests: XCTestCase {
             return .init(status: 0, output: "")
         }, registry: BackgroundProcessRegistry())
 
-        let result = await runner.validate(dataset: makeDataset(), minAssistant: nil, systemPromptPath: nil)
+        let result = await runner.validate(dataset: makeDataset(), minAssistant: nil, maxReuse: nil, systemPromptPath: nil)
 
         XCTAssertEqual(result.status, -1)
         XCTAssertFalse(cliCalled, "без корня finetune/ CLI вообще не вызывается")

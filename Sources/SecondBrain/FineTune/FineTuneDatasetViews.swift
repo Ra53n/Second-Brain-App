@@ -107,12 +107,25 @@ struct FineTuneDatasetDetailView: View {
         .padding(10)
     }
 
-    /// Настройка `--min-assistant` + результат последней проверки (виден без
-    /// повторного запуска — лежит в сторе, не в @State).
+    /// Настройки `--min-assistant`/`--max-reuse` + результат последней проверки (виден
+    /// без повторного запуска — лежит в сторе, не в @State).
     private var validationSection: some View {
         VStack(alignment: .leading, spacing: 6) {
             Stepper("Минимальная длина ответа: \(minAssistantBinding.wrappedValue) симв.",
                     value: minAssistantBinding, in: 10...2000, step: 10)
+            Toggle("Датасет классификации: короткие и повторяющиеся ответы — норма",
+                   isOn: repeatedAnswersBinding)
+            // Подпись Toggle до AX не доходит совсем (у кнопок раздела та же беда,
+            // см. CLAUDE.md модуля; `.accessibilityValue` на Toggle тоже
+            // перебивается его же on/off). Поэтому состояние продублировано текстом:
+            // Text в дерево AX попадает, и смоуку есть за что зацепиться.
+            Text(repeatedAnswersBinding.wrappedValue
+                 ? "Повторы ответов разрешены, минимальная длина снижена: одна и та же "
+                   + "короткая метка законно стоит у сотен примеров."
+                 : "Повторы ответов считаются дублями. Включите для датасета "
+                   + "классификации, где один короткий ответ повторяется у сотен примеров.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
             // validationErrorText — свой на validate() (P6): сам процесс не запустился/
             // завис, это ошибка уровня приложения, не результат валидации. Раньше здесь
             // читался общий errorText, и «не удалось остановить тюн» от другой кнопки
@@ -130,6 +143,11 @@ struct FineTuneDatasetDetailView: View {
     private var minAssistantBinding: Binding<Int> {
         Binding(get: { store.minAssistant(workdir: dataset.workdir, hasOwnSystemPrompt: dataset.systemPromptPath != nil) },
                 set: { store.setMinAssistant($0, workdir: dataset.workdir) })
+    }
+
+    private var repeatedAnswersBinding: Binding<Bool> {
+        Binding(get: { store.allowsRepeatedAnswers(workdir: dataset.workdir) },
+                set: { store.setAllowsRepeatedAnswers($0, workdir: dataset.workdir) })
     }
 
     @ViewBuilder

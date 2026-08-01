@@ -64,6 +64,39 @@ final class FineTuneViewModelValidateTests: XCTestCase {
                        "последний настоящий результат валидации не должен затираться сбоем инфраструктуры")
     }
 
+    /// Задача 84: середина цепочки «переключатель → argv». Края покрыты отдельно
+    /// (`FineTuneStoreTests` — значения, `FineTuneRunnerValidateTests` — флаги), а
+    /// склейка живёт здесь, и именно она была дефектом первого круга ревью: закрыть
+    /// один порог из двух — оставить валидацию классификационного датасета красной.
+    func testClassificationToggleSendsBothRelaxedThresholds() async {
+        let store = FineTuneStore(url: storeURL)
+        var captured: [String] = []
+        let runner = FineTuneRunner(fineTuneRoot: tempDir, validateCLI: { arguments in
+            captured = arguments
+            return .init(status: 0, output: "", stdout: "OK — датасет валиден", stderr: "")
+        }, registry: BackgroundProcessRegistry())
+        let viewModel = FineTuneViewModel(store: store, runner: runner, fineTuneRoot: { nil })
+
+        await viewModel.validate(dataset: makeDataset())
+        XCTAssertEqual(captured, expectedArguments(minAssistant: FineTuneStore.defaultMinAssistant,
+                                                   maxReuse: FineTuneStore.defaultMaxReuse),
+                       "выключено — оба порога дефолтные")
+
+        store.setAllowsRepeatedAnswers(true, workdir: ".")
+        await viewModel.validate(dataset: makeDataset())
+        XCTAssertEqual(captured, expectedArguments(minAssistant: FineTuneStore.classificationMinAssistant,
+                                                   maxReuse: FineTuneStore.classificationMaxReuse),
+                       "включено — опущены оба порога, а не один")
+    }
+
+    private func expectedArguments(minAssistant: Int, maxReuse: Int) -> [String] {
+        let data = tempDir.appendingPathComponent("data")
+        return [data.appendingPathComponent("train.jsonl").path,
+                data.appendingPathComponent("valid.jsonl").path,
+                "--min-assistant", String(minAssistant),
+                "--max-reuse", String(maxReuse)]
+    }
+
     func testSuccessfulValidationClearsErrorTextAndStoresParsedResult() async {
         let store = FineTuneStore(url: storeURL)
         let runner = FineTuneRunner(fineTuneRoot: tempDir, validateCLI: { _ in
