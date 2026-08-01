@@ -176,11 +176,21 @@ final class TuningChatViewModel: ObservableObject {
                                             defaults: [FineTuneViewModel.smallModel, MlxServerConfig.defaultModel])
     }
 
-    /// Базы с хотя бы одним finished-тюном этого датасета — пункты «Локально (mlx)»
-    /// пикера цели эскалации (задача 93, `TuneSelection.chatBaseModels` без дефолтов).
+    /// Базы с готовым тюном этого датасета (finished-прогоны + легаси-адаптер 7B без
+    /// записи в истории) — пункты «Локально (mlx)» пикера цели эскалации (задача 93).
     var availableTunedModels: [String] {
-        let workdir = dataset()?.workdir ?? ""
-        return TuneSelection.chatBaseModels(runs: runs(), workdir: workdir, defaults: [])
+        guard let dataset = dataset() else { return [] }
+        var models = TuneSelection.chatBaseModels(runs: runs(), workdir: dataset.workdir, defaults: [])
+        // Легаси-тюн 7B (сделан до истории прогонов) не имеет записи в сторе, но его
+        // адаптер на диске годится в цели эскалации — то же правило, что у `.tuned`.
+        // Дубля не бывает: finished-запись 7B выключает legacyAdapterFallback.
+        if TuneSelection.legacyAdapterFallback(runs: runs(), workdir: dataset.workdir,
+                                               baseModel: MlxServerConfig.defaultModel),
+           FileManager.default.fileExists(
+               atPath: dataset.rootURL.appendingPathComponent(Self.adapterRelativePath).path) {
+            models.append(MlxServerConfig.defaultModel)
+        }
+        return models
     }
 
     /// Ключ треда — `"<variant.rawValue>|<chatBaseModel>"`: статистика per (variant,

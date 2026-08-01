@@ -6,7 +6,7 @@
 // selectTunedRun (нет прогонов, чужой workdir, чужая база, несколько finished одной базы —
 // последний по startedAt, running/failed/stopped/interrupted не берутся); chatBaseModels
 // (только дефолты, дедуп с дефолтами, стабильный порядок появления, фильтр по workdir и
-// статусу); legacyAdapterFallback (нет записей + 7B → true, нет записей + 3B → false,
+// статусу); legacyAdapterFallback (нет finished этой базы + 7B → true, база 3B → false,
 // finished запись есть у ЭТОГО workdir → false, finished запись есть у ДРУГОГО workdir —
 // не считается, легаси всё ещё уместен).
 
@@ -143,10 +143,19 @@ final class TuneSelectionTests: XCTestCase {
                                                             baseModel: FineTuneViewModel.smallModel))
     }
 
-    func testLegacyAdapterFallbackFalseWhenAnyFinishedRecordExistsForWorkdir() {
-        // Finished-запись ДРУГОЙ базы (3B) уже достаточна, чтобы запретить легаси-путь под 7B —
-        // молчаливая подмена чужим адаптером хуже явной ошибки tunedRunMissing.
+    func testLegacyAdapterFallbackSurvivesFinishedRecordOfOtherBase() {
+        // Легаси-адаптер — всегда 7B; finished-прогон ДРУГОЙ базы (3B) не делает его
+        // чужим и не должен осиротить старый 7B-тюн (живой случай после первого
+        // 3B-прогона). Подмена базы исключена условием «fallback только для 7B».
         let run = makeRun(workdir: "dictation", model: FineTuneViewModel.smallModel, status: .finished)
+        XCTAssertTrue(TuneSelection.legacyAdapterFallback(runs: [run], workdir: "dictation",
+                                                           baseModel: MlxServerConfig.defaultModel))
+    }
+
+    func testLegacyAdapterFallbackFalseWhenFinishedRecordOfSameBaseExists() {
+        // Появилась настоящая finished-запись 7B — легаси-путь уступает ей: выбор
+        // идёт через selectTunedRun, fallback больше не нужен.
+        let run = makeRun(workdir: "dictation", model: MlxServerConfig.defaultModel, status: .finished)
         XCTAssertFalse(TuneSelection.legacyAdapterFallback(runs: [run], workdir: "dictation",
                                                             baseModel: MlxServerConfig.defaultModel))
     }

@@ -56,7 +56,12 @@ enum TuneSelection {
     /// задачи 92) и запрошена дефолтная 7B — иначе отсутствие тюна нужной базы обязано
     /// быть ошибкой, а не тихой подменой чужим (3B/7B) адаптером.
     static func legacyAdapterFallback(runs: [FineTuneRun], workdir: String, baseModel: String) -> Bool {
-        let hasAnyFinished = runs.contains { $0.workdir == workdir && $0.status == .finished }
-        return !hasAnyFinished && baseModel == MlxServerConfig.defaultModel
+        // Отсутствие проверяется по finished-записям ИМЕННО этой базы: легаси-адаптер —
+        // всегда 7B, и finished-прогон другой базы (например, 3B) не делает его чужим.
+        // Подмена базы исключена вторым условием: fallback возможен только для 7B.
+        let hasFinishedOfBase = runs.contains {
+            $0.workdir == workdir && $0.status == .finished && $0.model == baseModel
+        }
+        return !hasFinishedOfBase && baseModel == MlxServerConfig.defaultModel
     }
 }

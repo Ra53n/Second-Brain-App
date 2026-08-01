@@ -145,27 +145,38 @@ final class AppModel: ObservableObject {
         // TuneSelection/второй сервер; EscalationTargetResolver его только вызывает.
         // Чат тюнинга привязан к датасету meetings (единственный со строгим контрактом).
         let localTune: (String) -> EscalationResolution = {
-            [weak fineTuneStore, weak mlxEscalationServerManager] baseModel in
+            [weak fineTuneStore, weak fineTuneViewModelForChat, weak mlxEscalationServerManager] baseModel in
             guard let fineTuneStore, let mlxEscalationServerManager else {
                 return .unavailable(reason: "чат тюнинга выгружен — эскалация недоступна")
             }
-            guard let run = TuneSelection.selectTunedRun(runs: fineTuneStore.runs, workdir: "meetings", baseModel: baseModel),
-                  FileManager.default.fileExists(
-                      atPath: URL(fileURLWithPath: run.adapterPath).appendingPathComponent("adapters.safetensors").path)
+            let adapterURL: URL
+            let runModel: String
+            if let run = TuneSelection.selectTunedRun(runs: fineTuneStore.runs, workdir: "meetings", baseModel: baseModel) {
+                adapterURL = URL(fileURLWithPath: run.adapterPath)
+                runModel = run.model
+            } else if TuneSelection.legacyAdapterFallback(runs: fineTuneStore.runs, workdir: "meetings", baseModel: baseModel),
+                      let dataset = fineTuneViewModelForChat?.datasets.first(where: { $0.workdir == "meetings" }) {
+                // Легаси-тюн 7B без записи в истории — тот же fallback, что у `.tuned` в чате.
+                adapterURL = dataset.rootURL.appendingPathComponent("adapters")
+                runModel = baseModel
+            } else {
+                return .unavailable(reason: "нет завершённого тюна базы \(baseModel)")
+            }
+            guard FileManager.default.fileExists(
+                atPath: adapterURL.appendingPathComponent("adapters.safetensors").path)
             else {
                 return .unavailable(reason: "нет завершённого тюна базы \(baseModel)")
             }
-            let adapterURL = URL(fileURLWithPath: run.adapterPath)
-            let config = MlxServerConfig(model: run.model, adapterPath: adapterURL, port: MlxServerConfig.escalationPort)
+            let config = MlxServerConfig(model: runModel, adapterPath: adapterURL, port: MlxServerConfig.escalationPort)
             let provider = MlxChatProvider(
                 port: MlxServerConfig.escalationPort,
                 beforeSend: { [weak mlxEscalationServerManager] in try await mlxEscalationServerManager?.ensureRunning(config) },
                 afterSend: { [weak mlxEscalationServerManager] in
                     Task { @MainActor in mlxEscalationServerManager?.markUsed() }
                 })
-            return .resolved(ResolvedChatProvider(provider: provider, model: run.model,
+            return .resolved(ResolvedChatProvider(provider: provider, model: runModel,
                                                    providerID: .localTunedProviderID,
-                                                   displayName: TuneSelection.localTunedDisplayName(model: run.model)))
+                                                   displayName: TuneSelection.localTunedDisplayName(model: runModel)))
         }
         tuningChatViewModel = TuningChatViewModel(
             server: mlxServerManager,

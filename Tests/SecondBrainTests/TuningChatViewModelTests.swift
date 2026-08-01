@@ -832,6 +832,35 @@ final class TuningChatViewModelTests: XCTestCase {
         XCTAssertEqual(vm.availableTunedModels, [])
     }
 
+    /// Легаси-тюн 7B (адаптер на диске, записи в истории нет) виден как локальная цель
+    /// эскалации — живой сценарий: 7B тюнился до появления истории прогонов.
+    func testAvailableTunedModelsIncludesLegacySevenBWhenAdapterFileExists() {
+        let dataset = makeDataset(withTunedAdapter: true)
+        let vm = TuningChatViewModel(
+            server: makeReadyServer(),
+            providerFactory: { _ in MockChatProvider(responses: [self.okResponse]) },
+            dataset: { dataset },
+            runs: { [] },
+            isTuneOrBaselineActive: { false },
+            fileURL: tempFileURL())
+        XCTAssertEqual(vm.availableTunedModels, [MlxServerConfig.defaultModel])
+    }
+
+    /// Finished-прогон другой базы (3B) не осиротит легаси-7B — в списке обе цели.
+    func testAvailableTunedModelsKeepsLegacySevenBAfterOtherBaseFinishedRun() {
+        let dataset = makeDataset(withTunedAdapter: true)
+        let finished3B = makeFinishedRun(workdir: dataset.workdir, model: FineTuneViewModel.smallModel,
+                                         adapterPath: "adapters/3b")
+        let vm = TuningChatViewModel(
+            server: makeReadyServer(),
+            providerFactory: { _ in MockChatProvider(responses: [self.okResponse]) },
+            dataset: { dataset },
+            runs: { [finished3B] },
+            isTuneOrBaselineActive: { false },
+            fileURL: tempFileURL())
+        XCTAssertEqual(vm.availableTunedModels, [FineTuneViewModel.smallModel, MlxServerConfig.defaultModel])
+    }
+
     /// distinct-базы finished-прогонов ЭТОГО workdir, без дублей и без прогонов
     /// других датасетов/незавершённых прогонов.
     func testAvailableTunedModelsContainsDistinctFinishedRunModelsOfThisWorkdirOnly() {
