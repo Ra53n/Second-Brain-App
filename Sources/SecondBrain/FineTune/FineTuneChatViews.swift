@@ -36,10 +36,8 @@ struct FineTuneChatDetailView: View {
             Divider()
             messagesList
             Divider()
-            if let stats = viewModel.sessionStats {
-                sessionStatsSection(stats)
-                Divider()
-            }
+            sessionStatsSection
+            Divider()
             pipelineConfigRow
             Divider()
             inputArea
@@ -146,30 +144,69 @@ struct FineTuneChatDetailView: View {
 
     // MARK: - Статистика сессии
 
-    private func sessionStatsSection(_ stats: TuningChatSessionStats) -> some View {
-        DisclosureGroup {
-            VStack(alignment: .leading, spacing: 4) {
-                Text("Отвечено \(stats.answered) · OK \(stats.ok) · UNSURE \(stats.unsure) · отклонено (FAIL) \(stats.rejected)")
-                    .font(.caption)
-                Text("Потребовало повторного инференса: \(stats.needingReinference) · доп. вызовов всего: \(stats.extraCallsTotal)")
-                    .font(.caption)
-                Text(String(format: "Latency: осн. %.2fс / полная %.2fс · наценка ×%.2f",
-                            stats.avgPrimaryLatency, stats.avgTotalLatency, stats.latencyFactor))
-                    .font(.caption)
-                if let withExtra = stats.avgLatencyWithExtraCalls, let withoutExtra = stats.avgLatencyWithoutExtraCalls {
-                    Text(String(format: "С доп. вызовами: %.2fс · без: %.2fс", withExtra, withoutExtra))
-                        .font(.caption2).foregroundStyle(.secondary)
-                }
-                Text("Токены: prompt \(stats.promptTokens) + completion \(stats.completionTokens)")
-                    .font(.caption)
-            }
-            .padding(.top, 4)
-        } label: {
+    private var sessionStatsSection: some View {
+        let stats = viewModel.sessionStats // один вызов на проход body (computed по сообщениям)
+        return VStack(alignment: .leading, spacing: 6) {
             Text("Статистика сессии").font(.caption.bold())
+            if let stats {
+                HStack(spacing: 6) {
+                    statChip("Ответов: \(stats.answered)", color: .secondary)
+                    statChip("OK: \(stats.ok)", color: .green)
+                    statChip("UNSURE: \(stats.unsure)", color: .yellow)
+                    statChip("FAIL: \(stats.rejected)", color: .red)
+                }
+                Grid(alignment: .leadingFirstTextBaseline, horizontalSpacing: 12, verticalSpacing: 3) {
+                    GridRow {
+                        Text("Повторный инференс").foregroundStyle(.secondary).gridColumnAlignment(.leading)
+                        Text("\(stats.needingReinference) из \(stats.answered) ответов · доп. вызовов: \(stats.extraCallsTotal)")
+                    }
+                    GridRow {
+                        Text("Latency").foregroundStyle(.secondary)
+                        Text(String(format: "ответ %.1f с → с пайплайном %.1f с (наценка ×%.2f)",
+                                    stats.avgPrimaryLatency, stats.avgTotalLatency, stats.latencyFactor))
+                    }
+                    if let withExtra = stats.avgLatencyWithExtraCalls,
+                       let withoutExtra = stats.avgLatencyWithoutExtraCalls {
+                        GridRow {
+                            Text("")
+                            Text(String(format: "ответы с доп. вызовами %.1f с · без них %.1f с",
+                                        withExtra, withoutExtra))
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    GridRow {
+                        Text("Токены (cost)").foregroundStyle(.secondary)
+                        Text("\(formattedTokens(stats.promptTokens)) запрос + \(formattedTokens(stats.completionTokens)) ответ")
+                    }
+                }
+                .font(.caption)
+            } else {
+                Text("Пока нет ответов — отправьте фрагмент, счётчики появятся здесь.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
         }
-        .accessibilityValue(sessionStatsAccessibilityValue(stats))
+        .frame(maxWidth: .infinity, alignment: .leading)
+        // Голый VStack не гарантированно всплывает в AX-дерево — схлопываем в один
+        // элемент, чтобы value доходил до System Events (замечание ревью задачи 88).
+        .accessibilityElement(children: .combine)
+        .accessibilityValue(stats.map(sessionStatsAccessibilityValue)
+                            ?? "статистика сессии: пока нет ответов")
         .padding(.horizontal, 10)
         .padding(.vertical, 6)
+    }
+
+    private func statChip(_ text: String, color: Color) -> some View {
+        Text(text)
+            .font(.caption.bold())
+            .padding(.horizontal, 8)
+            .padding(.vertical, 2)
+            .background(Capsule().fill(color.opacity(0.15)))
+            .foregroundStyle(color)
+    }
+
+    private func formattedTokens(_ value: Int) -> String {
+        value.formatted(.number.grouping(.automatic).locale(Locale(identifier: "ru_RU")))
     }
 
     private func sessionStatsAccessibilityValue(_ stats: TuningChatSessionStats) -> String {
