@@ -41,16 +41,20 @@ struct TuningChatMessage: Identifiable, Codable, Equatable {
 struct TuningChatDocument: Codable, Equatable {
     var messages: [TuningChatMessage]
     var modelVariant: String
+    var pipelineConfig: ConfidencePipelineConfig
 
-    init(messages: [TuningChatMessage] = [], modelVariant: String = FineTuneModelVariant.baseline.rawValue) {
+    init(messages: [TuningChatMessage] = [], modelVariant: String = FineTuneModelVariant.baseline.rawValue,
+         pipelineConfig: ConfidencePipelineConfig = .default) {
         self.messages = messages
         self.modelVariant = modelVariant
+        self.pipelineConfig = pipelineConfig
     }
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         messages = try c.decodeIfPresent([TuningChatMessage].self, forKey: .messages) ?? []
         modelVariant = try c.decodeIfPresent(String.self, forKey: .modelVariant) ?? FineTuneModelVariant.baseline.rawValue
+        pipelineConfig = try c.decodeIfPresent(ConfidencePipelineConfig.self, forKey: .pipelineConfig) ?? .default
     }
 }
 

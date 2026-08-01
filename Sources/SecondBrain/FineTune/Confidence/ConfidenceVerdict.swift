@@ -130,6 +130,14 @@ extension ConfidenceVerdict {
     /// — дальше уже неважно, что говорят scoring/self-check/redundancy. Иначе вердикт —
     /// худший среди сигналов; недоступный сигнал (nil) не голосует, только причина в reasons.
     static func reduce(_ signals: ConfidenceSignals) -> (verdict: ConfidenceVerdict, reasons: [String]) {
+        // Все подходы выключены (задача 86) — нечего оценивать, вердикт по умолчанию
+        // не «ok», а честное «неизвестно»: пустые constraintChecks отличают выключенный
+        // constraint от «есть проверки, но все прошли».
+        guard !signals.constraintChecks.isEmpty || signals.redundancy != nil
+                || signals.scoring != nil || signals.selfCheck != nil else {
+            return (.unsure, ["ни один подход не включён"])
+        }
+
         var reasons: [String] = []
 
         let hardFailures = signals.constraintChecks.filter { $0.severity == .hard && isFail($0.outcome) }

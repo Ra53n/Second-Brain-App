@@ -10,6 +10,7 @@ final class TuningChatViewModel: ObservableObject {
     @Published var messages: [TuningChatMessage]
     @Published var input: String = ""
     @Published var modelVariant: FineTuneModelVariant
+    @Published var pipelineConfig: ConfidencePipelineConfig
     @Published private(set) var isGenerating = false
     @Published var progressText: String?
     @Published var errorText: String?
@@ -52,6 +53,18 @@ final class TuningChatViewModel: ObservableObject {
         let document = TuningChatPersistence.load(from: fileURL)
         messages = document.messages
         modelVariant = FineTuneModelVariant(rawValue: document.modelVariant) ?? .baseline
+        pipelineConfig = document.pipelineConfig
+    }
+
+    /// Тумблер действует только на следующее сообщение (допущение задачи 86) — точка
+    /// изменения нужна одна, чтобы выбор пережил перезапуск.
+    func setPipelineConfig(_ config: ConfidencePipelineConfig) {
+        pipelineConfig = config
+        persistNow()
+    }
+
+    var sessionStats: TuningChatSessionStats? {
+        TuningChatSessionStats.compute(messages: messages)
     }
 
     nonisolated static func defaultSystemPromptLoader(dataset: FineTuneDataset) -> String? {
@@ -98,7 +111,8 @@ final class TuningChatViewModel: ObservableObject {
         let provider = providerFactory(config)
         let system = systemPromptLoader(dataset) ?? ""
         let settings = ChatSettings(model: config.model, temperature: FineTuneRunner.baselineTemperature)
-        let pipeline = ConfidencePipeline(provider: provider, settings: settings, redundancyCount: redundancyCount)
+        let pipeline = ConfidencePipeline(provider: provider, settings: settings, redundancyCount: redundancyCount,
+                                           config: pipelineConfig)
 
         // Task, а не голый await: clearChat()/deinit зовут Task.cancel() — без него
         // отмена была бы только косметической (chatGen-гейт режет запись результата,
@@ -154,7 +168,8 @@ final class TuningChatViewModel: ObservableObject {
 
     func persistNow() {
         TuningChatPersistence.save(
-            TuningChatDocument(messages: messages, modelVariant: modelVariant.rawValue), to: fileURL)
+            TuningChatDocument(messages: messages, modelVariant: modelVariant.rawValue,
+                                pipelineConfig: pipelineConfig), to: fileURL)
     }
 
     // MARK: - Батч-прогон (задача 85, критерий 6)

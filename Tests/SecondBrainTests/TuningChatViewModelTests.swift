@@ -108,6 +108,45 @@ final class TuningChatViewModelTests: XCTestCase {
         XCTAssertEqual(persisted.messages.count, 2)
     }
 
+    /// Дефолт задачи 86 — только constraint: `send()` без явного включения тумблеров
+    /// делает ровно один сетевой вызов, не пять.
+    func testSendWithDefaultPipelineConfigMakesOnlyOneCall() async {
+        let dataset = makeDataset()
+        let provider = MockChatProvider(responses: ["{\"action_items\":[]}"])
+        let vm = TuningChatViewModel(
+            server: makeReadyServer(),
+            providerFactory: { _ in provider },
+            dataset: { dataset },
+            isTuneOrBaselineActive: { false },
+            fileURL: tempFileURL())
+        vm.input = "фрагмент встречи"
+        await vm.send()
+        XCTAssertEqual(provider.receivedMessages.count, 1)
+        XCTAssertNotNil(vm.sessionStats)
+        XCTAssertEqual(vm.sessionStats?.needingReinference, 0)
+    }
+
+    /// `setPipelineConfig` меняет то, что применится к следующему сообщению, и переживает
+    /// перезапуск (персист через `persistNow`).
+    func testSetPipelineConfigPersistsAndAppliesToNextSend() async {
+        let dataset = makeDataset()
+        let fileURL = tempFileURL()
+        let provider = MockChatProvider(responses: ["{\"action_items\":[]}"])
+        let vm = TuningChatViewModel(
+            server: makeReadyServer(),
+            providerFactory: { _ in provider },
+            dataset: { dataset },
+            isTuneOrBaselineActive: { false },
+            fileURL: fileURL)
+        vm.setPipelineConfig(.allEnabled)
+
+        XCTAssertEqual(TuningChatPersistence.load(from: fileURL).pipelineConfig, .allEnabled)
+
+        vm.input = "фрагмент встречи"
+        await vm.send()
+        XCTAssertEqual(provider.receivedMessages.count, 5, "новый конфиг применился к следующему сообщению")
+    }
+
     func testSendWithEmptyInputIsNoOp() async {
         let vm = TuningChatViewModel(
             server: makeReadyServer(),
@@ -161,6 +200,7 @@ final class TuningChatViewModelTests: XCTestCase {
             dataset: { dataset },
             isTuneOrBaselineActive: { false },
             fileURL: tempFileURL())
+        vm.pipelineConfig = .allEnabled // дефолт задачи 86 — только constraint, тесту нужен полный прогон
         vm.input = "первое сообщение"
 
         let firstSend = Task { await vm.send() }
@@ -236,6 +276,7 @@ final class TuningChatViewModelTests: XCTestCase {
             dataset: { dataset },
             isTuneOrBaselineActive: { false },
             fileURL: tempFileURL())
+        vm.pipelineConfig = .allEnabled // без redundancy/scoring/self-check тест был бы бессодержательным
         vm.input = "фрагмент встречи"
 
         let task = Task { await vm.send() }

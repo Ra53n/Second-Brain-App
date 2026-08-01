@@ -61,6 +61,26 @@ final class TuningChatStoreTests: XCTestCase {
         XCTAssertNil(loaded.messages[0].report)
         XCTAssertNil(loaded.messages[0].modelVariant)
         XCTAssertEqual(loaded.modelVariant, "tuned")
+        XCTAssertEqual(loaded.pipelineConfig, .default, "поле появилось в задаче 86 — старый документ мигрирует на дефолт")
+    }
+
+    /// `pipelineConfig` появилось в задаче 86 — старый `finetune-chat.json` без него
+    /// обязан грузиться с продовым дефолтом (только constraint), не падать.
+    func testPipelineConfigMigratesToDefaultWhenAbsent() throws {
+        let url = tempDir.appendingPathComponent("chat.json")
+        try Data("{\"messages\":[],\"modelVariant\":\"baseline\"}".utf8).write(to: url)
+        let loaded = TuningChatPersistence.load(from: url)
+        XCTAssertEqual(loaded.pipelineConfig, ConfidencePipelineConfig(
+            constraintEnabled: true, redundancyEnabled: false, scoringEnabled: false, selfCheckEnabled: false))
+    }
+
+    func testPipelineConfigRoundTripsWithAllFlagsSet() {
+        let url = tempDir.appendingPathComponent("chat.json")
+        let config = ConfidencePipelineConfig(constraintEnabled: true, redundancyEnabled: true,
+                                               scoringEnabled: false, selfCheckEnabled: true)
+        let document = TuningChatDocument(pipelineConfig: config)
+        TuningChatPersistence.save(document, to: url)
+        XCTAssertEqual(TuningChatPersistence.load(from: url).pipelineConfig, config)
     }
 
     func testEmptyJSONObjectMigratesToEmptyDocument() throws {

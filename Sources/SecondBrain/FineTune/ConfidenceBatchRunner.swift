@@ -39,7 +39,10 @@ final class ConfidenceBatchRunner {
         let items = ConfidenceBatch.plan(examples: examples)
 
         let settings = ChatSettings(model: MlxServerConfig.defaultModel, temperature: FineTuneRunner.baselineTemperature)
-        let pipeline = ConfidencePipeline(provider: provider, settings: settings, redundancyCount: redundancyCount)
+        // Батч всегда гонит полный пайплайн (задача 86) — сравнение baseline/тюна должно
+        // быть одинаковым независимо от тумблеров, выставленных для чата.
+        let pipeline = ConfidencePipeline(provider: provider, settings: settings, redundancyCount: redundancyCount,
+                                           config: .allEnabled)
 
         var rows: [BatchRow] = []
         rows.reserveCapacity(items.count)

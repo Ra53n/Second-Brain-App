@@ -1,10 +1,14 @@
 // ConfidencePipelineTests.swift — оркестратор оценки уверенности (задача 85): жёсткий
 // constraint-фейл завершает пайплайн без доп. вызовов, полный прогон считает вызовы,
-// неспарсившийся повтор редьюсится в disagree, отмена не глотается.
+// неспарсившийся повтор редьюсится в disagree, отмена не глотается. Пропуски по
+// `ConfidencePipelineConfig` (задача 86) — отдельным классом ниже.
 //
 // redundancyCount=3 в этом пайплайне означает 3 ПОЛНЫХ ответа (1 основной + 2 повтора,
 // согласно «Допущения» задачи 85), поэтому полный прогон — 1 + 2 + scoring(1) +
 // self-check(1) = 5 вызовов, не 6 — см. комментарий в ConfidencePipeline.swift.
+//
+// Продовый дефолт `ConfidencePipelineConfig` (задача 86) — только constraint, поэтому
+// тесты, которым нужен полный прогон, передают `.allEnabled` явно.
 
 import XCTest
 @testable import SecondBrain
@@ -58,7 +62,7 @@ final class ConfidencePipelineTests: XCTestCase {
             "{\"status\":\"OK\",\"confidence\":90}", // scoring
             "{\"items\":[],\"missed\":false}",   // self-check
         ])
-        let pipeline = ConfidencePipeline(provider: provider, settings: ChatSettings(model: "mlx"), redundancyCount: 3)
+        let pipeline = ConfidencePipeline(provider: provider, settings: ChatSettings(model: "mlx"), redundancyCount: 3, config: .allEnabled)
         var progressSteps: [String] = []
         let (_, report) = try await pipeline.run(system: "s", transcript: "t", reference: nil) { progressSteps.append($0) }
 
@@ -79,7 +83,7 @@ final class ConfidencePipelineTests: XCTestCase {
             "{\"status\":\"OK\",\"confidence\":80}",
             "{\"items\":[{\"supported\":true,\"reason\":\"ок\"}],\"missed\":false}",
         ])
-        let pipeline = ConfidencePipeline(provider: provider, settings: ChatSettings(model: "mlx"), redundancyCount: 3)
+        let pipeline = ConfidencePipeline(provider: provider, settings: ChatSettings(model: "mlx"), redundancyCount: 3, config: .allEnabled)
         let (_, report) = try await pipeline.run(system: "s", transcript: "t", reference: nil)
         XCTAssertEqual(report.redundancy, .disagree, "неспарсившийся повтор — расхождение, не «пропускаем»")
     }
@@ -94,7 +98,7 @@ final class ConfidencePipelineTests: XCTestCase {
             .init(text: "{\"status\":\"OK\",\"confidence\":90}", usage: nil),
             .init(text: "{\"items\":[],\"missed\":false}", usage: nil),
         ])
-        let pipeline = ConfidencePipeline(provider: provider, settings: ChatSettings(model: "mlx"), redundancyCount: 3)
+        let pipeline = ConfidencePipeline(provider: provider, settings: ChatSettings(model: "mlx"), redundancyCount: 3, config: .allEnabled)
         let (_, report) = try await pipeline.run(system: "s", transcript: "t", reference: nil)
         XCTAssertEqual(report.metrics.promptTokens, 0)
         XCTAssertEqual(report.metrics.completionTokens, 0)
@@ -109,7 +113,7 @@ final class ConfidencePipelineTests: XCTestCase {
             .init(text: "{\"action_items\":[]}", usage: nil),
             .init(error: HarnessError(message: "сеть упала")),
         ])
-        let pipeline = ConfidencePipeline(provider: provider, settings: ChatSettings(model: "mlx"), redundancyCount: 3)
+        let pipeline = ConfidencePipeline(provider: provider, settings: ChatSettings(model: "mlx"), redundancyCount: 3, config: .allEnabled)
         do {
             _ = try await pipeline.run(system: "s", transcript: "t", reference: nil)
             XCTFail("ожидалась ошибка второго вызова")
@@ -127,7 +131,7 @@ final class ConfidencePipelineTests: XCTestCase {
             "{\"status\":\"OK\",\"confidence\":90}",
             "{\"items\":[],\"missed\":false}",
         ])
-        let pipeline = ConfidencePipeline(provider: provider, settings: ChatSettings(model: "mlx"), redundancyCount: 1)
+        let pipeline = ConfidencePipeline(provider: provider, settings: ChatSettings(model: "mlx"), redundancyCount: 1, config: .allEnabled)
         let (_, report) = try await pipeline.run(system: "s", transcript: "t", reference: nil)
         XCTAssertNil(report.redundancy)
         XCTAssertTrue(report.reasons.contains("Сверка повторов недоступна"))
@@ -143,7 +147,7 @@ final class ConfidencePipelineTests: XCTestCase {
             "{\"status\":\"OK\",\"confidence\":90}",
             "{\"items\":[{\"supported\":true,\"reason\":\"ок\"}],\"missed\":false}",
         ])
-        let pipeline = ConfidencePipeline(provider: provider, settings: ChatSettings(model: "mlx"), redundancyCount: 2)
+        let pipeline = ConfidencePipeline(provider: provider, settings: ChatSettings(model: "mlx"), redundancyCount: 2, config: .allEnabled)
         let (_, report) = try await pipeline.run(system: "s", transcript: "t", reference: nil)
         XCTAssertEqual(report.redundancy, .agree)
         XCTAssertEqual(report.metrics.totalCalls, 4)
@@ -163,5 +167,94 @@ final class ConfidencePipelineTests: XCTestCase {
         } catch {
             XCTFail("ожидалась CancellationError, получено \(error)")
         }
+    }
+
+    // MARK: - ConfidencePipelineConfig (задача 86): пропуски подходов
+
+    func testProductDefaultConfigMakesOnlyOneCall() async throws {
+        let provider = MockChatProvider(responses: ["{\"action_items\":[]}"])
+        let pipeline = ConfidencePipeline(provider: provider, settings: ChatSettings(model: "mlx"))
+        let (_, report) = try await pipeline.run(system: "s", transcript: "t", reference: nil)
+        XCTAssertEqual(provider.receivedMessages.count, 1, "дефолт — только constraint, без доп. вызовов")
+        XCTAssertEqual(report.metrics.extraCalls, 0)
+        XCTAssertNil(report.redundancy)
+        XCTAssertNil(report.scoringStatus)
+        XCTAssertNil(report.selfCheckTotalCount)
+        XCTAssertEqual(report.verdict, .ok, "constraint прошёл, остальные сигналы недоступны — не влияют")
+    }
+
+    func testRedundancyDisabledSkipsExtraCallsWithRestEnabled() async throws {
+        let provider = MockChatProvider(responses: [
+            "{\"action_items\":[]}",
+            "{\"status\":\"OK\",\"confidence\":90}",
+            "{\"items\":[],\"missed\":false}",
+        ])
+        let config = ConfidencePipelineConfig(constraintEnabled: true, redundancyEnabled: false,
+                                               scoringEnabled: true, selfCheckEnabled: true)
+        let pipeline = ConfidencePipeline(provider: provider, settings: ChatSettings(model: "mlx"),
+                                           redundancyCount: 3, config: config)
+        let (_, report) = try await pipeline.run(system: "s", transcript: "t", reference: nil)
+        XCTAssertEqual(provider.receivedMessages.count, 3, "основной + scoring + self-check, без redundancy-повторов")
+        XCTAssertNil(report.redundancy)
+        XCTAssertEqual(report.scoringStatus, "OK")
+    }
+
+    func testScoringDisabledSkipsItsCall() async throws {
+        let provider = MockChatProvider(responses: [
+            "{\"action_items\":[]}",
+            "{\"action_items\":[]}",
+            "{\"action_items\":[]}",
+            "{\"items\":[],\"missed\":false}",
+        ])
+        let config = ConfidencePipelineConfig(constraintEnabled: true, redundancyEnabled: true,
+                                               scoringEnabled: false, selfCheckEnabled: true)
+        let pipeline = ConfidencePipeline(provider: provider, settings: ChatSettings(model: "mlx"),
+                                           redundancyCount: 3, config: config)
+        let (_, report) = try await pipeline.run(system: "s", transcript: "t", reference: nil)
+        XCTAssertEqual(provider.receivedMessages.count, 4, "основной + 2 redundancy + self-check, без scoring")
+        XCTAssertNil(report.scoringStatus)
+        XCTAssertNil(report.scoringConfidence)
+        XCTAssertEqual(report.redundancy, .agree)
+    }
+
+    func testSelfCheckDisabledSkipsItsCall() async throws {
+        let provider = MockChatProvider(responses: [
+            "{\"action_items\":[]}",
+            "{\"action_items\":[]}",
+            "{\"action_items\":[]}",
+            "{\"status\":\"OK\",\"confidence\":90}",
+        ])
+        let config = ConfidencePipelineConfig(constraintEnabled: true, redundancyEnabled: true,
+                                               scoringEnabled: true, selfCheckEnabled: false)
+        let pipeline = ConfidencePipeline(provider: provider, settings: ChatSettings(model: "mlx"),
+                                           redundancyCount: 3, config: config)
+        let (_, report) = try await pipeline.run(system: "s", transcript: "t", reference: nil)
+        XCTAssertEqual(provider.receivedMessages.count, 4, "основной + 2 redundancy + scoring, без self-check")
+        XCTAssertNil(report.selfCheckTotalCount)
+        XCTAssertNil(report.selfCheckSupportedCount)
+    }
+
+    /// Constraint выключен — ранний FAIL не срабатывает даже на «не-JSON» ответе,
+    /// пайплайн идёт дальше по включённым подходам.
+    func testConstraintDisabledMakesEarlyFailImpossible() async throws {
+        let provider = MockChatProvider(responses: ["это точно не JSON", "{\"status\":\"OK\",\"confidence\":90}"])
+        let config = ConfidencePipelineConfig(constraintEnabled: false, redundancyEnabled: false,
+                                               scoringEnabled: true, selfCheckEnabled: false)
+        let pipeline = ConfidencePipeline(provider: provider, settings: ChatSettings(model: "mlx"), config: config)
+        let (_, report) = try await pipeline.run(system: "s", transcript: "t", reference: nil)
+        XCTAssertEqual(provider.receivedMessages.count, 2, "constraint выключен — дошли до scoring")
+        XCTAssertTrue(report.checks.isEmpty, "выключенный constraint не считает проверки")
+    }
+
+    func testAllApproachesDisabledGivesUnsureWithReasonAndOneCall() async throws {
+        let provider = MockChatProvider(responses: ["что угодно"])
+        let config = ConfidencePipelineConfig(constraintEnabled: false, redundancyEnabled: false,
+                                               scoringEnabled: false, selfCheckEnabled: false)
+        let pipeline = ConfidencePipeline(provider: provider, settings: ChatSettings(model: "mlx"), config: config)
+        let (_, report) = try await pipeline.run(system: "s", transcript: "t", reference: nil)
+        XCTAssertEqual(provider.receivedMessages.count, 1, "только основной ответ, без единого доп. вызова")
+        XCTAssertEqual(report.metrics.extraCalls, 0)
+        XCTAssertEqual(report.verdict, .unsure)
+        XCTAssertEqual(report.reasons, ["ни один подход не включён"])
     }
 }

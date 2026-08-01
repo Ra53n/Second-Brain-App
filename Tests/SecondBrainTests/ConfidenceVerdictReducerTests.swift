@@ -136,4 +136,12 @@ final class ConfidenceVerdictReducerTests: XCTestCase {
         XCTAssertTrue(reasons.contains { $0.contains("Самопроверка недоступна") })
         XCTAssertTrue(reasons.contains { $0.contains("Оценка уверенности недоступна") })
     }
+
+    /// Задача 86: полностью пустой вход (все подходы выключены, а не «недоступны») —
+    /// отличается от `signals()` выше тем, что даже constraintChecks пуст.
+    func testEmptySignalsGivesUnsureWithApproachesDisabledReason() {
+        let (verdict, reasons) = ConfidenceVerdict.reduce(ConfidenceSignals(constraintChecks: []))
+        XCTAssertEqual(verdict, .unsure)
+        XCTAssertEqual(reasons, ["ни один подход не включён"])
+    }
 }

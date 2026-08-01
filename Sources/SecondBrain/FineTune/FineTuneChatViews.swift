@@ -36,6 +36,12 @@ struct FineTuneChatDetailView: View {
             Divider()
             messagesList
             Divider()
+            if let stats = viewModel.sessionStats {
+                sessionStatsSection(stats)
+                Divider()
+            }
+            pipelineConfigRow
+            Divider()
             inputArea
             Divider()
             batchSection
@@ -126,6 +132,88 @@ struct FineTuneChatDetailView: View {
         ChatMessage(role: ChatRole(rawValue: message.role) ?? .assistant, content: message.content)
     }
 
+    // MARK: - Статистика сессии
+
+    private func sessionStatsSection(_ stats: TuningChatSessionStats) -> some View {
+        DisclosureGroup {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Отвечено \(stats.answered) · OK \(stats.ok) · UNSURE \(stats.unsure) · отклонено (FAIL) \(stats.rejected)")
+                    .font(.caption)
+                Text("Потребовало повторного инференса: \(stats.needingReinference) · доп. вызовов всего: \(stats.extraCallsTotal)")
+                    .font(.caption)
+                Text(String(format: "Latency: осн. %.2fс / полная %.2fс · наценка ×%.2f",
+                            stats.avgPrimaryLatency, stats.avgTotalLatency, stats.latencyFactor))
+                    .font(.caption)
+                if let withExtra = stats.avgLatencyWithExtraCalls, let withoutExtra = stats.avgLatencyWithoutExtraCalls {
+                    Text(String(format: "С доп. вызовами: %.2fс · без: %.2fс", withExtra, withoutExtra))
+                        .font(.caption2).foregroundStyle(.secondary)
+                }
+                Text("Токены: prompt \(stats.promptTokens) + completion \(stats.completionTokens)")
+                    .font(.caption)
+            }
+            .padding(.top, 4)
+        } label: {
+            Text("Статистика сессии").font(.caption.bold())
+        }
+        .accessibilityValue(sessionStatsAccessibilityValue(stats))
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+    }
+
+    private func sessionStatsAccessibilityValue(_ stats: TuningChatSessionStats) -> String {
+        "статистика сессии: отвечено \(stats.answered), отклонено \(stats.rejected), " +
+        "повторный инференс \(stats.needingReinference), доп. вызовов \(stats.extraCallsTotal), " +
+        "наценка latency ×\(String(format: "%.2f", stats.latencyFactor))"
+    }
+
+    // MARK: - Регулировка пайплайна
+
+    private var pipelineConfigRow: some View {
+        HStack(spacing: 8) {
+            pipelineChip("Проверки", isOn: viewModel.pipelineConfig.constraintEnabled) { on in
+                var config = viewModel.pipelineConfig
+                config.constraintEnabled = on
+                viewModel.setPipelineConfig(config)
+            }
+            pipelineChip("Повторы ×3", isOn: viewModel.pipelineConfig.redundancyEnabled) { on in
+                var config = viewModel.pipelineConfig
+                config.redundancyEnabled = on
+                viewModel.setPipelineConfig(config)
+            }
+            pipelineChip("Скоринг", isOn: viewModel.pipelineConfig.scoringEnabled) { on in
+                var config = viewModel.pipelineConfig
+                config.scoringEnabled = on
+                viewModel.setPipelineConfig(config)
+            }
+            pipelineChip("Self-check", isOn: viewModel.pipelineConfig.selfCheckEnabled) { on in
+                var config = viewModel.pipelineConfig
+                config.selfCheckEnabled = on
+                viewModel.setPipelineConfig(config)
+            }
+            Spacer()
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+    }
+
+    private func pipelineChip(_ label: String, isOn: Bool, toggle: @escaping (Bool) -> Void) -> some View {
+        Button {
+            toggle(!isOn)
+        } label: {
+            Text(label)
+                .font(.caption)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 4)
+                .background(isOn ? Color.accentColor.opacity(0.22) : Color.primary.opacity(0.05),
+                            in: RoundedRectangle(cornerRadius: 6))
+                .foregroundStyle(isOn ? Color.accentColor : Color.secondary)
+        }
+        .buttonStyle(.plain)
+        .accessibilityValue(isOn ? "\(label) — включено" : "\(label) — выключено")
+        .disabled(viewModel.isGenerating)
+        .help("Действует на следующее сообщение")
+    }
+
     // MARK: - Ввод
 
     private var inputArea: some View {
@@ -180,6 +268,8 @@ struct FineTuneChatDetailView: View {
     private var batchSection: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text("Батч-прогон").font(.caption.bold()).foregroundStyle(.secondary)
+            Text("Батч всегда гонит полный пайплайн — тумблеры выше на него не влияют.")
+                .font(.caption2).foregroundStyle(.secondary)
             HStack(spacing: 10) {
                 batchButton(.baseline)
                 batchButton(.tuned)

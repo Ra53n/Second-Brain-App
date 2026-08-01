@@ -11,15 +11,49 @@
 
 import Foundation
 
+/// Какие подходы пайплайна применяются к следующему сообщению (задача 86): пользователь
+/// включает/выключает их прямо в чате. Продовый дефолт — только constraint (мгновенный
+/// и бесплатный); `allEnabled` — для батч-прогона (задача 85, намеренно не регулируется)
+/// и для тестов, которым нужен полный прогон.
+struct ConfidencePipelineConfig: Equatable, Codable {
+    var constraintEnabled: Bool
+    var redundancyEnabled: Bool
+    var scoringEnabled: Bool
+    var selfCheckEnabled: Bool
+
+    static let `default` = ConfidencePipelineConfig(constraintEnabled: true, redundancyEnabled: false,
+                                                      scoringEnabled: false, selfCheckEnabled: false)
+    static let allEnabled = ConfidencePipelineConfig(constraintEnabled: true, redundancyEnabled: true,
+                                                       scoringEnabled: true, selfCheckEnabled: true)
+
+    init(constraintEnabled: Bool, redundancyEnabled: Bool, scoringEnabled: Bool, selfCheckEnabled: Bool) {
+        self.constraintEnabled = constraintEnabled
+        self.redundancyEnabled = redundancyEnabled
+        self.scoringEnabled = scoringEnabled
+        self.selfCheckEnabled = selfCheckEnabled
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        constraintEnabled = try container.decodeIfPresent(Bool.self, forKey: .constraintEnabled) ?? true
+        redundancyEnabled = try container.decodeIfPresent(Bool.self, forKey: .redundancyEnabled) ?? false
+        scoringEnabled = try container.decodeIfPresent(Bool.self, forKey: .scoringEnabled) ?? false
+        selfCheckEnabled = try container.decodeIfPresent(Bool.self, forKey: .selfCheckEnabled) ?? false
+    }
+}
+
 struct ConfidencePipeline {
     let provider: ChatProvider
     let settings: ChatSettings
     let redundancyCount: Int
+    let config: ConfidencePipelineConfig
 
-    init(provider: ChatProvider, settings: ChatSettings, redundancyCount: Int = 3) {
+    init(provider: ChatProvider, settings: ChatSettings, redundancyCount: Int = 3,
+         config: ConfidencePipelineConfig = .default) {
         self.provider = provider
         self.settings = settings
         self.redundancyCount = redundancyCount
+        self.config = config
     }
 
     func run(system: String, transcript: String, reference: String?,
@@ -40,11 +74,12 @@ struct ConfidencePipeline {
         var completionTokens = primary.usage?.completionTokens ?? 0
         var extraCalls = 0
 
-        let constraintChecks: [ConfidenceCheck] = reference.map {
-            ConfidenceChecks.referenceBased(raw: primary.text, reference: $0, transcript: transcript)
-        } ?? ConfidenceChecks.referenceFree(raw: primary.text, transcript: transcript)
+        let constraintChecks: [ConfidenceCheck] = config.constraintEnabled
+            ? (reference.map { ConfidenceChecks.referenceBased(raw: primary.text, reference: $0, transcript: transcript) }
+                ?? ConfidenceChecks.referenceFree(raw: primary.text, transcript: transcript))
+            : []
 
-        guard !hasHardFailure(constraintChecks) else {
+        guard !config.constraintEnabled || !hasHardFailure(constraintChecks) else {
             let signals = ConfidenceSignals(constraintChecks: constraintChecks)
             let (verdict, reasons) = ConfidenceVerdict.reduce(signals)
             let metrics = ConfidenceMetrics(totalCalls: 1, extraCalls: 0, primaryLatency: primaryLatency,
@@ -56,7 +91,7 @@ struct ConfidencePipeline {
 
         // Redundancy: остальные (redundancyCount - 1) прогона того же запроса.
         var redundancy: RedundancyAgreement?
-        let extraRuns = max(redundancyCount - 1, 0)
+        let extraRuns = config.redundancyEnabled ? max(redundancyCount - 1, 0) : 0
         if extraRuns > 0 {
             var parsedAnswers: [[ActionItem]] = []
             var parseFailures = 0
@@ -85,28 +120,34 @@ struct ConfidencePipeline {
             redundancy = parseFailures > 0 ? .disagree : RedundancyComparer.compare(parsedAnswers)
         }
 
-        try Task.checkCancellation()
-        let scoringStart = Date()
-        let scoringResult = try await provider.send(
-            [ChatMessageDTO(role: .user, content: ConfidencePrompts.scoringPrompt(transcript: transcript, answer: primary.text))],
-            settings: settings)
-        totalLatency += Date().timeIntervalSince(scoringStart)
-        extraCalls += 1
-        promptTokens += scoringResult.usage?.promptTokens ?? 0
-        completionTokens += scoringResult.usage?.completionTokens ?? 0
-        let scoring = ConfidencePrompts.parseScoring(scoringResult.text)
+        var scoring: ScoringSignal?
+        if config.scoringEnabled {
+            try Task.checkCancellation()
+            let scoringStart = Date()
+            let scoringResult = try await provider.send(
+                [ChatMessageDTO(role: .user, content: ConfidencePrompts.scoringPrompt(transcript: transcript, answer: primary.text))],
+                settings: settings)
+            totalLatency += Date().timeIntervalSince(scoringStart)
+            extraCalls += 1
+            promptTokens += scoringResult.usage?.promptTokens ?? 0
+            completionTokens += scoringResult.usage?.completionTokens ?? 0
+            scoring = ConfidencePrompts.parseScoring(scoringResult.text)
+        }
 
-        try Task.checkCancellation()
-        let expectedCount = ActionItemsParser.parse(primary.text)?.count ?? 0
-        let selfCheckStart = Date()
-        let selfCheckResult = try await provider.send(
-            [ChatMessageDTO(role: .user, content: ConfidencePrompts.selfCheckPrompt(transcript: transcript, answer: primary.text))],
-            settings: settings)
-        totalLatency += Date().timeIntervalSince(selfCheckStart)
-        extraCalls += 1
-        promptTokens += selfCheckResult.usage?.promptTokens ?? 0
-        completionTokens += selfCheckResult.usage?.completionTokens ?? 0
-        let selfCheck = ConfidencePrompts.parseSelfCheck(selfCheckResult.text, expectedCount: expectedCount)
+        var selfCheck: SelfCheckSignal?
+        if config.selfCheckEnabled {
+            try Task.checkCancellation()
+            let expectedCount = ActionItemsParser.parse(primary.text)?.count ?? 0
+            let selfCheckStart = Date()
+            let selfCheckResult = try await provider.send(
+                [ChatMessageDTO(role: .user, content: ConfidencePrompts.selfCheckPrompt(transcript: transcript, answer: primary.text))],
+                settings: settings)
+            totalLatency += Date().timeIntervalSince(selfCheckStart)
+            extraCalls += 1
+            promptTokens += selfCheckResult.usage?.promptTokens ?? 0
+            completionTokens += selfCheckResult.usage?.completionTokens ?? 0
+            selfCheck = ConfidencePrompts.parseSelfCheck(selfCheckResult.text, expectedCount: expectedCount)
+        }
 
         let signals = ConfidenceSignals(constraintChecks: constraintChecks, redundancy: redundancy,
                                          scoring: scoring, selfCheck: selfCheck)
