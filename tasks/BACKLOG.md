@@ -112,5 +112,9 @@
     установке задачи 87 поверх работавшего приложения): порт 18765 остался занят, новый
     инстанс честно отказался адоптировать чужой процесс. Проверить путь
     `pkill SecondBrain` → `applicationWillTerminate` → `BackgroundProcessRegistry.
-    terminateAll` для процесса `MlxServerManager` (SIGTERM-грейс 3 с мог не отработать
-    из-за быстрого перезапуска). Воспроизвести, починить, покрыть тестом.
+    terminateAll` для процесса `MlxServerManager`. Диагноз (2026-08-01, воспроизведено
+    дважды): `pkill` шлёт SIGTERM, а NSApplication при SIGTERM НЕ вызывает
+    `applicationWillTerminate` — чистка реестра работает только при штатном Cmd+Q.
+    Варианты: sigterm-хендлер в AppDelegate (DispatchSource.makeSignalSource) с вызовом
+    terminateAll, и/или адопция «своего» осиротевшего mlx-сервера по pid-файлу при
+    старте (как FineTuneRunner.adopt). Пользовательский Cmd+Q не затронут.
