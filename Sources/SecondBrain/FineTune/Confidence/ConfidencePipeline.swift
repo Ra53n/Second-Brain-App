@@ -47,55 +47,125 @@ struct ConfidencePipeline {
     let settings: ChatSettings
     let redundancyCount: Int
     let config: ConfidencePipelineConfig
+    /// Как получить primary-ответ (задача 94): один запрос `[system, transcript]` или
+    /// цепочка стадий. Батч и эскалация оставляют дефолт — код их не меняется.
+    let primary: PrimaryStrategy
 
     init(provider: ChatProvider, settings: ChatSettings, redundancyCount: Int = 3,
-         config: ConfidencePipelineConfig = .default) {
+         config: ConfidencePipelineConfig = .default, primary: PrimaryStrategy = .monolithic) {
         self.provider = provider
         self.settings = settings
         self.redundancyCount = redundancyCount
         self.config = config
+        self.primary = primary
     }
 
     func run(system: String, transcript: String, reference: String?,
              progress: @escaping (String) -> Void = { _ in }
     ) async throws -> (answerRaw: String, report: ConfidenceReport) {
-        let messages: [ChatMessageDTO] = [
-            ChatMessageDTO(role: .system, content: system),
-            ChatMessageDTO(role: .user, content: transcript)
-        ]
+        let primaryText: String
+        let primaryLatency: TimeInterval
+        let stageCount: Int
+        var stageMetrics: [StageMetric]?
+        var stageParseFailures: [String] = []
+        var promptTokens: Int
+        var completionTokens: Int
+        // Redundancy повторяет ровно то, что ушло за primary-ответом: одно
+        // `[system, transcript]` в монолите, отрендеренный финальный промпт в цепочке.
+        let redundancyMessages: [ChatMessageDTO]
 
-        let primaryStart = Date()
-        let primary = try await provider.send(messages, settings: settings)
-        let primaryLatency = Date().timeIntervalSince(primaryStart)
+        switch primary {
+        case .monolithic:
+            let messages: [ChatMessageDTO] = [
+                ChatMessageDTO(role: .system, content: system),
+                ChatMessageDTO(role: .user, content: transcript)
+            ]
+            let primaryStart = Date()
+            let result = try await provider.send(messages, settings: settings)
+            primaryLatency = Date().timeIntervalSince(primaryStart)
+            promptTokens = result.usage?.promptTokens ?? 0
+            completionTokens = result.usage?.completionTokens ?? 0
+            primaryText = result.text
+            redundancyMessages = messages
+            stageCount = 1
+
+        case .staged(let stages) where stages.isEmpty:
+            // Контракт: вызывающий фильтрует пустые стадии (effectiveStages). Guard —
+            // второй рубеж: пустая цепочка вела бы к send([]) и бейджу «0 стадий».
+            return try await ConfidencePipeline(provider: provider, settings: settings,
+                                                 redundancyCount: redundancyCount, config: config)
+                .run(system: system, transcript: transcript, reference: reference, progress: progress)
+
+        case let .staged(stages):
+            var previousOutputs: [String] = []
+            var metrics: [StageMetric] = []
+            var chainLatency: TimeInterval = 0
+            var chainPromptTokens = 0
+            var chainCompletionTokens = 0
+            var lastRawText = ""
+            var lastRenderedMessages: [ChatMessageDTO] = []
+            let count = stages.count
+            for (index, stage) in stages.enumerated() {
+                try Task.checkCancellation()
+                progress("Стадия \(index + 1)/\(count): \(stage.name)")
+                let rendered = StagedInferenceCore.renderPrompt(stage.prompt, transcript: transcript,
+                                                                  previousOutputs: previousOutputs)
+                let stageMessages: [ChatMessageDTO] = [ChatMessageDTO(role: .user, content: rendered)]
+                let stageStart = Date()
+                let result = try await provider.send(stageMessages, settings: settings)
+                let latency = Date().timeIntervalSince(stageStart)
+                chainLatency += latency
+                chainPromptTokens += result.usage?.promptTokens ?? 0
+                chainCompletionTokens += result.usage?.completionTokens ?? 0
+                let (compact, parseOk) = StagedInferenceCore.compactOutput(result.text)
+                metrics.append(StageMetric(name: stage.name, latency: latency,
+                                            promptTokens: result.usage?.promptTokens ?? 0,
+                                            completionTokens: result.usage?.completionTokens ?? 0,
+                                            parseOk: parseOk))
+                // Финальная стадия и так проверяется constraint'ом — двойного наказания нет.
+                if !parseOk && index < count - 1 {
+                    stageParseFailures.append(stage.name)
+                }
+                previousOutputs.append(compact)
+                lastRawText = result.text
+                lastRenderedMessages = stageMessages
+            }
+            primaryLatency = chainLatency
+            promptTokens = chainPromptTokens
+            completionTokens = chainCompletionTokens
+            primaryText = lastRawText
+            stageMetrics = metrics
+            redundancyMessages = lastRenderedMessages
+            stageCount = count
+        }
         try Task.checkCancellation()
 
         var totalLatency = primaryLatency
-        var promptTokens = primary.usage?.promptTokens ?? 0
-        var completionTokens = primary.usage?.completionTokens ?? 0
         var extraCalls = 0
 
         let constraintChecks: [ConfidenceCheck] = config.constraintEnabled
-            ? (reference.map { ConfidenceChecks.referenceBased(raw: primary.text, reference: $0, transcript: transcript) }
-                ?? ConfidenceChecks.referenceFree(raw: primary.text, transcript: transcript))
+            ? (reference.map { ConfidenceChecks.referenceBased(raw: primaryText, reference: $0, transcript: transcript) }
+                ?? ConfidenceChecks.referenceFree(raw: primaryText, transcript: transcript))
             : []
 
         guard !config.constraintEnabled || !hasHardFailure(constraintChecks) else {
-            let signals = ConfidenceSignals(constraintChecks: constraintChecks)
+            let signals = ConfidenceSignals(constraintChecks: constraintChecks, stageParseFailures: stageParseFailures)
             let (verdict, reasons) = ConfidenceVerdict.reduce(signals)
-            let metrics = ConfidenceMetrics(totalCalls: 1, extraCalls: 0, primaryLatency: primaryLatency,
+            let metrics = ConfidenceMetrics(totalCalls: stageCount, extraCalls: 0, primaryLatency: primaryLatency,
                                              totalLatency: totalLatency, promptTokens: promptTokens,
                                              completionTokens: completionTokens)
-            return (primary.text, makeReport(verdict: verdict, reasons: reasons, metrics: metrics,
-                                              checks: constraintChecks, redundancy: nil, scoring: nil, selfCheck: nil))
+            return (primaryText, makeReport(verdict: verdict, reasons: reasons, metrics: metrics,
+                                             checks: constraintChecks, redundancy: nil, scoring: nil, selfCheck: nil,
+                                             stages: stageMetrics))
         }
 
-        // Redundancy: остальные (redundancyCount - 1) прогона того же запроса.
+        // Redundancy: остальные (redundancyCount - 1) прогона того же (финального) запроса.
         var redundancy: RedundancyAgreement?
         let extraRuns = config.redundancyEnabled ? max(redundancyCount - 1, 0) : 0
         if extraRuns > 0 {
             var parsedAnswers: [[ActionItem]] = []
             var parseFailures = 0
-            if let parsed = ActionItemsParser.parse(primary.text) {
+            if let parsed = ActionItemsParser.parse(primaryText) {
                 parsedAnswers.append(parsed)
             } else {
                 parseFailures += 1
@@ -104,7 +174,7 @@ struct ConfidencePipeline {
                 try Task.checkCancellation()
                 progress("Вызов \(i + 2) из \(redundancyCount)")
                 let start = Date()
-                let result = try await provider.send(messages, settings: settings)
+                let result = try await provider.send(redundancyMessages, settings: settings)
                 totalLatency += Date().timeIntervalSince(start)
                 extraCalls += 1
                 promptTokens += result.usage?.promptTokens ?? 0
@@ -125,7 +195,7 @@ struct ConfidencePipeline {
             try Task.checkCancellation()
             let scoringStart = Date()
             let scoringResult = try await provider.send(
-                [ChatMessageDTO(role: .user, content: ConfidencePrompts.scoringPrompt(transcript: transcript, answer: primary.text))],
+                [ChatMessageDTO(role: .user, content: ConfidencePrompts.scoringPrompt(transcript: transcript, answer: primaryText))],
                 settings: settings)
             totalLatency += Date().timeIntervalSince(scoringStart)
             extraCalls += 1
@@ -137,10 +207,10 @@ struct ConfidencePipeline {
         var selfCheck: SelfCheckSignal?
         if config.selfCheckEnabled {
             try Task.checkCancellation()
-            let expectedCount = ActionItemsParser.parse(primary.text)?.count ?? 0
+            let expectedCount = ActionItemsParser.parse(primaryText)?.count ?? 0
             let selfCheckStart = Date()
             let selfCheckResult = try await provider.send(
-                [ChatMessageDTO(role: .user, content: ConfidencePrompts.selfCheckPrompt(transcript: transcript, answer: primary.text))],
+                [ChatMessageDTO(role: .user, content: ConfidencePrompts.selfCheckPrompt(transcript: transcript, answer: primaryText))],
                 settings: settings)
             totalLatency += Date().timeIntervalSince(selfCheckStart)
             extraCalls += 1
@@ -150,14 +220,14 @@ struct ConfidencePipeline {
         }
 
         let signals = ConfidenceSignals(constraintChecks: constraintChecks, redundancy: redundancy,
-                                         scoring: scoring, selfCheck: selfCheck)
+                                         scoring: scoring, selfCheck: selfCheck, stageParseFailures: stageParseFailures)
         let (verdict, reasons) = ConfidenceVerdict.reduce(signals)
-        let metrics = ConfidenceMetrics(totalCalls: 1 + extraCalls, extraCalls: extraCalls,
+        let metrics = ConfidenceMetrics(totalCalls: stageCount + extraCalls, extraCalls: extraCalls,
                                          primaryLatency: primaryLatency, totalLatency: totalLatency,
                                          promptTokens: promptTokens, completionTokens: completionTokens)
-        return (primary.text, makeReport(verdict: verdict, reasons: reasons, metrics: metrics,
-                                          checks: constraintChecks, redundancy: redundancy,
-                                          scoring: scoring, selfCheck: selfCheck))
+        return (primaryText, makeReport(verdict: verdict, reasons: reasons, metrics: metrics,
+                                         checks: constraintChecks, redundancy: redundancy,
+                                         scoring: scoring, selfCheck: selfCheck, stages: stageMetrics))
     }
 
     private func hasHardFailure(_ checks: [ConfidenceCheck]) -> Bool {
@@ -168,7 +238,8 @@ struct ConfidencePipeline {
 
     private func makeReport(verdict: ConfidenceVerdict, reasons: [String], metrics: ConfidenceMetrics,
                              checks: [ConfidenceCheck], redundancy: RedundancyAgreement?,
-                             scoring: ScoringSignal?, selfCheck: SelfCheckSignal?) -> ConfidenceReport {
+                             scoring: ScoringSignal?, selfCheck: SelfCheckSignal?,
+                             stages: [StageMetric]? = nil) -> ConfidenceReport {
         let summaries = checks.map { check -> ConfidenceCheckSummary in
             switch check.outcome {
             case .pass: return ConfidenceCheckSummary(name: check.name, status: "pass", detail: nil)
@@ -181,6 +252,6 @@ struct ConfidencePipeline {
             scoringStatus: scoring?.status, scoringConfidence: scoring?.confidence,
             selfCheckSupportedCount: selfCheck.map { $0.supported.filter { $0 }.count },
             selfCheckTotalCount: selfCheck.map(\.supported.count),
-            selfCheckMissed: selfCheck?.missed)
+            selfCheckMissed: selfCheck?.missed, stages: stages)
     }
 }

@@ -10,6 +10,9 @@
 // облачного (резолвер уже отдал готовый ResolvedChatProvider), providerID/status
 // прокидываются в EscalationRecord как есть; availableTunedModels — пусто без прогонов,
 // distinct-базы finished-прогонов этого workdir (без дефолтов, в отличие от availableBaseModels).
+// Задача 94: тумблер `stagesEnabled` включает цепочку стадий (report.stages != nil),
+// per-thread (не течёт между вариантами), `stages` — per-document, снимок primaryStrategy
+// до Task, effectiveStages пустой при включённом тумблере → монолит без бейджа.
 
 import XCTest
 @testable import SecondBrain
@@ -1037,5 +1040,138 @@ final class TuningChatViewModelTests: XCTestCase {
 
         XCTAssertEqual(vm.availableBaseModels,
                        [FineTuneViewModel.smallModel, MlxServerConfig.defaultModel, "custom-finetuned-model"])
+    }
+
+    // MARK: - Задача 94: multi-stage inference
+
+    private let stagesABCD: [InferenceStage] = [
+        InferenceStage(name: "A", prompt: "шаг1 {{transcript}}"),
+        InferenceStage(name: "B", prompt: "шаг2 {{stage:1}}"),
+        InferenceStage(name: "C", prompt: "шаг3 {{stage:2}}"),
+        InferenceStage(name: "D", prompt: "шаг4 {{stage:3}}"),
+    ]
+
+    /// Тумблер включён (стадии не заданы — используется дефолтный шаблон из 4 стадий):
+    /// `send()` делает цепочку, показанное сообщение несёт `report.stages` из 4 замеров.
+    func testSendWithStagesEnabledUsesDefaultTemplateAndReportsFourStages() async throws {
+        let dataset = makeDataset()
+        let provider = MockChatProvider(responses: [
+            "{\"speakers\":[]}", "{\"tasks\":[]}", "{\"deadlines\":[]}", "{\"action_items\":[]}",
+        ])
+        let vm = TuningChatViewModel(
+            server: makeReadyServer(),
+            providerFactory: { _ in provider },
+            dataset: { dataset },
+            isTuneOrBaselineActive: { false },
+            fileURL: tempFileURL())
+        vm.setStagesEnabled(true)
+        vm.input = "фрагмент встречи"
+        await vm.send()
+
+        XCTAssertNil(vm.errorText)
+        let assistant = try XCTUnwrap(vm.messages.last)
+        XCTAssertEqual(assistant.content, "{\"action_items\":[]}", "показанный ответ — сырой финальной стадии")
+        XCTAssertEqual(assistant.report?.stages?.count, 4)
+        XCTAssertEqual(provider.receivedMessages.count, 4)
+    }
+
+    /// Тумблер выключен (дефолт) — `send()` делает один вызов, `report.stages` отсутствует.
+    func testSendWithStagesDisabledLeavesReportStagesNil() async throws {
+        let dataset = makeDataset()
+        let provider = MockChatProvider(responses: [okResponse])
+        let vm = TuningChatViewModel(
+            server: makeReadyServer(),
+            providerFactory: { _ in provider },
+            dataset: { dataset },
+            isTuneOrBaselineActive: { false },
+            fileURL: tempFileURL())
+        vm.input = "фрагмент встречи"
+        await vm.send()
+
+        XCTAssertFalse(vm.stagesEnabled, "продовый дефолт — тумблер выключен")
+        let assistant = try XCTUnwrap(vm.messages.last)
+        XCTAssertNil(assistant.report?.stages)
+        XCTAssertEqual(provider.receivedMessages.count, 1)
+    }
+
+    /// `stagesEnabled` — per-thread (симметрично `escalationEnabled`): включение в
+    /// baseline не переносится на tuned, возврат в baseline восстанавливает своё значение.
+    func testStagesEnabledIsPerThreadNotSharedAcrossVariants() {
+        let dataset = makeDataset(withTunedAdapter: true)
+        let vm = TuningChatViewModel(
+            server: makeReadyServer(),
+            providerFactory: { _ in MockChatProvider(responses: [self.okResponse]) },
+            dataset: { dataset },
+            isTuneOrBaselineActive: { false },
+            fileURL: tempFileURL())
+        vm.setStagesEnabled(true)
+        XCTAssertTrue(vm.stagesEnabled)
+
+        vm.modelVariant = .tuned
+        XCTAssertFalse(vm.stagesEnabled, "у tuned свой (выключенный) тумблер")
+
+        vm.modelVariant = .baseline
+        XCTAssertTrue(vm.stagesEnabled, "baseline-тумблер не тронут переключением")
+    }
+
+    /// `stages` — per-document (не per-thread): правка в одном варианте видна и в другом.
+    func testStagesAreDocumentLevelVisibleAcrossVariantSwitch() {
+        let dataset = makeDataset(withTunedAdapter: true)
+        let vm = TuningChatViewModel(
+            server: makeReadyServer(),
+            providerFactory: { _ in MockChatProvider(responses: [self.okResponse]) },
+            dataset: { dataset },
+            isTuneOrBaselineActive: { false },
+            fileURL: tempFileURL())
+        vm.setStages(stagesABCD)
+        XCTAssertEqual(vm.stages, stagesABCD)
+
+        vm.modelVariant = .tuned
+        XCTAssertEqual(vm.stages, stagesABCD, "стадии — свойство документа, видны и в tuned")
+    }
+
+    /// `setStages`/`setStagesEnabled` переживают перезагрузку VM из того же файла —
+    /// стадии документные, тумблер тредовый (симметрично escalation-тестам).
+    func testSetStagesAndStagesEnabledPersistAcrossReload() {
+        let fileURL = tempFileURL()
+        let vm = TuningChatViewModel(
+            server: makeReadyServer(),
+            providerFactory: { _ in MockChatProvider(responses: [self.okResponse]) },
+            dataset: { self.makeDataset() },
+            isTuneOrBaselineActive: { false },
+            fileURL: fileURL)
+        vm.setStagesEnabled(true)
+        vm.setStages(stagesABCD)
+
+        let reloaded = TuningChatViewModel(
+            server: makeReadyServer(),
+            providerFactory: { _ in MockChatProvider(responses: [self.okResponse]) },
+            dataset: { self.makeDataset() },
+            isTuneOrBaselineActive: { false },
+            fileURL: fileURL)
+        XCTAssertTrue(reloaded.stagesEnabled)
+        XCTAssertEqual(reloaded.stages, stagesABCD)
+    }
+
+    /// Пустой эффективный список стадий (все промпты пустые после trim) при включённом
+    /// тумблере — belt-and-suspenders: `send()` снимает `.monolithic`, бейджа нет.
+    func testEmptyEffectiveStagesWithToggleOnFallsBackToMonolithic() async throws {
+        let dataset = makeDataset()
+        let provider = MockChatProvider(responses: [okResponse])
+        let vm = TuningChatViewModel(
+            server: makeReadyServer(),
+            providerFactory: { _ in provider },
+            dataset: { dataset },
+            isTuneOrBaselineActive: { false },
+            fileURL: tempFileURL())
+        vm.setStagesEnabled(true)
+        vm.setStages([InferenceStage(name: "Пустая", prompt: "   ")])
+        XCTAssertTrue(vm.effectiveStages.isEmpty, "единственная стадия отфильтрована пустым промптом")
+        vm.input = "фрагмент встречи"
+        await vm.send()
+
+        XCTAssertEqual(provider.receivedMessages.count, 1, "монолит — один вызов, не цепочка")
+        let assistant = try XCTUnwrap(vm.messages.last)
+        XCTAssertNil(assistant.report?.stages, "пустой эффективный список — без бейджа «N стадий»")
     }
 }

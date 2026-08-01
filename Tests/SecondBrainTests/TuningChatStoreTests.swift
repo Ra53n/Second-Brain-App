@@ -6,6 +6,9 @@
 // Задача 92: ключ треда — "<variant>|<model>"; легаси-ключи `baseline`/`tuned` (в т.ч.
 // с escalation-полями эпохи 91) мигрируют на "…|<7B>"; round-trip `chatBaseModel`.
 // Задача 93: round-trip документа с `EscalationTarget.kind == .localTuned`.
+// Задача 94: миграция документа эпохи 93 без `stagesEnabled`/`stages` → false/nil;
+// round-trip заполненных стадий (кириллица в промптах); незнакомое поле в объекте
+// стадии («из будущего») не роняет декод.
 
 import XCTest
 @testable import SecondBrain
@@ -318,5 +321,71 @@ final class TuningChatStoreTests: XCTestCase {
         XCTAssertNil(loaded.threads["baseline"], "легаси-ключ переименован")
         XCTAssertNotNil(loaded.threads["baseline|\(legacy7B)"])
         XCTAssertNotNil(loaded.threads["future-variant"], "незнакомый тред сохраняется как есть, не выбрасывается")
+    }
+
+    // MARK: - Задача 94: multi-stage inference
+
+    /// Документ эпохи 93 (до задачи 94): треды/документ не знают ни `stagesEnabled`,
+    /// ни `stages` — миграция на дефолты, история цела.
+    func testMigrationFromEpoch93DocumentWithoutStageFieldsDefaultsDisabledAndNilStages() throws {
+        let url = tempDir.appendingPathComponent("chat.json")
+        let json = """
+        {"threads":{"baseline|\(legacy7B)":{"messages":[
+            {"id":"11111111-1111-1111-1111-111111111111","role":"user","content":"Привет"}],
+            "pipelineConfig":{"constraintEnabled":true,"redundancyEnabled":false,"scoringEnabled":false,"selfCheckEnabled":false},
+            "escalationEnabled":false}},
+        "modelVariant":"baseline","chatBaseModel":"\(legacy7B)"}
+        """
+        try Data(json.utf8).write(to: url)
+        let loaded = TuningChatPersistence.load(from: url)
+
+        XCTAssertNil(loaded.stages, "поле stages появилось в задаче 94 — документ без него мигрирует на nil")
+        let baselineThread = try XCTUnwrap(loaded.threads["baseline|\(legacy7B)"])
+        XCTAssertFalse(baselineThread.stagesEnabled, "тумблер стадий мигрирует в false")
+        XCTAssertEqual(baselineThread.messages.count, 1, "история цела")
+    }
+
+    /// Round-trip с заполненными стадиями (кириллица в промптах) и включённым тумблером —
+    /// стадии per-document, тумблер per-thread.
+    func testRoundTripWithStagesConfiguredAndCyrillicPrompts() {
+        let url = tempDir.appendingPathComponent("chat.json")
+        let stages = [
+            InferenceStage(name: "Говорящие", prompt: "Перечисли говорящих: {{transcript}}"),
+            InferenceStage(name: "Сборка", prompt: "Собери итог из {{stage:1}} и {{prev}}"),
+        ]
+        let document = TuningChatDocument(
+            threads: ["baseline|\(legacy7B)": TuningChatThread(stagesEnabled: true)],
+            modelVariant: "baseline", chatBaseModel: legacy7B, stages: stages)
+        TuningChatPersistence.save(document, to: url)
+        let loaded = TuningChatPersistence.load(from: url)
+        XCTAssertEqual(loaded, document)
+        XCTAssertEqual(loaded.stages, stages)
+        XCTAssertTrue(loaded.threads["baseline|\(legacy7B)"]?.stagesEnabled ?? false)
+    }
+
+    /// Пустой (не nil) массив стадий — «пользователь удалил все явно» отличается от
+    /// «не редактировал» (nil) и обязан пережить round-trip как есть.
+    func testRoundTripDistinguishesNilStagesFromEmptyArray() {
+        let url = tempDir.appendingPathComponent("chat.json")
+        let document = TuningChatDocument(modelVariant: "baseline", chatBaseModel: legacy7B, stages: [])
+        TuningChatPersistence.save(document, to: url)
+        let loaded = TuningChatPersistence.load(from: url)
+        XCTAssertNotNil(loaded.stages)
+        XCTAssertEqual(loaded.stages, [])
+    }
+
+    /// Объект стадии «из будущего» с незнакомым дополнительным полем не роняет декод
+    /// документа целиком — известные стадии и остальной документ целы.
+    func testUnknownFieldInStageObjectDoesNotFailDocumentDecode() throws {
+        let url = tempDir.appendingPathComponent("chat.json")
+        let json = """
+        {"threads":{},"modelVariant":"baseline",
+        "stages":[{"id":"11111111-1111-1111-1111-111111111111","name":"Сборка","prompt":"p","modelHint":"gpt-6"}]}
+        """
+        try Data(json.utf8).write(to: url)
+        let loaded = TuningChatPersistence.load(from: url)
+        XCTAssertEqual(loaded.stages?.count, 1)
+        XCTAssertEqual(loaded.stages?.first?.name, "Сборка")
+        XCTAssertEqual(loaded.stages?.first?.prompt, "p")
     }
 }

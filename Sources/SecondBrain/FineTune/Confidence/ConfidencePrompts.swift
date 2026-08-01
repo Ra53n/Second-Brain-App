@@ -77,10 +77,12 @@ enum ConfidencePrompts {
         return SelfCheckSignal(supported: supported, reasons: reasons, missed: missed)
     }
 
-    /// Баланс фигурных скобок с учётом строковых литералов (кавычки/экранирование) —
-    /// иначе `}` внутри `"reason"` рвёт вырезание раньше времени.
-    private static func extractFirstJSONObject(_ raw: String) -> [String: Any]? {
-        let chars = Array(raw)
+    /// Первый JSON-объект как подстрока текста (задача 94: разделяемо со
+    /// `StagedInferenceCore.compactOutput`, которому нужна строка, не словарь). Баланс
+    /// фигурных скобок с учётом строковых литералов (кавычки/экранирование) — иначе `}`
+    /// внутри `"reason"` рвёт вырезание раньше времени.
+    static func firstJSONObjectString(_ text: String) -> String? {
+        let chars = Array(text)
         guard let start = chars.firstIndex(of: "{") else { return nil }
         var depth = 0
         var inString = false
@@ -104,7 +106,12 @@ enum ConfidencePrompts {
             }
             if end != nil { break }
         }
-        guard let end, let data = String(chars[start...end]).data(using: .utf8) else { return nil }
+        guard let end else { return nil }
+        return String(chars[start...end])
+    }
+
+    private static func extractFirstJSONObject(_ raw: String) -> [String: Any]? {
+        guard let objectString = firstJSONObjectString(raw), let data = objectString.data(using: .utf8) else { return nil }
         return (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
     }
 

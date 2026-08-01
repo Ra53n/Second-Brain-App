@@ -257,4 +257,144 @@ final class ConfidencePipelineTests: XCTestCase {
         XCTAssertEqual(report.verdict, .unsure)
         XCTAssertEqual(report.reasons, ["ни один подход не включён"])
     }
+
+    // MARK: - primary: .staged (задача 94)
+
+    private let stagesABCD: [InferenceStage] = [
+        InferenceStage(name: "A", prompt: "шаг1 {{transcript}}"),
+        InferenceStage(name: "B", prompt: "шаг2 {{stage:1}}"),
+        InferenceStage(name: "C", prompt: "шаг3 {{stage:2}}"),
+        InferenceStage(name: "D", prompt: "шаг4 {{stage:3}}"),
+    ]
+
+    /// Монолит — регрессия: `report.stages` остаётся `nil`, батч и эскалация не задевает
+    /// новая ветка.
+    func testMonolithicPrimaryLeavesReportStagesNil() async throws {
+        let provider = MockChatProvider(responses: ["{\"action_items\":[]}"])
+        let pipeline = ConfidencePipeline(provider: provider, settings: ChatSettings(model: "mlx"))
+        let (_, report) = try await pipeline.run(system: "s", transcript: "t", reference: nil)
+        XCTAssertNil(report.stages)
+    }
+
+    /// Контракт держит вызывающий (effectiveStages), но пустой `.staged([])` не должен
+    /// вести к `send([])` и бейджу «0 стадий» — guard откатывает в монолит.
+    func testStagedWithEmptyStageListFallsBackToMonolithic() async throws {
+        let provider = MockChatProvider(responses: ["{\"action_items\":[]}"])
+        let pipeline = ConfidencePipeline(provider: provider, settings: ChatSettings(model: "mlx"),
+                                           primary: .staged([]))
+        let (raw, report) = try await pipeline.run(system: "s", transcript: "t", reference: nil)
+        XCTAssertEqual(raw, "{\"action_items\":[]}")
+        XCTAssertNil(report.stages, "пустая цепочка = монолит, бейджа стадий нет")
+        XCTAssertEqual(report.metrics.totalCalls, 1)
+    }
+
+    func testStagedPrimaryWithDefaultConfigUsesFinalStageRawAnswerAndReportsFourStages() async throws {
+        let provider = MockChatProvider(responses: [
+            "{\"speakers\":[]}", "{\"tasks\":[]}", "{\"deadlines\":[]}", "{\"action_items\":[]}",
+        ])
+        provider.delay = 0.01 // гарантирует ненулевой primaryLatency, не полагаясь на разрешение таймера
+        let pipeline = ConfidencePipeline(provider: provider, settings: ChatSettings(model: "mlx"),
+                                           primary: .staged(stagesABCD))
+        var progressSteps: [String] = []
+        let (raw, report) = try await pipeline.run(system: "s", transcript: "t", reference: nil) { progressSteps.append($0) }
+
+        XCTAssertEqual(raw, "{\"action_items\":[]}", "primary-текст — сырой ответ ФИНАЛЬНОЙ стадии")
+        XCTAssertEqual(report.stages?.count, 4)
+        XCTAssertEqual(report.metrics.totalCalls, 4, "stageCount(4) + extraCalls(0)")
+        XCTAssertGreaterThan(report.metrics.primaryLatency, 0)
+        XCTAssertEqual(provider.receivedMessages.count, 4)
+        XCTAssertEqual(progressSteps, ["Стадия 1/4: A", "Стадия 2/4: B", "Стадия 3/4: C", "Стадия 4/4: D"])
+    }
+
+    /// Redundancy повторяет ТОЛЬКО финальную стадию — repeat-вызовы получают тот же
+    /// отрендеренный промпт, что и финальный вызов цепочки, не всю цепочку заново.
+    func testStagedPrimaryRedundancyRepeatsOnlyFinalStageRenderedPrompt() async throws {
+        let provider = MockChatProvider(responses: [
+            "{\"speakers\":[]}", "{\"tasks\":[]}", "{\"deadlines\":[]}",
+            "{\"action_items\":[]}",  // финальная стадия
+            "{\"action_items\":[]}",  // redundancy #2
+            "{\"action_items\":[]}",  // redundancy #3
+        ])
+        let config = ConfidencePipelineConfig(constraintEnabled: true, redundancyEnabled: true,
+                                               scoringEnabled: false, selfCheckEnabled: false)
+        let pipeline = ConfidencePipeline(provider: provider, settings: ChatSettings(model: "mlx"),
+                                           redundancyCount: 3, config: config, primary: .staged(stagesABCD))
+        let (_, report) = try await pipeline.run(system: "s", transcript: "t", reference: nil)
+
+        XCTAssertEqual(report.metrics.extraCalls, 2, "redundancyCount(3) - 1 повтор основного")
+        XCTAssertEqual(report.metrics.totalCalls, 6, "stageCount(4) + extraCalls(2)")
+        XCTAssertEqual(provider.receivedMessages.count, 6)
+        // Индексы 0..3 — цепочка стадий, 4 и 5 — redundancy-повторы финальной стадии:
+        // обязаны получить ТОТ ЖЕ рендеренный промпт, что и вызов финальной стадии (индекс 3).
+        XCTAssertEqual(provider.receivedMessages[4], provider.receivedMessages[3],
+                       "первый redundancy-повтор получил финальный промпт, не всю цепочку")
+        XCTAssertEqual(provider.receivedMessages[5], provider.receivedMessages[3],
+                       "второй redundancy-повтор получил финальный промпт")
+        XCTAssertNotEqual(provider.receivedMessages[0], provider.receivedMessages[3],
+                          "финальный промпт отличается от первой стадии цепочки")
+    }
+
+    /// Непарсибельная ПРОМЕЖУТОЧНАЯ стадия — не провал запроса: `parseOk=false` в её
+    /// метрике, сигнал `stageParseFailures` понижает вердикт максимум до UNSURE с причиной
+    /// «Стадия «B»…», финальная стадия (валидный JSON) проходит constraint нормально.
+    func testStagedPrimaryIntermediateStageUnparsableGivesUnsureWithStageReason() async throws {
+        let provider = MockChatProvider(responses: [
+            "{\"speakers\":[]}", "мусор, не JSON вообще", "{\"deadlines\":[]}", "{\"action_items\":[]}",
+        ])
+        let pipeline = ConfidencePipeline(provider: provider, settings: ChatSettings(model: "mlx"),
+                                           primary: .staged(stagesABCD))
+        let (_, report) = try await pipeline.run(system: "s", transcript: "t", reference: nil)
+
+        let stages = try XCTUnwrap(report.stages)
+        XCTAssertEqual(stages.count, 4)
+        XCTAssertFalse(stages[1].parseOk, "стадия B не распарсилась")
+        XCTAssertTrue(stages[0].parseOk)
+        XCTAssertTrue(stages[2].parseOk)
+        XCTAssertTrue(stages[3].parseOk, "финальная стадия — валидный JSON")
+        XCTAssertEqual(report.verdict, .unsure, "промежуточный provalOk=false не хуже UNSURE")
+        XCTAssertTrue(report.reasons.contains { $0.contains("Стадия «B»") && $0.contains("не в формате JSON") })
+    }
+
+    /// Непарсибельная ФИНАЛЬНАЯ стадия — двойного наказания нет: она не входит в
+    /// `stageParseFailures` (причины про «Стадия «D»» быть не должно), её карает
+    /// constraint как обычный ответ; ранний hard-fail сохраняет `stages` в отчёте и не
+    /// добавляет redundancy/scoring/self-check вызовы (`totalCalls == stageCount`).
+    func testStagedPrimaryFinalStageUnparsableIsNotDoubleCountedAndEarlyHardFailKeepsStages() async throws {
+        let provider = MockChatProvider(responses: [
+            "{\"speakers\":[]}", "{\"tasks\":[]}", "{\"deadlines\":[]}", "это вообще не JSON",
+        ])
+        let config = ConfidencePipelineConfig.allEnabled
+        let pipeline = ConfidencePipeline(provider: provider, settings: ChatSettings(model: "mlx"),
+                                           redundancyCount: 3, config: config, primary: .staged(stagesABCD))
+        let (raw, report) = try await pipeline.run(system: "s", transcript: "t", reference: nil)
+
+        XCTAssertEqual(raw, "это вообще не JSON")
+        XCTAssertEqual(report.verdict, .fail, "constraint hard-fail на нестрогом ответе финальной стадии")
+        let stages = try XCTUnwrap(report.stages)
+        XCTAssertEqual(stages.count, 4, "stages сохранены даже при раннем hard-fail")
+        XCTAssertFalse(stages[3].parseOk)
+        XCTAssertFalse(report.reasons.contains { $0.contains("Стадия «D»") },
+                       "финальная стадия не наказывается сигналом stageParseFailures — только constraint'ом")
+        XCTAssertEqual(report.metrics.totalCalls, 4, "ранний hard-fail — totalCalls == stageCount, без доп. вызовов")
+        XCTAssertEqual(provider.receivedMessages.count, 4, "redundancy/scoring/self-check не запущены")
+    }
+
+    /// Отмена посреди цепочки стадий — `CancellationError` не глотается (симметрично
+    /// монолитному `testCancellationPropagatesNotSwallowed`).
+    func testStagedPrimaryCancellationBetweenStagesPropagatesNotSwallowed() async throws {
+        let provider = MockChatProvider(responses: ["{\"speakers\":[]}", "{\"tasks\":[]}"])
+        provider.delay = 0.3
+        let pipeline = ConfidencePipeline(provider: provider, settings: ChatSettings(model: "mlx"),
+                                           primary: .staged(stagesABCD))
+        let task = Task { try await pipeline.run(system: "s", transcript: "t", reference: nil) }
+        task.cancel()
+        do {
+            _ = try await task.value
+            XCTFail("ожидалась отмена")
+        } catch is CancellationError {
+            // ок
+        } catch {
+            XCTFail("ожидалась CancellationError, получено \(error)")
+        }
+    }
 }

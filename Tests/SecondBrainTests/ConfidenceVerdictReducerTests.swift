@@ -9,9 +9,10 @@ final class ConfidenceVerdictReducerTests: XCTestCase {
                                ConfidenceCheck(name: "без прозы", outcome: .pass, severity: .hard)]
 
     private func signals(constraintChecks: [ConfidenceCheck]? = nil, redundancy: RedundancyAgreement? = nil,
-                          scoring: ScoringSignal? = nil, selfCheck: SelfCheckSignal? = nil) -> ConfidenceSignals {
+                          scoring: ScoringSignal? = nil, selfCheck: SelfCheckSignal? = nil,
+                          stageParseFailures: [String] = []) -> ConfidenceSignals {
         ConfidenceSignals(constraintChecks: constraintChecks ?? passChecks, redundancy: redundancy,
-                          scoring: scoring, selfCheck: selfCheck)
+                          scoring: scoring, selfCheck: selfCheck, stageParseFailures: stageParseFailures)
     }
 
     // MARK: - hard constraint fail
@@ -143,5 +144,60 @@ final class ConfidenceVerdictReducerTests: XCTestCase {
         let (verdict, reasons) = ConfidenceVerdict.reduce(ConfidenceSignals(constraintChecks: []))
         XCTAssertEqual(verdict, .unsure)
         XCTAssertEqual(reasons, ["ни один подход не включён"])
+    }
+
+    // MARK: - stageParseFailures (задача 94)
+
+    func testNonEmptyStageParseFailuresGivesUnsureWithStageReason() {
+        let (verdict, reasons) = ConfidenceVerdict.reduce(signals(stageParseFailures: ["Говорящие"]))
+        XCTAssertEqual(verdict, .unsure)
+        XCTAssertTrue(reasons.contains { $0.contains("Стадия «Говорящие»") && $0.contains("не в формате JSON") })
+    }
+
+    func testMultipleStageParseFailuresEachProduceOwnReason() {
+        let (verdict, reasons) = ConfidenceVerdict.reduce(signals(stageParseFailures: ["Говорящие", "Задачи и исполнители"]))
+        XCTAssertEqual(verdict, .unsure)
+        XCTAssertTrue(reasons.contains { $0.contains("Стадия «Говорящие»") })
+        XCTAssertTrue(reasons.contains { $0.contains("Стадия «Задачи и исполнители»") })
+    }
+
+    func testEmptyStageParseFailuresDoesNotAffectOtherwiseOKVerdict() {
+        let (verdict, _) = ConfidenceVerdict.reduce(signals(
+            redundancy: .agree,
+            scoring: ScoringSignal(status: "OK", confidence: 90),
+            selfCheck: SelfCheckSignal(supported: [true], reasons: [""], missed: false),
+            stageParseFailures: []))
+        XCTAssertEqual(verdict, .ok, "пустой stageParseFailures не понижает вердикт")
+    }
+
+    /// stageParseFailures непустой понижает даже полностью благополучный прогон остальных
+    /// сигналов — не выше UNSURE.
+    func testStageParseFailuresCapsOtherwiseOKCombinationAtUnsure() {
+        let (verdict, reasons) = ConfidenceVerdict.reduce(signals(
+            redundancy: .agree,
+            scoring: ScoringSignal(status: "OK", confidence: 95),
+            selfCheck: SelfCheckSignal(supported: [true, true], reasons: ["", ""], missed: false),
+            stageParseFailures: ["Сроки"]))
+        XCTAssertEqual(verdict, .unsure)
+        XCTAssertTrue(reasons.contains { $0.contains("Стадия «Сроки»") })
+    }
+
+    /// Худший сигнал побеждает: FAIL от redundancy перекрывает UNSURE от stageParseFailures.
+    func testFailSignalWinsOverStageParseFailuresUnsure() {
+        let (verdict, reasons) = ConfidenceVerdict.reduce(signals(
+            redundancy: .disagree, stageParseFailures: ["Говорящие"]))
+        XCTAssertEqual(verdict, .fail)
+        XCTAssertTrue(reasons.contains { $0.contains("не сошлись") })
+        XCTAssertTrue(reasons.contains { $0.contains("Стадия «Говорящие»") }, "причина стадии не теряется при FAIL")
+    }
+
+    /// Hard constraint fail завершает пайплайн раньше, чем успевает сработать
+    /// stageParseFailures — те же гарантии, что и у остальных сигналов.
+    func testHardConstraintFailWinsOverStageParseFailures() {
+        let checks = [ConfidenceCheck(name: "валидный JSON", outcome: .fail("не JSON"), severity: .hard)]
+        let (verdict, reasons) = ConfidenceVerdict.reduce(signals(constraintChecks: checks,
+                                                                   stageParseFailures: ["Говорящие"]))
+        XCTAssertEqual(verdict, .fail)
+        XCTAssertFalse(reasons.contains { $0.contains("Стадия") }, "hard fail завершает reduce до stageParseFailures")
     }
 }

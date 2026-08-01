@@ -3,6 +3,8 @@
 // «с доп. вызовами / без». Задача 91: escalatedCount/escalationFailedCount/share/added
 // latency/tokens, «полная стоимость» succeeded включает обе ступени, failed/unavailable —
 // только показанную, регрессия на сообщениях без escalation.
+// Задача 94: сравнение моно/мульти — stagedAnswered/stagedOK/monoOK, раздельные средние
+// latency по `report.stages != nil`, только моно/только мульти — противоположный набор nil.
 
 import XCTest
 @testable import SecondBrain
@@ -196,5 +198,54 @@ final class TuningChatSessionStatsTests: XCTestCase {
         XCTAssertEqual(stats.promptTokens, 40)
         XCTAssertEqual(stats.completionTokens, 8)
         XCTAssertEqual(stats.avgTotalLatency, 2, accuracy: 0.0001)
+    }
+
+    // MARK: - Задача 94: сравнение моно/мульти (stages)
+
+    private func stagedMessage(verdict: ConfidenceVerdict, totalLatency: TimeInterval) -> TuningChatMessage {
+        let metrics = ConfidenceMetrics(totalCalls: 4, extraCalls: 0, primaryLatency: totalLatency, totalLatency: totalLatency)
+        let stages = (0..<4).map { StageMetric(name: "S\($0)", latency: totalLatency / 4, promptTokens: 0,
+                                                completionTokens: 0, parseOk: true) }
+        let report = ConfidenceReport(verdict: verdict, reasons: [], metrics: metrics, checks: [], stages: stages)
+        return TuningChatMessage(role: "assistant", content: "{}", report: report)
+    }
+
+    func testStagedAndMonoMixTracksSeparateCountsAndAverages() throws {
+        let messages = [
+            stagedMessage(verdict: .ok, totalLatency: 4),
+            stagedMessage(verdict: .unsure, totalLatency: 6),
+            message(verdict: .ok, extraCalls: 0, primaryLatency: 1, totalLatency: 1),
+            message(verdict: .fail, extraCalls: 0, primaryLatency: 1, totalLatency: 3),
+        ]
+        let stats = try XCTUnwrap(TuningChatSessionStats.compute(messages: messages))
+        XCTAssertEqual(stats.answered, 4, "регрессия — общий счётчик не меняется по режиму")
+        XCTAssertEqual(stats.stagedAnswered, 2)
+        XCTAssertEqual(stats.stagedOK, 1)
+        XCTAssertEqual(stats.monoOK, 1)
+        XCTAssertEqual(try XCTUnwrap(stats.avgTotalLatencyStaged), 5, accuracy: 0.0001)
+        XCTAssertEqual(try XCTUnwrap(stats.avgTotalLatencyMono), 2, accuracy: 0.0001)
+    }
+
+    func testOnlyMonoMessagesGivesZeroStagedCountsAndNilStagedAverage() throws {
+        let messages = [
+            message(verdict: .ok, extraCalls: 0, primaryLatency: 1, totalLatency: 1),
+            message(verdict: .fail, extraCalls: 0, primaryLatency: 1, totalLatency: 3),
+        ]
+        let stats = try XCTUnwrap(TuningChatSessionStats.compute(messages: messages))
+        XCTAssertEqual(stats.stagedAnswered, 0)
+        XCTAssertEqual(stats.stagedOK, 0)
+        XCTAssertNil(stats.avgTotalLatencyStaged)
+        XCTAssertEqual(stats.monoOK, 1)
+        XCTAssertEqual(try XCTUnwrap(stats.avgTotalLatencyMono), 2, accuracy: 0.0001)
+    }
+
+    func testOnlyStagedMessagesGivesZeroMonoOKAndNilMonoAverage() throws {
+        let messages = [stagedMessage(verdict: .ok, totalLatency: 4), stagedMessage(verdict: .ok, totalLatency: 6)]
+        let stats = try XCTUnwrap(TuningChatSessionStats.compute(messages: messages))
+        XCTAssertEqual(stats.stagedAnswered, 2)
+        XCTAssertEqual(stats.stagedOK, 2)
+        XCTAssertEqual(try XCTUnwrap(stats.avgTotalLatencyStaged), 5, accuracy: 0.0001)
+        XCTAssertEqual(stats.monoOK, 0)
+        XCTAssertNil(stats.avgTotalLatencyMono)
     }
 }

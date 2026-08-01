@@ -51,13 +51,19 @@ struct ConfidenceSignals {
     let redundancy: RedundancyAgreement?
     let scoring: ScoringSignal?
     let selfCheck: SelfCheckSignal?
+    /// Имена промежуточных (не финальных) стадий, чей compact-ответ не распарсился
+    /// (задача 94) — финальная стадия и так проверяется constraint'ом, двойного
+    /// наказания нет.
+    let stageParseFailures: [String]
 
     init(constraintChecks: [ConfidenceCheck], redundancy: RedundancyAgreement? = nil,
-         scoring: ScoringSignal? = nil, selfCheck: SelfCheckSignal? = nil) {
+         scoring: ScoringSignal? = nil, selfCheck: SelfCheckSignal? = nil,
+         stageParseFailures: [String] = []) {
         self.constraintChecks = constraintChecks
         self.redundancy = redundancy
         self.scoring = scoring
         self.selfCheck = selfCheck
+        self.stageParseFailures = stageParseFailures
     }
 }
 
@@ -92,12 +98,14 @@ struct ConfidenceReport: Equatable, Codable {
     var selfCheckSupportedCount: Int?
     var selfCheckTotalCount: Int?
     var selfCheckMissed: Bool?
+    /// Разбивка по стадиям (задача 94) — `nil` у монолитного primary.
+    var stages: [StageMetric]?
 
     init(verdict: ConfidenceVerdict, reasons: [String], metrics: ConfidenceMetrics,
          checks: [ConfidenceCheckSummary], redundancy: RedundancyAgreement? = nil,
          scoringStatus: String? = nil, scoringConfidence: Int? = nil,
          selfCheckSupportedCount: Int? = nil, selfCheckTotalCount: Int? = nil,
-         selfCheckMissed: Bool? = nil) {
+         selfCheckMissed: Bool? = nil, stages: [StageMetric]? = nil) {
         self.verdict = verdict
         self.reasons = reasons
         self.metrics = metrics
@@ -108,6 +116,7 @@ struct ConfidenceReport: Equatable, Codable {
         self.selfCheckSupportedCount = selfCheckSupportedCount
         self.selfCheckTotalCount = selfCheckTotalCount
         self.selfCheckMissed = selfCheckMissed
+        self.stages = stages
     }
 
     init(from decoder: Decoder) throws {
@@ -122,6 +131,7 @@ struct ConfidenceReport: Equatable, Codable {
         selfCheckSupportedCount = try container.decodeIfPresent(Int.self, forKey: .selfCheckSupportedCount)
         selfCheckTotalCount = try container.decodeIfPresent(Int.self, forKey: .selfCheckTotalCount)
         selfCheckMissed = try container.decodeIfPresent(Bool.self, forKey: .selfCheckMissed)
+        stages = try container.decodeIfPresent([StageMetric].self, forKey: .stages)
     }
 }
 
@@ -134,7 +144,8 @@ extension ConfidenceVerdict {
         // не «ok», а честное «неизвестно»: пустые constraintChecks отличают выключенный
         // constraint от «есть проверки, но все прошли».
         guard !signals.constraintChecks.isEmpty || signals.redundancy != nil
-                || signals.scoring != nil || signals.selfCheck != nil else {
+                || signals.scoring != nil || signals.selfCheck != nil
+                || !signals.stageParseFailures.isEmpty else {
             return (.unsure, ["ни один подход не включён"])
         }
 
@@ -149,6 +160,13 @@ extension ConfidenceVerdict {
         }
 
         var verdict: ConfidenceVerdict = .ok
+
+        if !signals.stageParseFailures.isEmpty {
+            verdict = worse(verdict, .unsure)
+            for name in signals.stageParseFailures {
+                reasons.append("Стадия «\(name)»: промежуточный ответ не в формате JSON")
+            }
+        }
 
         let softFailures = signals.constraintChecks.filter { $0.severity == .warning && isFail($0.outcome) }
         if !softFailures.isEmpty {

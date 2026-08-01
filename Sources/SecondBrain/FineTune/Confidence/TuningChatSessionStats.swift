@@ -29,6 +29,14 @@ struct TuningChatSessionStats: Equatable {
     var escalationAddedLatency: TimeInterval
     var escalationPromptTokens: Int
     var escalationCompletionTokens: Int
+    /// Сравнение моно/мульти (задача 94) — режим сообщения определяется по показанному
+    /// `report.stages != nil`, latency берётся из его же `metrics.totalLatency`
+    /// (не `fullMetrics`, чтобы эскалация не размывала сравнение чистого primary).
+    var stagedAnswered: Int
+    var stagedOK: Int
+    var monoOK: Int
+    var avgTotalLatencyStaged: TimeInterval?
+    var avgTotalLatencyMono: TimeInterval?
 
     /// Считает по `report` сообщений ассистента; сообщения без отчёта (ошибка, ещё не
     /// снятые) в агрегаты не попадают. Пустой вход/нет отчётов → nil, панель скрыта.
@@ -65,6 +73,11 @@ struct TuningChatSessionStats: Equatable {
         let succeededReports = entries.filter { $0.escalation?.status == .succeeded }.map(\.report)
         let failedCount = entries.filter { $0.escalation?.status == .failed || $0.escalation?.status == .unavailable }.count
 
+        let stagedReports = reports.filter { $0.stages != nil }
+        let monoReports = reports.filter { $0.stages == nil }
+        let stagedLatencies = stagedReports.map { $0.metrics.totalLatency }
+        let monoLatencies = monoReports.map { $0.metrics.totalLatency }
+
         return TuningChatSessionStats(
             answered: reports.count,
             ok: reports.filter { $0.verdict == .ok }.count,
@@ -84,7 +97,12 @@ struct TuningChatSessionStats: Equatable {
             escalationShare: reports.isEmpty ? 0 : Double(succeededReports.count) / Double(reports.count),
             escalationAddedLatency: succeededReports.reduce(0) { $0 + $1.metrics.totalLatency },
             escalationPromptTokens: succeededReports.reduce(0) { $0 + $1.metrics.promptTokens },
-            escalationCompletionTokens: succeededReports.reduce(0) { $0 + $1.metrics.completionTokens })
+            escalationCompletionTokens: succeededReports.reduce(0) { $0 + $1.metrics.completionTokens },
+            stagedAnswered: stagedReports.count,
+            stagedOK: stagedReports.filter { $0.verdict == .ok }.count,
+            monoOK: monoReports.filter { $0.verdict == .ok }.count,
+            avgTotalLatencyStaged: stagedLatencies.isEmpty ? nil : average(stagedLatencies),
+            avgTotalLatencyMono: monoLatencies.isEmpty ? nil : average(monoLatencies))
     }
 
     private static func average(_ values: [TimeInterval]) -> TimeInterval {

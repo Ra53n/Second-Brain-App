@@ -47,12 +47,15 @@ struct TuningChatThread: Codable, Equatable {
     var messages: [TuningChatMessage]
     var pipelineConfig: ConfidencePipelineConfig
     var escalationEnabled: Bool
+    /// Тумблер декомпозиции primary на стадии (задача 94) — зеркально `escalationEnabled`.
+    var stagesEnabled: Bool
 
     init(messages: [TuningChatMessage] = [], pipelineConfig: ConfidencePipelineConfig = .default,
-         escalationEnabled: Bool = false) {
+         escalationEnabled: Bool = false, stagesEnabled: Bool = false) {
         self.messages = messages
         self.pipelineConfig = pipelineConfig
         self.escalationEnabled = escalationEnabled
+        self.stagesEnabled = stagesEnabled
     }
 
     init(from decoder: Decoder) throws {
@@ -60,6 +63,7 @@ struct TuningChatThread: Codable, Equatable {
         messages = try c.decodeIfPresent([TuningChatMessage].self, forKey: .messages) ?? []
         pipelineConfig = try c.decodeIfPresent(ConfidencePipelineConfig.self, forKey: .pipelineConfig) ?? .default
         escalationEnabled = try c.decodeIfPresent(Bool.self, forKey: .escalationEnabled) ?? false
+        stagesEnabled = try c.decodeIfPresent(Bool.self, forKey: .stagesEnabled) ?? false
     }
 }
 
@@ -72,17 +76,22 @@ struct TuningChatDocument: Codable, Equatable {
     /// База чата (задача 92): nil → `MlxServerConfig.defaultModel` (легаси-7B) — решает VM,
     /// не документ, иначе тесты миграции пришлось бы дублировать в двух местах.
     var chatBaseModel: String?
+    /// Стадии primary-декомпозиции (задача 94), per-document: `nil` — дефолтный шаблон
+    /// (`StagedInferenceCore.defaultStages()`), `[]` — пользователь удалил все явно.
+    var stages: [InferenceStage]?
 
     /// Документы до задачи 92 знали только 7B — на неё же мигрируют легаси-ключи тредов.
     /// `MlxServerConfig` в том же таргете, дублировать строку незачем.
     private static let legacyBaseModel = MlxServerConfig.defaultModel
 
     init(threads: [String: TuningChatThread] = [:], modelVariant: String = FineTuneModelVariant.baseline.rawValue,
-         escalationTarget: EscalationTarget? = nil, chatBaseModel: String? = nil) {
+         escalationTarget: EscalationTarget? = nil, chatBaseModel: String? = nil,
+         stages: [InferenceStage]? = nil) {
         self.threads = threads
         self.modelVariant = modelVariant
         self.escalationTarget = escalationTarget
         self.chatBaseModel = chatBaseModel
+        self.stages = stages
     }
 
     /// Миграция задачи 89: старый плоский документ (`messages`/`pipelineConfig` на
@@ -99,6 +108,7 @@ struct TuningChatDocument: Codable, Equatable {
         modelVariant = try c.decodeIfPresent(String.self, forKey: .modelVariant) ?? FineTuneModelVariant.baseline.rawValue
         escalationTarget = try c.decodeIfPresent(EscalationTarget.self, forKey: .escalationTarget)
         chatBaseModel = try c.decodeIfPresent(String.self, forKey: .chatBaseModel)
+        stages = try c.decodeIfPresent([InferenceStage].self, forKey: .stages)
         if let decodedThreads = try c.decodeIfPresent([String: TuningChatThread].self, forKey: .threads) {
             threads = TuningChatDocument.migrateLegacyThreadKeys(decodedThreads)
             return
@@ -143,10 +153,11 @@ struct TuningChatDocument: Codable, Equatable {
         try c.encode(modelVariant, forKey: .modelVariant)
         try c.encodeIfPresent(escalationTarget, forKey: .escalationTarget)
         try c.encodeIfPresent(chatBaseModel, forKey: .chatBaseModel)
+        try c.encodeIfPresent(stages, forKey: .stages)
     }
 
     private enum CodingKeys: String, CodingKey {
-        case threads, modelVariant, messages, pipelineConfig, escalationTarget, chatBaseModel
+        case threads, modelVariant, messages, pipelineConfig, escalationTarget, chatBaseModel, stages
     }
 }
 

@@ -48,12 +48,18 @@ final class TuningChatViewModel: ObservableObject {
             messages = next.messages
             pipelineConfig = next.pipelineConfig
             escalationEnabled = next.escalationEnabled
+            stagesEnabled = next.stagesEnabled
             persistNow()
         }
     }
     @Published var pipelineConfig: ConfidencePipelineConfig
     @Published var escalationEnabled: Bool
     @Published var escalationTarget: EscalationTarget?
+    /// Тумблер декомпозиции primary на стадии (задача 94) — тредовый, зеркально
+    /// `escalationEnabled`.
+    @Published var stagesEnabled: Bool
+    /// Стадии — документные (per document, не per thread): `nil` — дефолтный шаблон.
+    @Published private(set) var stages: [InferenceStage]?
     /// База чата (задача 92) — свойство документа, не варианта: тред baseline↔тюн
     /// сравниваются на ОДНОЙ базе. Мутация — только через `setChatBaseModel(_:)`.
     @Published private(set) var chatBaseModel: String
@@ -116,7 +122,9 @@ final class TuningChatViewModel: ObservableObject {
         messages = activeThread.messages
         pipelineConfig = activeThread.pipelineConfig
         escalationEnabled = activeThread.escalationEnabled
+        stagesEnabled = activeThread.stagesEnabled
         escalationTarget = document.escalationTarget
+        stages = document.stages
     }
 
     /// Тумблер действует только на следующее сообщение (допущение задачи 86) — точка
@@ -145,6 +153,28 @@ final class TuningChatViewModel: ObservableObject {
         persistNow()
     }
 
+    /// Тумблер стадий действует только на следующее сообщение активного треда —
+    /// симметрично `setEscalationEnabled`.
+    func setStagesEnabled(_ enabled: Bool) {
+        stagesEnabled = enabled
+        syncActiveThread()
+        persistNow()
+    }
+
+    /// Стадии — свойство документа: правка/сброс к шаблону (`nil`) переживают
+    /// перезапуск, симметрично `setEscalationTarget`.
+    func setStages(_ newStages: [InferenceStage]?) {
+        stages = newStages
+        syncActiveThread()
+        persistNow()
+    }
+
+    /// Эффективный список стадий для прогона: пользовательский (если задан) с фильтром
+    /// пустых промптов, иначе дефолтный шаблон.
+    var effectiveStages: [InferenceStage] {
+        StagedInferenceCore.effectiveStages(stages ?? StagedInferenceCore.defaultStages())
+    }
+
     /// База чата (задача 92) — смена зеркальна `modelVariant.didSet`: генерация
     /// отменяется (программная смена не должна уронить ответ в чужой тред), старый
     /// тред сохраняется под своим ключом, новый — загружается.
@@ -165,6 +195,7 @@ final class TuningChatViewModel: ObservableObject {
         messages = next.messages
         pipelineConfig = next.pipelineConfig
         escalationEnabled = next.escalationEnabled
+        stagesEnabled = next.stagesEnabled
         persistNow()
     }
 
@@ -211,7 +242,8 @@ final class TuningChatViewModel: ObservableObject {
 
     private func saveThread(for variant: FineTuneModelVariant) {
         threads[threadKey(variant: variant)] = TuningChatThread(
-            messages: messages, pipelineConfig: pipelineConfig, escalationEnabled: escalationEnabled)
+            messages: messages, pipelineConfig: pipelineConfig, escalationEnabled: escalationEnabled,
+            stagesEnabled: stagesEnabled)
     }
 
     var sessionStats: TuningChatSessionStats? {
@@ -289,10 +321,13 @@ final class TuningChatViewModel: ObservableObject {
         let provider = providerFactory(config)
         let system = systemPromptLoader(dataset) ?? ""
         let settings = ChatSettings(model: config.model, temperature: FineTuneRunner.baselineTemperature)
-        let pipeline = ConfidencePipeline(provider: provider, settings: settings, redundancyCount: redundancyCount,
-                                           config: pipelineConfig)
         // Снимок ДО Task: тумблер/цель/конфиг эскалации не должны подхватить
-        // изменение, сделанное пользователем, пока запрос уже летит.
+        // изменение, сделанное пользователем, пока запрос уже летит. Стадии — так же:
+        // пустой эффективный список при включённом тумблере → монолит без бейджа.
+        let primaryStrategy: PrimaryStrategy = (stagesEnabled && !effectiveStages.isEmpty)
+            ? .staged(effectiveStages) : .monolithic
+        let pipeline = ConfidencePipeline(provider: provider, settings: settings, redundancyCount: redundancyCount,
+                                           config: pipelineConfig, primary: primaryStrategy)
         let escalationEnabledSnapshot = escalationEnabled
         let escalationTargetSnapshot = escalationTarget
         let escalationConfig = EscalationCore.escalationPipelineConfig(from: pipelineConfig)
@@ -398,7 +433,7 @@ final class TuningChatViewModel: ObservableObject {
     /// код обязан звать `syncActiveThread()` перед мутацией, которую хочет сохранить.
     private func makeDocument() -> TuningChatDocument {
         TuningChatDocument(threads: threads, modelVariant: modelVariant.rawValue,
-                          escalationTarget: escalationTarget, chatBaseModel: chatBaseModel)
+                          escalationTarget: escalationTarget, chatBaseModel: chatBaseModel, stages: stages)
     }
 
     // MARK: - Батч-прогон (задача 85, критерий 6)

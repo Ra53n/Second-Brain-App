@@ -56,6 +56,16 @@
   `.localTuned` ДО контакта с реестром через инжектируемый строитель `localTune`
   (в AppModel — `TuneSelection.selectTunedRun` по датасету meetings). Незнакомый/
   отсутствующий `kind` (файлы эпохи 91) декодируется в `.registry` молча.
+- `Confidence/StagedInference` (P1, задача 94) — декомпозиция primary-запроса на цепочку
+  дешёвых стадий (говорящие → задачи с исполнителями → сроки → сборка), compact JSON между
+  ними. `ConfidencePipeline.primary: PrimaryStrategy` (`.monolithic`/`.staged`) переключает
+  только сборку primary-ответа: constraint/scoring/self-check и редьюсер видят единый
+  `primaryText`. Redundancy повторяет ТОЛЬКО финальную стадию (не всю цепочку); непарсибельный
+  compact-ответ промежуточной стадии не роняет запрос — `parseOk=false` идёт в
+  `ConfidenceSignals.stageParseFailures`, редьюсер не поднимает вердикт выше UNSURE, финальную
+  стадию и так проверяет constraint. Батч (`ConfidenceBatchRunner`) и эскалация (второй прогон
+  `ConfidencePipeline`) не передают `primary` — остаются монолитом: сильной модели или прогону
+  на всём датасете декомпозиция не нужна.
 - `TuneSelection` (P1, задача 92) — мульти-модельные тюны одного датасета: `adapterDir(model:)`
   каталог нового прогона (`adapters/<slug>`, санитизация в `adapterDirName`),
   `selectTunedRun` — последний `.finished` прогон workdir+базы для чата `.tuned`,

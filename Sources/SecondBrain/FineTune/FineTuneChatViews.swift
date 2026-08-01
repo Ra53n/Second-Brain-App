@@ -16,6 +16,7 @@ struct FineTuneChatDetailView: View {
     @ObservedObject var registry: ProviderRegistry
 
     @State private var reportsSnapshot: TuningChatViewModel.BatchReportsSnapshot?
+    @State private var showsStageEditor = false
 
     var body: some View {
         Group {
@@ -152,6 +153,9 @@ struct FineTuneChatDetailView: View {
                             MessageBubble(message: chatMessage(for: message))
                             if let report = message.report {
                                 ConfidenceVerdictChip(report: report)
+                                if let stages = report.stages {
+                                    StagesBadge(stages: stages)
+                                }
                             }
                             if let escalation = message.escalation {
                                 EscalationBadge(record: escalation, shownVerdict: message.report?.verdict)
@@ -192,6 +196,12 @@ struct FineTuneChatDetailView: View {
                                             last.metrics.primaryLatency, last.metrics.totalLatency,
                                             formattedTokens(last.metrics.promptTokens),
                                             formattedTokens(last.metrics.completionTokens)))
+                            }
+                        }
+                        if let stages = last.stages {
+                            GridRow {
+                                Text("")
+                                Text(stagesLine(stages)).foregroundStyle(.secondary).lineLimit(1)
                             }
                         }
                         if let escalation = viewModel.lastEscalation {
@@ -244,6 +254,12 @@ struct FineTuneChatDetailView: View {
                                         formattedTokens(stats.escalationPromptTokens + stats.escalationCompletionTokens)))
                         }
                     }
+                    if stats.stagedAnswered > 0 {
+                        GridRow {
+                            Text("Стадии").foregroundStyle(.secondary)
+                            Text(stagesSessionLine(stats)).lineLimit(1)
+                        }
+                    }
                 }
                 .font(.caption)
             } else {
@@ -291,12 +307,41 @@ struct FineTuneChatDetailView: View {
         }
     }
 
+    /// Разбивка «Последний запрос» по стадиям: имя + latency, ⚠ перед именем стадии,
+    /// чей compact-JSON не распарсился (P6 — сигнал виден, запрос не провален).
+    private func stagesLine(_ stages: [StageMetric]) -> String {
+        "стадии: " + stages.map { stage in
+            let mark = stage.parseOk ? "" : "⚠ "
+            return "\(mark)\(stage.name) \(String(format: "%.1f", stage.latency)) с"
+        }.joined(separator: " · ")
+    }
+
+    /// Сравнение моно/мульти за сессию: OK и latency стадийных ответов против
+    /// монолитных. `avgTotalLatencyMono` пуст, если моно-ответов в сессии не было —
+    /// тогда сравнение с "против" опускается, не деля на несуществующую группу.
+    private func stagesSessionLine(_ stats: TuningChatSessionStats) -> String {
+        let monoCount = stats.answered - stats.stagedAnswered
+        var parts = ["\(stats.stagedAnswered) из \(stats.answered)"]
+        if monoCount > 0 {
+            parts.append("OK \(stats.stagedOK)/\(stats.stagedAnswered) против \(stats.monoOK)/\(monoCount) моно")
+        } else {
+            parts.append("OK \(stats.stagedOK)/\(stats.stagedAnswered)")
+        }
+        if let staged = stats.avgTotalLatencyStaged, let mono = stats.avgTotalLatencyMono {
+            parts.append(String(format: "latency %.1f с против %.1f с", staged, mono))
+        } else if let staged = stats.avgTotalLatencyStaged {
+            parts.append(String(format: "latency %.1f с", staged))
+        }
+        return parts.joined(separator: " · ")
+    }
+
     private func sessionStatsAccessibilityValue(_ stats: TuningChatSessionStats,
                                                  lastReport: ConfidenceReport?,
                                                  lastEscalation: EscalationRecord?,
                                                  variant: FineTuneModelVariant) -> String {
-        let last = lastReport.map {
-            "последний запрос: \($0.verdict.uiLabel), вызовов \($0.metrics.totalCalls); "
+        let last = lastReport.map { report -> String in
+            let stagesNote = report.stages.map { ", стадий \($0.count)" } ?? ""
+            return "последний запрос: \(report.verdict.uiLabel), вызовов \(report.metrics.totalCalls)\(stagesNote); "
         } ?? ""
         let escalationLast: String
         if let lastReport, let lastEscalation {
@@ -307,7 +352,10 @@ struct FineTuneChatDetailView: View {
         let escalationSession = (stats.escalatedCount + stats.escalationFailedCount) > 0
             ? "эскалаций \(stats.escalatedCount), неудач \(stats.escalationFailedCount); "
             : ""
-        return "статистика (\(variantLabel(variant))): \(last)\(escalationLast)\(escalationSession)" +
+        let stagesSession = stats.stagedAnswered > 0
+            ? "стадии: \(stats.stagedAnswered) \(RussianPlural.form(stats.stagedAnswered, "ответ", "ответа", "ответов")); "
+            : ""
+        return "статистика (\(variantLabel(variant))): \(last)\(escalationLast)\(escalationSession)\(stagesSession)" +
         "сессия: отвечено \(stats.answered), отклонено \(stats.rejected), " +
         "повторный инференс \(stats.needingReinference), доп. вызовов \(stats.extraCallsTotal), " +
         "наценка latency ×\(String(format: "%.2f", stats.latencyFactor))"
@@ -341,6 +389,22 @@ struct FineTuneChatDetailView: View {
                 viewModel.setEscalationEnabled(on)
             }
             .help("UNSURE/FAIL дешёвой модели повторяется на выбранной сильной; при всех выключенных проверках вердикт всегда UNSURE — эскалация сработает на каждом сообщении")
+            pipelineChip("Стадии", isOn: viewModel.stagesEnabled) { on in
+                viewModel.setStagesEnabled(on)
+            }
+            .help("Первичный запрос идёт цепочкой коротких стадий (говорящие → задачи → сроки → сборка); проверки уверенности и эскалация работают поверх итога")
+            Button {
+                showsStageEditor = true
+            } label: {
+                Image(systemName: "slider.horizontal.3")
+            }
+            .buttonStyle(.plain)
+            .disabled(viewModel.isGenerating)
+            .accessibilityValue("Настроить стадии")
+            .help("Настроить стадии: имя и промпт, порядок, сброс к шаблону")
+            .sheet(isPresented: $showsStageEditor) {
+                StageEditorSheet(viewModel: viewModel)
+            }
             Spacer()
         }
         .padding(.horizontal, 10)
@@ -682,6 +746,27 @@ private struct EscalationBadge: View {
             return record.failureReason ?? "причина неизвестна"
         }
     }
+}
+
+/// Бейдж разбивки primary по стадиям (задача 94): показывает, что ответ собран
+/// цепочкой, а не одним запросом. Оранжевый — хотя бы одна промежуточная стадия
+/// не распарсилась (`parseOk == false`), иначе синий.
+private struct StagesBadge: View {
+    let stages: [StageMetric]
+
+    var body: some View {
+        Text("\(stages.count) \(RussianPlural.form(stages.count, "стадия", "стадии", "стадий"))")
+            .font(.caption.bold())
+            .padding(.horizontal, 8)
+            .padding(.vertical, 2)
+            .background(Capsule().fill(color.opacity(0.18)))
+            .foregroundStyle(color)
+            .accessibilityValue("стадий: \(stages.count)")
+    }
+
+    private var hasParseFailure: Bool { stages.contains { !$0.parseOk } }
+
+    private var color: Color { hasParseFailure ? .orange : .blue }
 }
 
 // Единый маппинг вердикта в подпись и цвет — используется и чипом сообщения,
