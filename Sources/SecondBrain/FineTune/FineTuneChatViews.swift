@@ -69,7 +69,7 @@ struct FineTuneChatDetailView: View {
             .buttonStyle(.plain)
             .foregroundStyle(.secondary)
             .accessibilityValue("Очистить чат")
-            .help("Удалить историю, обнулить статистику сессии и отменить текущую генерацию или батч")
+            .help("Удалить историю текущего треда (Базовая/Тюн), обнулить статистику сессии и отменить текущую генерацию или батч")
             .disabled(viewModel.messages.isEmpty && !viewModel.isGenerating)
         }
         .padding(.horizontal, 10)
@@ -94,9 +94,13 @@ struct FineTuneChatDetailView: View {
         }
     }
 
+    private func variantLabel(_ variant: FineTuneModelVariant) -> String {
+        variant == .baseline ? "Базовая" : "Тюн"
+    }
+
     private func variantButton(_ variant: FineTuneModelVariant) -> some View {
         let isActive = viewModel.modelVariant == variant
-        let label = variant == .baseline ? "Базовая" : "Тюн"
+        let label = variantLabel(variant)
         return Button {
             viewModel.modelVariant = variant
         } label: {
@@ -147,7 +151,7 @@ struct FineTuneChatDetailView: View {
     private var sessionStatsSection: some View {
         let stats = viewModel.sessionStats // один вызов на проход body (computed по сообщениям)
         return VStack(alignment: .leading, spacing: 6) {
-            Text("Статистика сессии").font(.caption.bold())
+            Text("Статистика сессии — \(variantLabel(viewModel.modelVariant))").font(.caption.bold())
             if let stats {
                 HStack(spacing: 6) {
                     statChip("Ответов: \(stats.answered)", color: .secondary)
@@ -190,8 +194,8 @@ struct FineTuneChatDetailView: View {
         // Голый VStack не гарантированно всплывает в AX-дерево — схлопываем в один
         // элемент, чтобы value доходил до System Events (замечание ревью задачи 88).
         .accessibilityElement(children: .combine)
-        .accessibilityValue(stats.map(sessionStatsAccessibilityValue)
-                            ?? "статистика сессии: пока нет ответов")
+        .accessibilityValue(stats.map { sessionStatsAccessibilityValue($0, variant: viewModel.modelVariant) }
+                            ?? "статистика сессии (\(variantLabel(viewModel.modelVariant))): пока нет ответов")
         .padding(.horizontal, 10)
         .padding(.vertical, 6)
     }
@@ -209,8 +213,9 @@ struct FineTuneChatDetailView: View {
         value.formatted(.number.grouping(.automatic).locale(Locale(identifier: "ru_RU")))
     }
 
-    private func sessionStatsAccessibilityValue(_ stats: TuningChatSessionStats) -> String {
-        "статистика сессии: отвечено \(stats.answered), отклонено \(stats.rejected), " +
+    private func sessionStatsAccessibilityValue(_ stats: TuningChatSessionStats,
+                                                 variant: FineTuneModelVariant) -> String {
+        "статистика сессии (\(variantLabel(variant))): отвечено \(stats.answered), отклонено \(stats.rejected), " +
         "повторный инференс \(stats.needingReinference), доп. вызовов \(stats.extraCallsTotal), " +
         "наценка latency ×\(String(format: "%.2f", stats.latencyFactor))"
     }

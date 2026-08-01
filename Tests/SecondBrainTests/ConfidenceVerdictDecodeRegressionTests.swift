@@ -60,9 +60,10 @@ final class ConfidenceVerdictDecodeRegressionTests: XCTestCase {
         try Data(json.utf8).write(to: url)
 
         let loaded = TuningChatPersistence.load(from: url)
-        XCTAssertEqual(loaded.messages.count, 2, "оба сообщения читаются, не карантин целиком")
-        XCTAssertEqual(loaded.messages[0].content, "старое сообщение")
-        XCTAssertEqual(loaded.messages[1].report?.verdict, .unsure)
+        let baselineThread = try XCTUnwrap(loaded.threads[FineTuneModelVariant.baseline.rawValue])
+        XCTAssertEqual(baselineThread.messages.count, 2, "оба сообщения читаются, не карантин целиком")
+        XCTAssertEqual(baselineThread.messages[0].content, "старое сообщение")
+        XCTAssertEqual(baselineThread.messages[1].report?.verdict, .unsure)
         XCTAssertFalse(FileManager.default.fileExists(
             atPath: url.deletingPathExtension().appendingPathExtension("corrupt.json").path),
             "документ не карантинится из-за незнакомого вердикта одного сообщения")

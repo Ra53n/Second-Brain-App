@@ -1,6 +1,8 @@
 // TuningChatViewModelTests.swift — мини-чат тюнинга (задача 85, P5): guard тюна/baseline,
 // adapterMissing на `.tuned` без адаптера, успешный send добавляет 2 сообщения и
 // персистит, clearChat во время генерации не роняет и не воскрешает поздний ответ.
+// Задача 89: независимость тредов по варианту — история/конфиг/статистика не текут
+// между baseline и tuned, переключение варианта возвращает всё без потерь.
 
 import XCTest
 @testable import SecondBrain
@@ -28,13 +30,16 @@ final class TuningChatViewModelTests: XCTestCase {
     }
 
     /// Сервер, у которого спавн/health всегда успешны — реальный Process не запускается.
+    /// Health отслеживает `isRunning` спавненного мока (не голый bool-флаг): задача 89
+    /// переключает варианты внутри одного теста, и после `stopNow()` (смена конфига)
+    /// порт обязан снова выглядеть свободным для следующего `ensureRunning`.
     private func makeReadyServer() -> MlxServerManager {
-        var spawned = false
+        var process: MockManagedProcess?
         return MlxServerManager(
             registry: BackgroundProcessRegistry(),
             idlePolicy: IdleShutdownPolicy(timeout: 600, clock: { 0 }),
-            spawn: { _, _ in spawned = true; return MockManagedProcess() },
-            health: { _ in spawned },
+            spawn: { _, _ in let p = MockManagedProcess(); process = p; return p },
+            health: { _ in process?.isRunning ?? false },
             pythonResolver: { URL(fileURLWithPath: "/fake/python3") },
             healthRetryDelay: 0)
     }
@@ -105,7 +110,7 @@ final class TuningChatViewModelTests: XCTestCase {
         XCTAssertNil(vm.errorText)
 
         let persisted = TuningChatPersistence.load(from: fileURL)
-        XCTAssertEqual(persisted.messages.count, 2)
+        XCTAssertEqual(persisted.threads[FineTuneModelVariant.baseline.rawValue]?.messages.count, 2)
     }
 
     /// Дефолт задачи 86 — только constraint: `send()` без явного включения тумблеров
@@ -140,7 +145,8 @@ final class TuningChatViewModelTests: XCTestCase {
             fileURL: fileURL)
         vm.setPipelineConfig(.allEnabled)
 
-        XCTAssertEqual(TuningChatPersistence.load(from: fileURL).pipelineConfig, .allEnabled)
+        XCTAssertEqual(TuningChatPersistence.load(from: fileURL).threads[FineTuneModelVariant.baseline.rawValue]?.pipelineConfig,
+                       .allEnabled)
 
         vm.input = "фрагмент встречи"
         await vm.send()
@@ -295,6 +301,33 @@ final class TuningChatViewModelTests: XCTestCase {
                        "после clearChat() ни один следующий вызов пайплайна не должен прийти")
     }
 
+    // Задача 89 (ревью, P5): программная смена варианта во время генерации не должна
+    // уронить ответ в чужой тред — прогон отменяется, как при clearChat().
+    func testSwitchingVariantDuringGenerationCancelsAndKeepsThreadsClean() async throws {
+        let dataset = makeDataset(withTunedAdapter: true)
+        let provider = MockChatProvider(responses: ["{\"action_items\":[]}"])
+        provider.delay = 0.2
+        let vm = TuningChatViewModel(
+            server: makeReadyServer(),
+            providerFactory: { _ in provider },
+            dataset: { dataset },
+            isTuneOrBaselineActive: { false },
+            fileURL: tempFileURL())
+        vm.input = "фрагмент встречи"
+
+        let task = Task { await vm.send() }
+        try? await Task.sleep(nanoseconds: 50_000_000) // основной вызов в полёте
+        vm.modelVariant = .tuned
+        await task.value
+
+        XCTAssertFalse(vm.isGenerating, "смена варианта отменяет прогон")
+        XCTAssertTrue(vm.messages.isEmpty, "tuned-тред пуст — ответ baseline в него не упал")
+        XCTAssertEqual(vm.threads[FineTuneModelVariant.tuned.rawValue]?.messages.count ?? 0, 0)
+        // Ответ не дописался и в baseline-тред: прогон отменён до завершения.
+        let baselineMessages = vm.threads[FineTuneModelVariant.baseline.rawValue]?.messages ?? []
+        XCTAssertEqual(baselineMessages.filter { $0.role == "assistant" }.count, 0)
+    }
+
     // Задача 87: кнопка «Очистить чат» доступна и во время батча — отменённый прогон
     // обязан сбросить batchProgress/batchErrorText (иначе счётчик «N/M» замерзает:
     // гейт `gen == chatGen` в catch после бампа поколения сам их не сбросит).
@@ -327,6 +360,116 @@ final class TuningChatViewModelTests: XCTestCase {
         // Критерий 2 задачи 87 проверяем в данных (дешевле и надёжнее UI): после
         // очистки на диске персистится пустая история.
         let document = TuningChatPersistence.load(from: fileURL)
-        XCTAssertTrue(document.messages.isEmpty, "после очистки finetune-chat.json хранит пустую историю")
+        XCTAssertTrue(document.threads[FineTuneModelVariant.baseline.rawValue]?.messages.isEmpty ?? true,
+                      "после очистки finetune-chat.json хранит пустую историю активного треда")
+    }
+
+    // MARK: - Задача 89: раздельные треды по варианту
+
+    /// `send()` в baseline-треде не должен трогать tuned-тред — независимость на диске.
+    func testSendInBaselineDoesNotTouchTunedThreadOnDisk() async {
+        let dataset = makeDataset()
+        let fileURL = tempFileURL()
+        let vm = TuningChatViewModel(
+            server: makeReadyServer(),
+            providerFactory: { _ in MockChatProvider(responses: ["{\"action_items\":[]}"]) },
+            dataset: { dataset },
+            isTuneOrBaselineActive: { false },
+            fileURL: fileURL)
+        vm.input = "фрагмент встречи"
+        await vm.send()
+
+        XCTAssertEqual(vm.messages.count, 2)
+        let persisted = TuningChatPersistence.load(from: fileURL)
+        XCTAssertTrue(persisted.threads[FineTuneModelVariant.tuned.rawValue]?.messages.isEmpty ?? true,
+                      "tuned-тред не тронут отправкой в baseline")
+    }
+
+    /// Переключение варианта меняет `messages`/`pipelineConfig` на свои для варианта и
+    /// возвращает всё без потерь при переключении обратно.
+    func testSwitchingVariantSwapsProjectionsWithoutLoss() async {
+        let dataset = makeDataset(withTunedAdapter: true)
+        let vm = TuningChatViewModel(
+            server: makeReadyServer(),
+            providerFactory: { _ in MockChatProvider(responses: ["{\"action_items\":[]}"]) },
+            dataset: { dataset },
+            isTuneOrBaselineActive: { false },
+            fileURL: tempFileURL())
+        vm.input = "фрагмент из baseline"
+        await vm.send()
+        XCTAssertEqual(vm.messages.count, 2)
+        let baselineMessages = vm.messages
+
+        vm.modelVariant = .tuned
+        XCTAssertTrue(vm.messages.isEmpty, "у tuned свежий тред — история baseline не видна")
+        XCTAssertEqual(vm.pipelineConfig, .default)
+
+        vm.setPipelineConfig(.allEnabled)
+        vm.input = "фрагмент из тюна"
+        await vm.send()
+        XCTAssertEqual(vm.messages.count, 2)
+        let tunedMessages = vm.messages
+
+        vm.modelVariant = .baseline
+        XCTAssertEqual(vm.messages.map(\.content), baselineMessages.map(\.content),
+                       "возврат в baseline восстанавливает его историю без потерь")
+        XCTAssertEqual(vm.pipelineConfig, .default, "baseline-конфиг не тронут переключением тюна")
+
+        vm.modelVariant = .tuned
+        XCTAssertEqual(vm.messages.map(\.content), tunedMessages.map(\.content),
+                       "возврат в tuned восстанавливает его историю без потерь")
+        XCTAssertEqual(vm.pipelineConfig, .allEnabled, "tuned-конфиг пережил переключение туда-обратно")
+    }
+
+    /// `clearChat()` чистит только активный тред — второй остаётся целым и в памяти, и на диске.
+    func testClearChatClearsOnlyActiveThreadSecondThreadIntact() async {
+        let dataset = makeDataset(withTunedAdapter: true)
+        let fileURL = tempFileURL()
+        let vm = TuningChatViewModel(
+            server: makeReadyServer(),
+            providerFactory: { _ in MockChatProvider(responses: ["{\"action_items\":[]}"]) },
+            dataset: { dataset },
+            isTuneOrBaselineActive: { false },
+            fileURL: fileURL)
+        vm.input = "фрагмент из baseline"
+        await vm.send()
+        XCTAssertEqual(vm.messages.count, 2)
+
+        vm.modelVariant = .tuned
+        vm.input = "фрагмент из тюна"
+        await vm.send()
+        XCTAssertEqual(vm.messages.count, 2)
+
+        vm.clearChat()
+        XCTAssertTrue(vm.messages.isEmpty, "активный (tuned) тред очищен")
+
+        vm.modelVariant = .baseline
+        XCTAssertEqual(vm.messages.count, 2, "baseline-тред цел в памяти")
+
+        let persisted = TuningChatPersistence.load(from: fileURL)
+        XCTAssertEqual(persisted.threads[FineTuneModelVariant.baseline.rawValue]?.messages.count, 2,
+                       "baseline-тред цел на диске")
+        XCTAssertTrue(persisted.threads[FineTuneModelVariant.tuned.rawValue]?.messages.isEmpty ?? true,
+                      "tuned-тред очищен на диске")
+    }
+
+    /// `setPipelineConfig()` пишет только в тред активного варианта.
+    func testSetPipelineConfigWritesOnlyActiveThread() {
+        let fileURL = tempFileURL()
+        let vm = TuningChatViewModel(
+            server: makeReadyServer(),
+            providerFactory: { _ in MockChatProvider(responses: ["{\"action_items\":[]}"]) },
+            dataset: { self.makeDataset() },
+            isTuneOrBaselineActive: { false },
+            fileURL: fileURL)
+
+        vm.setPipelineConfig(.allEnabled)
+        XCTAssertEqual(vm.pipelineConfig, .allEnabled)
+
+        vm.modelVariant = .tuned
+        XCTAssertEqual(vm.pipelineConfig, .default, "tuned-тред не тронут setPipelineConfig в baseline")
+
+        let persisted = TuningChatPersistence.load(from: fileURL)
+        XCTAssertEqual(persisted.threads[FineTuneModelVariant.baseline.rawValue]?.pipelineConfig, .allEnabled)
     }
 }

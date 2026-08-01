@@ -38,23 +38,71 @@ struct TuningChatMessage: Identifiable, Codable, Equatable {
     }
 }
 
-struct TuningChatDocument: Codable, Equatable {
+/// История и тумблеры пайплайна одного варианта модели (задача 89) — ключ в
+/// `TuningChatDocument.threads` это `FineTuneModelVariant.rawValue`.
+struct TuningChatThread: Codable, Equatable {
     var messages: [TuningChatMessage]
-    var modelVariant: String
     var pipelineConfig: ConfidencePipelineConfig
 
-    init(messages: [TuningChatMessage] = [], modelVariant: String = FineTuneModelVariant.baseline.rawValue,
-         pipelineConfig: ConfidencePipelineConfig = .default) {
+    init(messages: [TuningChatMessage] = [], pipelineConfig: ConfidencePipelineConfig = .default) {
         self.messages = messages
-        self.modelVariant = modelVariant
         self.pipelineConfig = pipelineConfig
     }
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         messages = try c.decodeIfPresent([TuningChatMessage].self, forKey: .messages) ?? []
-        modelVariant = try c.decodeIfPresent(String.self, forKey: .modelVariant) ?? FineTuneModelVariant.baseline.rawValue
         pipelineConfig = try c.decodeIfPresent(ConfidencePipelineConfig.self, forKey: .pipelineConfig) ?? .default
+    }
+}
+
+struct TuningChatDocument: Codable, Equatable {
+    var threads: [String: TuningChatThread]
+    var modelVariant: String
+
+    init(threads: [String: TuningChatThread] = [:], modelVariant: String = FineTuneModelVariant.baseline.rawValue) {
+        self.threads = threads
+        self.modelVariant = modelVariant
+    }
+
+    /// Миграция задачи 89: старый плоский документ (`messages`/`pipelineConfig` на
+    /// верхнем уровне) не терял историю — она целиком уезжает в тред `modelVariant`,
+    /// конфиг копируется в оба треда, чтобы второй вариант не грузился с чужого дефолта.
+    /// Незнакомый вариант в `threads` («значение из будущего») декодируется в словарь
+    /// как есть (ключ — `String`, не enum) — падения нет, известные треды целы.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        modelVariant = try c.decodeIfPresent(String.self, forKey: .modelVariant) ?? FineTuneModelVariant.baseline.rawValue
+        if let decodedThreads = try c.decodeIfPresent([String: TuningChatThread].self, forKey: .threads) {
+            threads = decodedThreads
+            return
+        }
+        let messages = try c.decodeIfPresent([TuningChatMessage].self, forKey: .messages) ?? []
+        let pipelineConfig = try c.decodeIfPresent(ConfidencePipelineConfig.self, forKey: .pipelineConfig) ?? .default
+        // `{}` (или отсутствующий файл) не должен раздуваться в два синтетических
+        // дефолтных треда — по-настоящему пустой документ остаётся пустым.
+        // Плоский документ с незнакомым modelVariant («из будущего») мигрирует в тред
+        // этого ключа: история цела на диске, но невидима, пока VM не узнает вариант.
+        guard !messages.isEmpty || pipelineConfig != .default else {
+            threads = [:]
+            return
+        }
+        var migrated: [String: TuningChatThread] = [
+            FineTuneModelVariant.baseline.rawValue: TuningChatThread(pipelineConfig: pipelineConfig),
+            FineTuneModelVariant.tuned.rawValue: TuningChatThread(pipelineConfig: pipelineConfig),
+        ]
+        migrated[modelVariant] = TuningChatThread(messages: messages, pipelineConfig: pipelineConfig)
+        threads = migrated
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(threads, forKey: .threads)
+        try c.encode(modelVariant, forKey: .modelVariant)
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case threads, modelVariant, messages, pipelineConfig
     }
 }
 

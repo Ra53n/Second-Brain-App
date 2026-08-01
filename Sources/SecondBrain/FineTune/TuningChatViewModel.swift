@@ -2,6 +2,11 @@
 // (задача 85). P5: `chatGen` — сверка после каждого await, clearChat() во время
 // генерации инвалидирует её без падения. Redundancy = 3 полных ответа без
 // стриминга — temperature 0.3, как снятие baseline (FineTuneRunner.baselineTemperature).
+//
+// Задача 89: `threads` (по варианту модели) — источник истины; `messages`/
+// `pipelineConfig` остаются `@Published`-проекциями активного треда, чтобы не
+// трогать вьюхи и тесты, завязанные на них. Единственная точка записи в тред —
+// `syncActiveThread()`, зовётся после каждой мутации проекций перед `persistNow()`.
 
 import Foundation
 
@@ -9,8 +14,31 @@ import Foundation
 final class TuningChatViewModel: ObservableObject {
     @Published var messages: [TuningChatMessage]
     @Published var input: String = ""
-    @Published var modelVariant: FineTuneModelVariant
+    @Published var modelVariant: FineTuneModelVariant {
+        didSet {
+            // Guard от повторного значения (SwiftUI шлёт то же значение при перерисовке)
+            // и от бессмысленной пересинхронизации: без него каждый лишний didSet
+            // затирал бы тред oldValue его же неизменёнными данными.
+            guard modelVariant != oldValue else { return }
+            // P5: UI блокирует переключение при генерации, но модель не полагается на
+            // вёрстку — иначе программная смена варианта уронила бы ответ в чужой тред
+            // (gen-гейт прошёл бы: chatGen не менялся). Зеркально clearChat().
+            if isGenerating {
+                chatGen += 1
+                generationTask?.cancel()
+                generationTask = nil
+                isGenerating = false
+                progressText = nil
+            }
+            saveThread(for: oldValue)
+            let next = threads[modelVariant.rawValue] ?? TuningChatThread()
+            messages = next.messages
+            pipelineConfig = next.pipelineConfig
+            persistNow()
+        }
+    }
     @Published var pipelineConfig: ConfidencePipelineConfig
+    @Published private(set) var threads: [String: TuningChatThread]
     @Published private(set) var isGenerating = false
     @Published var progressText: String?
     @Published var errorText: String?
@@ -51,16 +79,30 @@ final class TuningChatViewModel: ObservableObject {
         self.redundancyCount = redundancyCount
 
         let document = TuningChatPersistence.load(from: fileURL)
-        messages = document.messages
-        modelVariant = FineTuneModelVariant(rawValue: document.modelVariant) ?? .baseline
-        pipelineConfig = document.pipelineConfig
+        threads = document.threads
+        let variant = FineTuneModelVariant(rawValue: document.modelVariant) ?? .baseline
+        modelVariant = variant
+        let activeThread = document.threads[variant.rawValue] ?? TuningChatThread()
+        messages = activeThread.messages
+        pipelineConfig = activeThread.pipelineConfig
     }
 
     /// Тумблер действует только на следующее сообщение (допущение задачи 86) — точка
     /// изменения нужна одна, чтобы выбор пережил перезапуск.
     func setPipelineConfig(_ config: ConfidencePipelineConfig) {
         pipelineConfig = config
+        syncActiveThread()
         persistNow()
+    }
+
+    /// Пишет проекции (`messages`/`pipelineConfig`) в тред активного варианта — единая
+    /// точка синхронизации перед каждым `persistNow()`.
+    private func syncActiveThread() {
+        saveThread(for: modelVariant)
+    }
+
+    private func saveThread(for variant: FineTuneModelVariant) {
+        threads[variant.rawValue] = TuningChatThread(messages: messages, pipelineConfig: pipelineConfig)
     }
 
     var sessionStats: TuningChatSessionStats? {
@@ -105,6 +147,7 @@ final class TuningChatViewModel: ObservableObject {
         progressText = nil
         input = ""
         messages.append(TuningChatMessage(role: "user", content: text))
+        syncActiveThread()
         persistNow()
 
         let config = MlxServerConfig(adapterPath: adapterPath)
@@ -133,6 +176,7 @@ final class TuningChatViewModel: ObservableObject {
                 isGenerating = false
                 progressText = nil
                 generationTask = nil
+                syncActiveThread()
                 persistNow()
             } catch is CancellationError {
                 guard gen == chatGen else { return }
@@ -164,6 +208,7 @@ final class TuningChatViewModel: ObservableObject {
         batchProgress = nil
         batchErrorText = nil
         isGenerating = false
+        syncActiveThread()
         persistNow()
     }
 
@@ -172,9 +217,13 @@ final class TuningChatViewModel: ObservableObject {
     }
 
     func persistNow() {
-        TuningChatPersistence.save(
-            TuningChatDocument(messages: messages, modelVariant: modelVariant.rawValue,
-                                pipelineConfig: pipelineConfig), to: fileURL)
+        TuningChatPersistence.save(makeDocument(), to: fileURL)
+    }
+
+    /// Общая точка сборки документа (паттерн `FineTuneStore.makeDocument`) — вызывающий
+    /// код обязан звать `syncActiveThread()` перед мутацией, которую хочет сохранить.
+    private func makeDocument() -> TuningChatDocument {
+        TuningChatDocument(threads: threads, modelVariant: modelVariant.rawValue)
     }
 
     // MARK: - Батч-прогон (задача 85, критерий 6)
