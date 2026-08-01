@@ -55,7 +55,8 @@ final class RedundancyAgreementDecodeRegressionTests: XCTestCase {
         try Data(json.utf8).write(to: url)
 
         let loaded = TuningChatPersistence.load(from: url)
-        let baselineThread = try XCTUnwrap(loaded.threads[FineTuneModelVariant.baseline.rawValue])
+        let baselineThread = try XCTUnwrap(
+            loaded.threads["\(FineTuneModelVariant.baseline.rawValue)|\(MlxServerConfig.defaultModel)"])
         XCTAssertEqual(baselineThread.messages.count, 2, "оба сообщения читаются, не карантин целиком")
         XCTAssertEqual(baselineThread.messages[0].content, "старое сообщение")
         XCTAssertEqual(baselineThread.messages[1].report?.redundancy, .disagree)

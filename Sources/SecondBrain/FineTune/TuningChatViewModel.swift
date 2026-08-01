@@ -13,6 +13,13 @@
 // свойство окружения, не варианта). Вторая ступень — обычный `ConfidencePipeline`
 // поверх резолвнутого провайдера, `CancellationError` перебрасывается наверх и не
 // деградирует в `.failed` (P5-отмена).
+//
+// Задача 92: ключ треда — `"<variant>|<chatBaseModel>"` (`threadKey`), база чата
+// выбирается пикером (`chatBaseModel`, зеркально `modelVariant` — тот же P5-гейт
+// отмены генерации и saveThread/persistNow). `.tuned` резолвится через
+// `TuneSelection.selectTunedRun` по инжектированным `runs()`, легаси-путь
+// (`adapters/adapters.safetensors` без per-model подкаталога) — только когда
+// `TuneSelection.legacyAdapterFallback` разрешает.
 
 import Foundation
 
@@ -37,7 +44,7 @@ final class TuningChatViewModel: ObservableObject {
                 progressText = nil
             }
             saveThread(for: oldValue)
-            let next = threads[modelVariant.rawValue] ?? TuningChatThread()
+            let next = threads[threadKey(variant: modelVariant)] ?? TuningChatThread()
             messages = next.messages
             pipelineConfig = next.pipelineConfig
             escalationEnabled = next.escalationEnabled
@@ -47,6 +54,9 @@ final class TuningChatViewModel: ObservableObject {
     @Published var pipelineConfig: ConfidencePipelineConfig
     @Published var escalationEnabled: Bool
     @Published var escalationTarget: EscalationTarget?
+    /// База чата (задача 92) — свойство документа, не варианта: тред baseline↔тюн
+    /// сравниваются на ОДНОЙ базе. Мутация — только через `setChatBaseModel(_:)`.
+    @Published private(set) var chatBaseModel: String
     @Published private(set) var threads: [String: TuningChatThread]
     @Published private(set) var isGenerating = false
     @Published var progressText: String?
@@ -61,6 +71,7 @@ final class TuningChatViewModel: ObservableObject {
     private let server: MlxServerManager
     private let providerFactory: (MlxServerConfig) -> ChatProvider
     private let dataset: () -> FineTuneDataset?
+    private let runs: () -> [FineTuneRun]
     private let isTuneOrBaselineActive: () -> Bool
     private let fileURL: URL
     private let systemPromptLoader: (FineTuneDataset) -> String?
@@ -76,6 +87,7 @@ final class TuningChatViewModel: ObservableObject {
     init(server: MlxServerManager,
          providerFactory: @escaping (MlxServerConfig) -> ChatProvider = { MlxChatProvider(port: $0.port) },
          dataset: @escaping () -> FineTuneDataset?,
+         runs: @escaping () -> [FineTuneRun] = { [] },
          isTuneOrBaselineActive: @escaping () -> Bool,
          fileURL: URL = TuningChatPersistence.defaultFileURL,
          systemPromptLoader: @escaping (FineTuneDataset) -> String? = TuningChatViewModel.defaultSystemPromptLoader,
@@ -86,6 +98,7 @@ final class TuningChatViewModel: ObservableObject {
         self.server = server
         self.providerFactory = providerFactory
         self.dataset = dataset
+        self.runs = runs
         self.isTuneOrBaselineActive = isTuneOrBaselineActive
         self.fileURL = fileURL
         self.systemPromptLoader = systemPromptLoader
@@ -96,7 +109,10 @@ final class TuningChatViewModel: ObservableObject {
         threads = document.threads
         let variant = FineTuneModelVariant(rawValue: document.modelVariant) ?? .baseline
         modelVariant = variant
-        let activeThread = document.threads[variant.rawValue] ?? TuningChatThread()
+        let model = document.chatBaseModel ?? MlxServerConfig.defaultModel
+        chatBaseModel = model
+        let activeThread = document.threads[TuningChatViewModel.threadKey(variant: variant, model: model)]
+            ?? TuningChatThread()
         messages = activeThread.messages
         pipelineConfig = activeThread.pipelineConfig
         escalationEnabled = activeThread.escalationEnabled
@@ -129,6 +145,47 @@ final class TuningChatViewModel: ObservableObject {
         persistNow()
     }
 
+    /// База чата (задача 92) — смена зеркальна `modelVariant.didSet`: генерация
+    /// отменяется (программная смена не должна уронить ответ в чужой тред), старый
+    /// тред сохраняется под своим ключом, новый — загружается.
+    func setChatBaseModel(_ model: String) {
+        guard model != chatBaseModel else { return }
+        if isGenerating {
+            chatGen += 1
+            generationTask?.cancel()
+            generationTask = nil
+            isGenerating = false
+            progressText = nil
+        }
+        // Старый тред сохраняется, ПОКА chatBaseModel ещё старый — threadKey(variant:)
+        // читает его из self.
+        saveThread(for: modelVariant)
+        chatBaseModel = model
+        let next = threads[threadKey(variant: modelVariant)] ?? TuningChatThread()
+        messages = next.messages
+        pipelineConfig = next.pipelineConfig
+        escalationEnabled = next.escalationEnabled
+        persistNow()
+    }
+
+    /// Базы для пикера: дефолты (3B, 7B) + distinct-модели завершённых прогонов этого
+    /// workdir (задача 92, TuneSelection.chatBaseModels).
+    var availableBaseModels: [String] {
+        let workdir = dataset()?.workdir ?? ""
+        return TuneSelection.chatBaseModels(runs: runs(), workdir: workdir,
+                                            defaults: [FineTuneViewModel.smallModel, MlxServerConfig.defaultModel])
+    }
+
+    /// Ключ треда — `"<variant.rawValue>|<chatBaseModel>"`: статистика per (variant,
+    /// база) раздельная, переключение базы не смешивает историю разных моделей.
+    private func threadKey(variant: FineTuneModelVariant) -> String {
+        TuningChatViewModel.threadKey(variant: variant, model: chatBaseModel)
+    }
+
+    private static func threadKey(variant: FineTuneModelVariant, model: String) -> String {
+        "\(variant.rawValue)|\(model)"
+    }
+
     /// Пишет проекции (`messages`/`pipelineConfig`/`escalationEnabled`) в тред активного
     /// варианта — единая точка синхронизации перед каждым `persistNow()`.
     private func syncActiveThread() {
@@ -136,8 +193,8 @@ final class TuningChatViewModel: ObservableObject {
     }
 
     private func saveThread(for variant: FineTuneModelVariant) {
-        threads[variant.rawValue] = TuningChatThread(messages: messages, pipelineConfig: pipelineConfig,
-                                                       escalationEnabled: escalationEnabled)
+        threads[threadKey(variant: variant)] = TuningChatThread(
+            messages: messages, pipelineConfig: pipelineConfig, escalationEnabled: escalationEnabled)
     }
 
     var sessionStats: TuningChatSessionStats? {
@@ -175,14 +232,31 @@ final class TuningChatViewModel: ObservableObject {
         }
 
         let variant = modelVariant
-        var adapterPath: URL?
-        if variant == .tuned {
-            let adapterURL = dataset.rootURL.appendingPathComponent(Self.adapterRelativePath)
-            guard FileManager.default.fileExists(atPath: adapterURL.path) else {
-                errorText = FineTuneError.adapterMissing.errorDescription
+        let baseModel = chatBaseModel
+        let config: MlxServerConfig
+        switch variant {
+        case .baseline:
+            config = MlxServerConfig(model: baseModel)
+        case .tuned:
+            if let run = TuneSelection.selectTunedRun(runs: runs(), workdir: dataset.workdir, baseModel: baseModel) {
+                let adapterURL = URL(fileURLWithPath: run.adapterPath)
+                guard FileManager.default.fileExists(atPath: adapterURL.appendingPathComponent("adapters.safetensors").path)
+                else {
+                    errorText = FineTuneError.adapterMissing.errorDescription
+                    return
+                }
+                config = MlxServerConfig(model: run.model, adapterPath: adapterURL)
+            } else if TuneSelection.legacyAdapterFallback(runs: runs(), workdir: dataset.workdir, baseModel: baseModel) {
+                let adapterURL = dataset.rootURL.appendingPathComponent(Self.adapterRelativePath)
+                guard FileManager.default.fileExists(atPath: adapterURL.path) else {
+                    errorText = FineTuneError.adapterMissing.errorDescription
+                    return
+                }
+                config = MlxServerConfig(model: baseModel, adapterPath: adapterURL.deletingLastPathComponent())
+            } else {
+                errorText = FineTuneError.tunedRunMissing(model: baseModel).errorDescription
                 return
             }
-            adapterPath = dataset.rootURL.appendingPathComponent("adapters")
         }
 
         chatGen += 1
@@ -195,7 +269,6 @@ final class TuningChatViewModel: ObservableObject {
         syncActiveThread()
         persistNow()
 
-        let config = MlxServerConfig(adapterPath: adapterPath)
         let provider = providerFactory(config)
         let system = systemPromptLoader(dataset) ?? ""
         let settings = ChatSettings(model: config.model, temperature: FineTuneRunner.baselineTemperature)
@@ -307,7 +380,8 @@ final class TuningChatViewModel: ObservableObject {
     /// Общая точка сборки документа (паттерн `FineTuneStore.makeDocument`) — вызывающий
     /// код обязан звать `syncActiveThread()` перед мутацией, которую хочет сохранить.
     private func makeDocument() -> TuningChatDocument {
-        TuningChatDocument(threads: threads, modelVariant: modelVariant.rawValue, escalationTarget: escalationTarget)
+        TuningChatDocument(threads: threads, modelVariant: modelVariant.rawValue,
+                          escalationTarget: escalationTarget, chatBaseModel: chatBaseModel)
     }
 
     // MARK: - Батч-прогон (задача 85, критерий 6)

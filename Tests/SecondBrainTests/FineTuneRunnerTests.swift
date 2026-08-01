@@ -128,6 +128,28 @@ final class FineTuneRunnerTests: XCTestCase {
         XCTAssertEqual(registry.runningCount, 0, "pid 0 не должен попасть в реестр")
     }
 
+    /// Задача 92: `start` кладёт `--adapter-dir adapters/<slug>` (per-model, не общий
+    /// `adapters/`) — второй прогон того же датасета на другой базе не перезаписывает
+    /// чекпоинты первого.
+    func testStartArgumentsIncludeAdapterDirFromModel() async throws {
+        let dataset = makeDataset()
+        var recordedArguments: [String]?
+        let runner = FineTuneRunner(fineTuneRoot: nil, runCLI: { [weak self] _, arguments in
+            recordedArguments = arguments
+            try? self?.writeRunJSON(pid: Int(getpid()))
+            return .init(status: 0, output: "")
+        }, registry: BackgroundProcessRegistry())
+
+        _ = try await runner.start(dataset: dataset, model: "mlx-community/Qwen2.5-3B-Instruct-4bit",
+                                   hyperparameters: FineTuneHyperparameters())
+
+        let arguments = try XCTUnwrap(recordedArguments)
+        guard let flagIndex = arguments.firstIndex(of: "--adapter-dir") else {
+            return XCTFail("--adapter-dir отсутствует в argv: \(arguments)")
+        }
+        XCTAssertEqual(arguments[flagIndex + 1], "adapters/Qwen2.5-3B-Instruct-4bit")
+    }
+
     // MARK: - adopt()
 
     func testAdoptOnDeadPidReturnsNil() async throws {
@@ -169,6 +191,25 @@ final class FineTuneRunnerTests: XCTestCase {
         let adopted = await runner.adopt(dataset: dataset)
         XCTAssertEqual(adopted?.pid, Int(getpid()))
         XCTAssertEqual(adopted?.model, "qwen")
+    }
+
+    /// `currentCLIRun` (задача 92) — в отличие от `adopt`, читает run.json БЕЗ проверки
+    /// живости pid: guard «Взять лучший» обязан работать и для уже завершённого прогона.
+    func testCurrentCLIRunReadsRunJSONWithoutLivenessCheck() async throws {
+        let dataset = makeDataset()
+        try writeRunJSON(pid: 999_999) // заведомо мёртвый/чужой pid
+        let runner = FineTuneRunner(fineTuneRoot: nil, runCLI: { _, _ in .init(status: 0, output: "") },
+                                    registry: BackgroundProcessRegistry())
+        let current = await runner.currentCLIRun(dataset: dataset)
+        XCTAssertEqual(current?.pid, 999_999, "currentCLIRun не фильтрует по живости — только чтение файла")
+    }
+
+    func testCurrentCLIRunWithoutRunJSONReturnsNil() async {
+        let dataset = makeDataset()
+        let runner = FineTuneRunner(fineTuneRoot: nil, runCLI: { _, _ in .init(status: 0, output: "") },
+                                    registry: BackgroundProcessRegistry())
+        let current = await runner.currentCLIRun(dataset: dataset)
+        XCTAssertNil(current)
     }
 
     // MARK: - adoptIntoRegistry() (Б1)
@@ -263,6 +304,25 @@ final class FineTuneRunnerTests: XCTestCase {
         let result = await runner.stop(workdir: dataset.workdir)
         XCTAssertEqual(result.status, 1)
         XCTAssertEqual(registry.runningCount, 1, "провалившийся stop — процесс всё ещё может быть жив")
+    }
+
+    // MARK: - installBest() (задача 92)
+
+    /// `installBest(workdir:adapterDir:)` передаёт `adapterDir` В ТОМ ВИДЕ, в каком его
+    /// передал вызывающий (`FineTuneViewModel` — из `run.adapterPath`), не пересчитывает
+    /// его из модели: гарантия, что `best --install` ставит чекпоинт в каталог РЕАЛЬНО
+    /// используемого этим прогоном адаптера, а не текущего дефолта.
+    func testInstallBestPassesGivenAdapterDirVerbatim() async {
+        var recordedArguments: [String]?
+        let runner = FineTuneRunner(fineTuneRoot: nil, runCLI: { _, arguments in
+            recordedArguments = arguments
+            return .init(status: 0, output: "готово")
+        }, registry: BackgroundProcessRegistry())
+
+        let result = await runner.installBest(workdir: "dictation", adapterDir: "adapters/Qwen2.5-3B-Instruct-4bit")
+
+        XCTAssertEqual(result.status, 0)
+        XCTAssertEqual(recordedArguments, ["--adapter-dir", "adapters/Qwen2.5-3B-Instruct-4bit", "best", "--install"])
     }
 
     // MARK: - snapshotBaseline() / cancelBaseline() (задача 83)

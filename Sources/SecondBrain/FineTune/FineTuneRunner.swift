@@ -83,7 +83,10 @@ actor FineTuneRunner {
             throw FineTuneError.alreadyRunning(pid: Int32(cliRun.pid))
         }
 
-        let arguments = ["--model", model, "start"] + hyperparameters.cliArguments()
+        // Per-model адаптер (задача 92): без этого второй тюн той же датасета на другой
+        // базе перезаписал бы адаптер первого — оба живут в adapters/<slug модели>/.
+        let arguments = ["--model", model, "--adapter-dir", TuneSelection.adapterDir(model: model), "start"]
+            + hyperparameters.cliArguments()
         let result = await runCLI(workdir: dataset.workdir, arguments: arguments)
         guard result.status == 0 else {
             throw FineTuneError.startFailed(result.output)
@@ -146,8 +149,20 @@ actor FineTuneRunner {
         retireLiveProcess(workdir: workdir)
     }
 
-    func installBest(workdir: String) async -> CLIResult {
-        await runCLI(workdir: workdir, arguments: ["best", "--install"])
+    /// run.json этого workdir БЕЗ проверки живости pid (в отличие от `adopt`) — нужен
+    /// и для уже завершённого прогона: guard «Взять лучший» сверяет по нему, что
+    /// показанный прогон — тот же, чей run.json/train.log сейчас лежат на диске
+    /// (они синглтоны на workdir, следующий `start` их перезаписывает).
+    func currentCLIRun(dataset: FineTuneDataset) -> FineTuneCLIRun? {
+        readRunJSON(dataset: dataset)
+    }
+
+    /// `adapterDir` — `run.adapterPath` того самого прогона (уже абсолютный путь,
+    /// см. `FineTuneRun.adapterPath`), не пересчитывается из модели: `best --install`
+    /// обязан установить чекпоинт В ТОМ каталоге, где реально лежат чекпоинты этого
+    /// прогона, а не в каталоге текущего дефолта.
+    func installBest(workdir: String, adapterDir: String) async -> CLIResult {
+        await runCLI(workdir: workdir, arguments: ["--adapter-dir", adapterDir, "best", "--install"])
     }
 
     /// `validate.py <data>/train.jsonl <data>/valid.jsonl [--system …] [--min-assistant N]

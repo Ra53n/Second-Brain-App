@@ -135,6 +135,7 @@ final class AppModel: ObservableObject {
             dataset: { [weak fineTuneViewModelForChat] in
                 fineTuneViewModelForChat?.datasets.first { $0.workdir == "meetings" }
             },
+            runs: { [weak fineTuneStore] in fineTuneStore?.runs ?? [] },
             isTuneOrBaselineActive: { [weak fineTuneStore, weak fineTuneViewModelForChat] in
                 (fineTuneStore?.runs.contains { $0.status == .running } ?? false)
                     || (fineTuneViewModelForChat?.isSnapshottingBaseline ?? false)

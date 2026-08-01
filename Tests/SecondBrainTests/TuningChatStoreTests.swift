@@ -3,12 +3,16 @@
 // плоского старого документа в `threads`, незнакомый вариант в ключе не роняет декод.
 // Задача 91: миграция документа без escalation-полей (тред/документ/сообщение), round-trip
 // с заполненными escalationTarget/escalationEnabled/escalation.
+// Задача 92: ключ треда — "<variant>|<model>"; легаси-ключи `baseline`/`tuned` (в т.ч.
+// с escalation-полями эпохи 91) мигрируют на "…|<7B>"; round-trip `chatBaseModel`.
 
 import XCTest
 @testable import SecondBrain
 
 final class TuningChatStoreTests: XCTestCase {
     private var tempDir: URL!
+    /// База, на которую мигрируют легаси-ключи `baseline`/`tuned` (единственная до задачи 92).
+    private let legacy7B = MlxServerConfig.defaultModel
 
     override func setUp() {
         super.setUp()
@@ -28,18 +32,32 @@ final class TuningChatStoreTests: XCTestCase {
             checks: [ConfidenceCheckSummary(name: "валидный JSON", status: "pass", detail: nil)])
         let document = TuningChatDocument(
             threads: [
-                "baseline": TuningChatThread(
+                "baseline|\(legacy7B)": TuningChatThread(
                     messages: [
                         TuningChatMessage(role: "user", content: "Привет"),
                         TuningChatMessage(role: "assistant", content: "{\"action_items\":[]}",
                                           report: report, modelVariant: "baseline"),
                     ],
                     pipelineConfig: .default),
-                "tuned": TuningChatThread(messages: [], pipelineConfig: .allEnabled),
+                "tuned|\(legacy7B)": TuningChatThread(messages: [], pipelineConfig: .allEnabled),
             ],
-            modelVariant: "tuned")
+            modelVariant: "tuned", chatBaseModel: legacy7B)
         TuningChatPersistence.save(document, to: url)
         XCTAssertEqual(TuningChatPersistence.load(from: url), document)
+    }
+
+    /// Ключи уже нового формата (с `|`) не трогаются миграцией легаси-ключей — round-trip
+    /// с базой 3B, отличной от легаси-7B.
+    func testRoundTripWithNonDefaultChatBaseModel() {
+        let url = tempDir.appendingPathComponent("chat.json")
+        let smallModel = FineTuneViewModel.smallModel
+        let document = TuningChatDocument(
+            threads: ["tuned|\(smallModel)": TuningChatThread(messages: [TuningChatMessage(role: "user", content: "3B")])],
+            modelVariant: "tuned", chatBaseModel: smallModel)
+        TuningChatPersistence.save(document, to: url)
+        let loaded = TuningChatPersistence.load(from: url)
+        XCTAssertEqual(loaded, document)
+        XCTAssertEqual(loaded.chatBaseModel, smallModel)
     }
 
     func testCorruptFileIsQuarantinedAndReturnsEmptyDocument() throws {
@@ -70,14 +88,15 @@ final class TuningChatStoreTests: XCTestCase {
         let loaded = TuningChatPersistence.load(from: url)
 
         XCTAssertEqual(loaded.modelVariant, "tuned")
-        let tunedThread = try XCTUnwrap(loaded.threads["tuned"])
+        XCTAssertNil(loaded.chatBaseModel, "плоский документ до задачи 92 базу чата не знал")
+        let tunedThread = try XCTUnwrap(loaded.threads["tuned|\(legacy7B)"])
         XCTAssertEqual(tunedThread.messages.count, 1)
         XCTAssertEqual(tunedThread.messages[0].content, "Привет")
         let expectedConfig = ConfidencePipelineConfig(constraintEnabled: true, redundancyEnabled: true,
                                                         scoringEnabled: false, selfCheckEnabled: true)
         XCTAssertEqual(tunedThread.pipelineConfig, expectedConfig)
 
-        let baselineThread = try XCTUnwrap(loaded.threads["baseline"])
+        let baselineThread = try XCTUnwrap(loaded.threads["baseline|\(legacy7B)"])
         XCTAssertTrue(baselineThread.messages.isEmpty, "история user-сообщений в baseline не расщепляется")
         XCTAssertEqual(baselineThread.pipelineConfig, expectedConfig, "конфиг копируется в оба треда")
     }
@@ -90,7 +109,7 @@ final class TuningChatStoreTests: XCTestCase {
         """
         try Data(json.utf8).write(to: url)
         let loaded = TuningChatPersistence.load(from: url)
-        let tunedThread = try XCTUnwrap(loaded.threads["tuned"])
+        let tunedThread = try XCTUnwrap(loaded.threads["tuned|\(legacy7B)"])
         XCTAssertEqual(tunedThread.messages.count, 1)
         XCTAssertEqual(tunedThread.messages[0].content, "Привет")
         XCTAssertNil(tunedThread.messages[0].report)
@@ -106,7 +125,7 @@ final class TuningChatStoreTests: XCTestCase {
         let json = "{\"messages\":[{\"id\":\"11111111-1111-1111-1111-111111111111\",\"role\":\"user\",\"content\":\"x\"}],\"modelVariant\":\"baseline\"}"
         try Data(json.utf8).write(to: url)
         let loaded = TuningChatPersistence.load(from: url)
-        let baselineThread = try XCTUnwrap(loaded.threads["baseline"])
+        let baselineThread = try XCTUnwrap(loaded.threads["baseline|\(legacy7B)"])
         XCTAssertEqual(baselineThread.pipelineConfig, ConfidencePipelineConfig(
             constraintEnabled: true, redundancyEnabled: false, scoringEnabled: false, selfCheckEnabled: false))
     }
@@ -115,9 +134,67 @@ final class TuningChatStoreTests: XCTestCase {
         let url = tempDir.appendingPathComponent("chat.json")
         let config = ConfidencePipelineConfig(constraintEnabled: true, redundancyEnabled: true,
                                                scoringEnabled: false, selfCheckEnabled: true)
+        // Ключ "baseline" (без "|") — легаси, мигрирует на "baseline|<7B>" при загрузке.
         let document = TuningChatDocument(threads: ["baseline": TuningChatThread(pipelineConfig: config)])
         TuningChatPersistence.save(document, to: url)
-        XCTAssertEqual(TuningChatPersistence.load(from: url).threads["baseline"]?.pipelineConfig, config)
+        XCTAssertEqual(TuningChatPersistence.load(from: url).threads["baseline|\(legacy7B)"]?.pipelineConfig, config)
+    }
+
+    /// `chatBaseModel` появилось в задаче 92 — старый документ без него грузится с nil,
+    /// решение о дефолте (7B) — за VM, не за стором.
+    func testChatBaseModelMigratesToNilWhenAbsent() throws {
+        let url = tempDir.appendingPathComponent("chat.json")
+        let json = """
+        {"threads":{"baseline":{"messages":[],"pipelineConfig":{"constraintEnabled":true,"redundancyEnabled":false,"scoringEnabled":false,"selfCheckEnabled":false}}},
+        "modelVariant":"baseline"}
+        """
+        try Data(json.utf8).write(to: url)
+        let loaded = TuningChatPersistence.load(from: url)
+        XCTAssertNil(loaded.chatBaseModel)
+        XCTAssertNotNil(loaded.threads["baseline|\(legacy7B)"])
+    }
+
+    /// Литеральный JSON эпохи 91 (до задачи 92): треды ключами `baseline`/`tuned`,
+    /// escalation-поля документа/треда/сообщения заполнены. Ключи мигрируют на "…|<7B>",
+    /// вся история и escalation-записи целы, `chatBaseModel` отсутствует → nil.
+    func testMigrationFromEpoch91DocumentPreservesEscalationAndMigratesKeys() throws {
+        let url = tempDir.appendingPathComponent("chat.json")
+        let json = """
+        {"threads":{
+            "baseline":{"messages":[
+                {"id":"11111111-1111-1111-1111-111111111111","role":"user","content":"Привет"},
+                {"id":"22222222-2222-2222-2222-222222222222","role":"assistant","content":"ответ",
+                 "modelVariant":"baseline",
+                 "escalation":{"status":"succeeded","trigger":"unsure","providerID":"openai","model":"gpt-5"}}
+            ],
+            "pipelineConfig":{"constraintEnabled":true,"redundancyEnabled":false,"scoringEnabled":false,"selfCheckEnabled":false},
+            "escalationEnabled":true},
+            "tuned":{"messages":[],
+            "pipelineConfig":{"constraintEnabled":true,"redundancyEnabled":true,"scoringEnabled":true,"selfCheckEnabled":true},
+            "escalationEnabled":false}
+        },
+        "modelVariant":"baseline",
+        "escalationTarget":{"providerID":"openai","model":"gpt-5"}}
+        """
+        try Data(json.utf8).write(to: url)
+        let loaded = TuningChatPersistence.load(from: url)
+
+        XCTAssertNil(loaded.chatBaseModel, "эпоха 91 базу чата не знала")
+        XCTAssertEqual(loaded.escalationTarget, EscalationTarget(providerID: "openai", model: "gpt-5"))
+        XCTAssertNil(loaded.threads["baseline"], "легаси-ключ переименован, не оставлен как есть")
+        XCTAssertNil(loaded.threads["tuned"])
+
+        let baselineThread = try XCTUnwrap(loaded.threads["baseline|\(legacy7B)"])
+        XCTAssertEqual(baselineThread.messages.count, 2, "история цела")
+        XCTAssertTrue(baselineThread.escalationEnabled)
+        let escalation = try XCTUnwrap(baselineThread.messages[1].escalation)
+        XCTAssertEqual(escalation.status, .succeeded)
+        XCTAssertEqual(escalation.providerID, "openai")
+        XCTAssertEqual(escalation.model, "gpt-5")
+
+        let tunedThread = try XCTUnwrap(loaded.threads["tuned|\(legacy7B)"])
+        XCTAssertTrue(tunedThread.messages.isEmpty)
+        XCTAssertFalse(tunedThread.escalationEnabled)
     }
 
     func testEmptyJSONObjectMigratesToEmptyDocument() throws {
@@ -143,7 +220,7 @@ final class TuningChatStoreTests: XCTestCase {
         let loaded = TuningChatPersistence.load(from: url)
 
         XCTAssertNil(loaded.escalationTarget, "документная цель эскалации появилась в задаче 91")
-        let baselineThread = try XCTUnwrap(loaded.threads["baseline"])
+        let baselineThread = try XCTUnwrap(loaded.threads["baseline|\(legacy7B)"])
         XCTAssertFalse(baselineThread.escalationEnabled, "тумблер эскалации мигрирует в false")
         XCTAssertEqual(baselineThread.messages.count, 2, "история цела")
         XCTAssertNil(baselineThread.messages[0].escalation)
@@ -163,7 +240,7 @@ final class TuningChatStoreTests: XCTestCase {
         let loaded = TuningChatPersistence.load(from: url)
 
         XCTAssertNil(loaded.escalationTarget)
-        let baselineThread = try XCTUnwrap(loaded.threads["baseline"])
+        let baselineThread = try XCTUnwrap(loaded.threads["baseline|\(legacy7B)"])
         XCTAssertFalse(baselineThread.escalationEnabled)
         XCTAssertEqual(baselineThread.messages.count, 1)
     }
@@ -176,9 +253,11 @@ final class TuningChatStoreTests: XCTestCase {
                                              metrics: ConfidenceMetrics(totalCalls: 1), checks: [])
         let escalation = EscalationRecord(status: .succeeded, trigger: .unsure, providerID: "openai",
                                            model: "gpt-5", primaryReport: cheapReport)
+        // Ключ уже нового формата ("|") — не трогается миграцией легаси-ключей,
+        // round-trip сохраняет объект как есть.
         let document = TuningChatDocument(
             threads: [
-                "baseline": TuningChatThread(
+                "baseline|\(legacy7B)": TuningChatThread(
                     messages: [
                         TuningChatMessage(role: "user", content: "Привет"),
                         TuningChatMessage(role: "assistant", content: "сильный ответ", report: strongReport,
@@ -187,13 +266,15 @@ final class TuningChatStoreTests: XCTestCase {
                     pipelineConfig: .default, escalationEnabled: true),
             ],
             modelVariant: "baseline",
-            escalationTarget: EscalationTarget(providerID: "openai", model: "gpt-5"))
+            escalationTarget: EscalationTarget(providerID: "openai", model: "gpt-5"),
+            chatBaseModel: legacy7B)
         TuningChatPersistence.save(document, to: url)
         XCTAssertEqual(TuningChatPersistence.load(from: url), document)
     }
 
     /// Новый формат: незнакомый вариант в ключе `threads` («значение из будущего») —
-    /// декод не падает, известные треды целы.
+    /// декод не падает, известные треды целы. Ключ `baseline` (без `|`) всё ещё легаси —
+    /// мигрирует на `baseline|<7B>`; `future-variant` (без `|`, не baseline/tuned) не трогается.
     func testUnknownVariantKeyInThreadsDoesNotFailDecodeAndKeepsKnownThreads() throws {
         let url = tempDir.appendingPathComponent("chat.json")
         let json = """
@@ -204,7 +285,8 @@ final class TuningChatStoreTests: XCTestCase {
         try Data(json.utf8).write(to: url)
         let loaded = TuningChatPersistence.load(from: url)
         XCTAssertEqual(loaded.modelVariant, "baseline")
-        XCTAssertNotNil(loaded.threads["baseline"])
+        XCTAssertNil(loaded.threads["baseline"], "легаси-ключ переименован")
+        XCTAssertNotNil(loaded.threads["baseline|\(legacy7B)"])
         XCTAssertNotNil(loaded.threads["future-variant"], "незнакомый тред сохраняется как есть, не выбрасывается")
     }
 }

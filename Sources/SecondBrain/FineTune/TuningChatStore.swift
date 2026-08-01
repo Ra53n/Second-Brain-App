@@ -69,12 +69,20 @@ struct TuningChatDocument: Codable, Equatable {
     /// Доверенная сильная модель эскалации — свойство окружения, не варианта:
     /// per-document, а не per-thread (иначе настраивать дважды).
     var escalationTarget: EscalationTarget?
+    /// База чата (задача 92): nil → `MlxServerConfig.defaultModel` (легаси-7B) — решает VM,
+    /// не документ, иначе тесты миграции пришлось бы дублировать в двух местах.
+    var chatBaseModel: String?
+
+    /// Документы до задачи 92 знали только 7B — на неё же мигрируют легаси-ключи тредов.
+    /// `MlxServerConfig` в том же таргете, дублировать строку незачем.
+    private static let legacyBaseModel = MlxServerConfig.defaultModel
 
     init(threads: [String: TuningChatThread] = [:], modelVariant: String = FineTuneModelVariant.baseline.rawValue,
-         escalationTarget: EscalationTarget? = nil) {
+         escalationTarget: EscalationTarget? = nil, chatBaseModel: String? = nil) {
         self.threads = threads
         self.modelVariant = modelVariant
         self.escalationTarget = escalationTarget
+        self.chatBaseModel = chatBaseModel
     }
 
     /// Миграция задачи 89: старый плоский документ (`messages`/`pipelineConfig` на
@@ -82,12 +90,17 @@ struct TuningChatDocument: Codable, Equatable {
     /// конфиг копируется в оба треда, чтобы второй вариант не грузился с чужого дефолта.
     /// Незнакомый вариант в `threads` («значение из будущего») декодируется в словарь
     /// как есть (ключ — `String`, не enum) — падения нет, известные треды целы.
+    ///
+    /// Миграция задачи 92: ключ треда становится `"<variant>|<model>"` — легаси-ключи
+    /// `baseline`/`tuned` (плоские, без `|`) переименовываются на 7B, известную единственную
+    /// базу до этой задачи.
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         modelVariant = try c.decodeIfPresent(String.self, forKey: .modelVariant) ?? FineTuneModelVariant.baseline.rawValue
         escalationTarget = try c.decodeIfPresent(EscalationTarget.self, forKey: .escalationTarget)
+        chatBaseModel = try c.decodeIfPresent(String.self, forKey: .chatBaseModel)
         if let decodedThreads = try c.decodeIfPresent([String: TuningChatThread].self, forKey: .threads) {
-            threads = decodedThreads
+            threads = TuningChatDocument.migrateLegacyThreadKeys(decodedThreads)
             return
         }
         let messages = try c.decodeIfPresent([TuningChatMessage].self, forKey: .messages) ?? []
@@ -101,11 +114,27 @@ struct TuningChatDocument: Codable, Equatable {
             return
         }
         var migrated: [String: TuningChatThread] = [
-            FineTuneModelVariant.baseline.rawValue: TuningChatThread(pipelineConfig: pipelineConfig),
-            FineTuneModelVariant.tuned.rawValue: TuningChatThread(pipelineConfig: pipelineConfig),
+            "\(FineTuneModelVariant.baseline.rawValue)|\(Self.legacyBaseModel)": TuningChatThread(pipelineConfig: pipelineConfig),
+            "\(FineTuneModelVariant.tuned.rawValue)|\(Self.legacyBaseModel)": TuningChatThread(pipelineConfig: pipelineConfig),
         ]
-        migrated[modelVariant] = TuningChatThread(messages: messages, pipelineConfig: pipelineConfig)
+        migrated["\(modelVariant)|\(Self.legacyBaseModel)"] = TuningChatThread(messages: messages, pipelineConfig: pipelineConfig)
         threads = migrated
+    }
+
+    /// Ключи `"baseline"`/`"tuned"` (до задачи 92, единственная база — 7B) → `"…|<7B>"`;
+    /// уже мигрированные (`|` в ключе) или незнакомые ключи проходят как есть.
+    private static func migrateLegacyThreadKeys(
+        _ threads: [String: TuningChatThread]
+    ) -> [String: TuningChatThread] {
+        var migrated: [String: TuningChatThread] = [:]
+        for (key, thread) in threads {
+            if key == FineTuneModelVariant.baseline.rawValue || key == FineTuneModelVariant.tuned.rawValue {
+                migrated["\(key)|\(legacyBaseModel)"] = thread
+            } else {
+                migrated[key] = thread
+            }
+        }
+        return migrated
     }
 
     func encode(to encoder: Encoder) throws {
@@ -113,10 +142,11 @@ struct TuningChatDocument: Codable, Equatable {
         try c.encode(threads, forKey: .threads)
         try c.encode(modelVariant, forKey: .modelVariant)
         try c.encodeIfPresent(escalationTarget, forKey: .escalationTarget)
+        try c.encodeIfPresent(chatBaseModel, forKey: .chatBaseModel)
     }
 
     private enum CodingKeys: String, CodingKey {
-        case threads, modelVariant, messages, pipelineConfig, escalationTarget
+        case threads, modelVariant, messages, pipelineConfig, escalationTarget, chatBaseModel
     }
 }
 

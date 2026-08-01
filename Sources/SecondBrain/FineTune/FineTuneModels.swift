@@ -368,6 +368,9 @@ enum FineTuneError: LocalizedError, Equatable {
     case tuneActive
     /// `.tuned` без `adapters/adapters.safetensors` — сначала прогнать тюн (задача 85).
     case adapterMissing
+    /// `.tuned` без завершённого прогона ИМЕННО этой базы (задача 92, мульти-модельные
+    /// тюны) — легаси-fallback на 7B здесь не подходит (адаптер другой базы, крах mlx).
+    case tunedRunMissing(model: String)
     /// Мини-чат/батч (задача 85): `dataset()` не нашёл датасет «Встречи» — каталог
     /// ещё не просканирован (не путать с `.noRepoRoot` — репозиторий может быть задан).
     case datasetNotFound
@@ -401,6 +404,8 @@ enum FineTuneError: LocalizedError, Equatable {
             return "Идёт тюн или снятие baseline — чат и батч недоступны, дождитесь завершения."
         case .adapterMissing:
             return "Адаптер не найден — сначала прогоните тюн."
+        case let .tunedRunMissing(model):
+            return "Нет завершённого тюна для базы \(model) — прогоните тюн на этой базе или выберите другую."
         case .datasetNotFound:
             return "Датасет «Встречи» не найден — открой раздел «Тюнинг»."
         case let .validSetEmpty(path):

@@ -31,14 +31,16 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 DATA = RUNS = RUN_JSON = TRAIN_LOG = ADAPTERS = ""
 
 
-def setup_paths(workdir: str) -> None:
+def setup_paths(workdir: str, adapter_dir: str = "adapters") -> None:
     global DATA, RUNS, RUN_JSON, TRAIN_LOG, ADAPTERS
     root = workdir if os.path.isabs(workdir) else os.path.join(HERE, workdir)
     DATA = os.path.join(root, "data")
     RUNS = os.path.join(root, "runs")
     RUN_JSON = os.path.join(RUNS, "run.json")
     TRAIN_LOG = os.path.join(RUNS, "train.log")
-    ADAPTERS = os.path.join(root, "adapters")
+    # Относительно root: несколько тюнов одного датасета на разных базовых
+    # моделях не перезаписывают друг другу адаптер.
+    ADAPTERS = os.path.join(root, adapter_dir)
 
 DEFAULT_MODEL = "mlx-community/Qwen2.5-7B-Instruct-4bit"
 # Подобрано под 40 обучающих примеров на M2/16 GB: батч 1 и 8 слоёв держат пик
@@ -365,6 +367,9 @@ def main() -> int:
     parser.add_argument("--workdir", default=".",
                         help="каталог датасета: внутри ожидаются data/, "
                              "туда же лягут adapters/ и runs/ (например dictation)")
+    parser.add_argument("--adapter-dir", default="adapters",
+                        help="каталог адаптера относительно workdir "
+                             "(разные модели — разные подкаталоги)")
     sub = parser.add_subparsers(dest="command", required=True)
 
     prepare = sub.add_parser("prepare", help="проверить окружение и данные")
@@ -397,7 +402,7 @@ def main() -> int:
     logs.set_defaults(func=cmd_logs)
 
     args = parser.parse_args()
-    setup_paths(args.workdir)
+    setup_paths(args.workdir, args.adapter_dir)
     return args.func(args)
 
 

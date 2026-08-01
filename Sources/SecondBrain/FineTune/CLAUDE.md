@@ -49,6 +49,13 @@
   `ProviderRegistry`. Инвариант: `TuningChatMessage.report` — всегда отчёт ПОКАЗАННОГО
   ответа; отчёт дешёвой ступени при успешной эскалации лежит в
   `escalation.primaryReport`, при неудаче/недоступности — не дублируется (`nil`).
+- `TuneSelection` (P1, задача 92) — мульти-модельные тюны одного датасета: `adapterDir(model:)`
+  каталог нового прогона (`adapters/<slug>`, санитизация в `adapterDirName`),
+  `selectTunedRun` — последний `.finished` прогон workdir+базы для чата `.tuned`,
+  `chatBaseModels` — базы пикера (дефолты 3B/7B + завершённые прогоны), `legacyAdapterFallback` —
+  правило легаси-пути (`adapters/adapters.safetensors` без per-model подкаталога): уместен
+  только при полном отсутствии finished-записей workdir и дефолтной 7B, иначе отсутствие
+  тюна нужной базы — ошибка `FineTuneError.tunedRunMissing`, не тихая подмена чужим адаптером.
 
 ## Инварианты
 
@@ -101,6 +108,16 @@
 11. **Раннер не читает MainActor-состояние из своего актора.** Корень `finetune/` в
     `FineTuneRunner` — снимок `URL?`, обновляемый снаружи через `updateRoot(_:)`
     (`AppModel.wire()` при смене `projectRepoPath`), не замыкание на `settingsStore`.
+12. **`run.json`/`train.log` — синглтоны на workdir, не на прогон** (задача 92): второй
+    тюн того же датасета (другая база) их перезаписывает. Адаптеры per-model живут в
+    `adapters/<slug>/` — это чинит независимость чекпоинтов, но не `train.log`: «Взять
+    лучший» (`installBest`) обязан сверить показанный прогон с ТЕКУЩИМ run.json
+    (`FineTuneViewModel.isCurrentRun`/`refreshCurrentRun`) — иначе val-кривая читается у
+    чужого (более нового) прогона, а устанавливается в каталог старого.
+13. **Ключ треда чата тюнинга — `"<variant>|<model>"`, не голый `variant`** (задача 92):
+    `TuningChatViewModel.threadKey`, единая точка формирования — статистика/история
+    baseline и тюна раздельны ПО КАЖДОЙ базе. Легаси-документы (`baseline`/`tuned` без
+    `|`) мигрируют на 7B в `TuningChatDocument.migrateLegacyThreadKeys`.
 
 ## Как тестируем
 
@@ -121,7 +138,11 @@
   поля дефолтами — тест держит именно общую точку).
 - `FineTuneRunner` — инжектированный `CLIRunner` (без реального `Process`): already-running
   через `adopt`, разбор `run.json`, регистрация в реестре (мок-реестр), неуспешный `stop`
-  не снимает отслеживание.
+  не снимает отслеживание; `start` кладёт `--adapter-dir` из `TuneSelection.adapterDir`,
+  `installBest` — `--adapter-dir` из переданного вызывающим значения (не пересчитывает).
+- `TuneSelection` — таблица случаев без I/O: слаг из id модели (санитизация `/`, пустая
+  строка → «default»), выбор последнего `.finished` прогона по workdir+базе, distinct-список
+  баз для пикера, легаси-fallback (только «нет ни одной finished-записи» + дефолтная 7B).
 - `FineTuneViewModel` — подхват своего/чужого прогона (в т.ч. с переиспользованным pid
   на завершённой записи), `installBest`/`stopCurrent(run:)` на неуспехе CLI, через
   инжектированные `FineTuneStore`/`FineTuneRunner` (реальный `Process` не запускается).

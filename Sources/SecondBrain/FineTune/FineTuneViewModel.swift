@@ -52,8 +52,15 @@ final class FineTuneViewModel: ObservableObject {
     @Published private(set) var importPreview: FineTuneImportCore.ParseResult?
     @Published var importErrorText: String?
     @Published private(set) var isImporting = false
+    /// run.json на диске для датасета, обновляемого экраном «Прогоны» — источник
+    /// guard'а `isCurrentRun` (задача 92): run.json/train.log — синглтоны на workdir,
+    /// следующий тюн их перезаписывает без ведома FineTuneStore.
+    @Published private(set) var currentCLIRun: FineTuneCLIRun?
+    private var currentCLIRunDataset: FineTuneDataset?
 
     nonisolated static let defaultModel = "mlx-community/Qwen2.5-7B-Instruct-4bit"
+    /// Пресет прогона/базы чата (задача 92): малая база рядом с прежней 7B.
+    nonisolated static let smallModel = "mlx-community/Qwen2.5-3B-Instruct-4bit"
     private static let logTailLimit = 200
 
     private let store: FineTuneStore
@@ -420,10 +427,43 @@ final class FineTuneViewModel: ObservableObject {
         if tailedRunID == run.id { stopTailing() }
     }
 
+    /// run.json этого датасета — читается заново при входе на вкладку/смене выбора
+    /// (см. FineTuneRunViews), не по таймеру: дёшево, но незачем гонять на каждый тик.
+    func refreshCurrentRun(dataset: FineTuneDataset) async {
+        currentCLIRunDataset = dataset
+        currentCLIRun = await runner.currentCLIRun(dataset: dataset)
+    }
+
+    /// «Взять лучший» уместен только прогону, чьи pid/startedAt совпадают с тем, что
+    /// СЕЙЧАС лежит в run.json этого workdir — иначе `best --install` установил бы
+    /// чекпоинт по val-кривой другого (перезаписавшего run.json) прогона.
+    func isCurrentRun(_ run: FineTuneRun) -> Bool {
+        guard currentCLIRunDataset?.workdir == run.workdir, let cliRun = currentCLIRun, let pid = run.pid
+        else { return false }
+        return Int(pid) == cliRun.pid
+            && abs(cliRun.startedAt.timeIntervalSince1970 - run.startedAt.timeIntervalSince1970) < 1
+    }
+
     /// Работает над ПОКАЗАННЫМ прогоном (параметр — тот, что выбран в UI), не над
     /// tailedRunID: иначе кнопка тихо no-op'ает на любом прогоне, кроме тайлящегося.
+    /// Сверка с run.json — заново, на момент клика (кэш `currentCLIRun` мог устареть).
     func installBest(run: FineTuneRun) async {
-        let result = await runner.installBest(workdir: run.workdir)
+        guard let dataset = currentCLIRunDataset, dataset.workdir == run.workdir else {
+            errorText = "Не удалось проверить run.json — откройте вкладку заново."
+            return
+        }
+        currentCLIRun = await runner.currentCLIRun(dataset: dataset)
+        guard isCurrentRun(run) else {
+            errorText = "Этот прогон больше не совпадает с run.json — запущен другой тюн этого датасета."
+            return
+        }
+        // Лениентный декодер FineTuneCLIRun допускает пустой adapter_path — тогда
+        // --adapter-dir "" указал бы на корень workdir, а не на каталог адаптеров.
+        guard !run.adapterPath.isEmpty else {
+            errorText = "У прогона нет пути адаптера (битый run.json) — «Взять лучший» невозможен."
+            return
+        }
+        let result = await runner.installBest(workdir: run.workdir, adapterDir: run.adapterPath)
         guard result.status == 0 else {
             errorText = "Не удалось установить лучший чекпоинт: \(result.output)"
             return

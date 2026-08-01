@@ -35,14 +35,22 @@ final class FineTuneViewModelTests: XCTestCase {
         try Data((line + "\n").utf8).write(to: dataDir.appendingPathComponent("train.jsonl"))
     }
 
-    private func writeRunJSON(pid: Int32) throws {
+    private func writeRunJSON(pid: Int32, startedAt: TimeInterval = 1700000000.0) throws {
         let runsDir = tempDir.appendingPathComponent("runs")
         try FileManager.default.createDirectory(at: runsDir, withIntermediateDirectories: true)
         let json = """
-        {"pid": \(pid), "model": "m", "config": {}, "started_at": 1700000000.0, \
+        {"pid": \(pid), "model": "m", "config": {}, "started_at": \(startedAt), \
         "adapter_path": "adapters", "log": "runs/train.log"}
         """
         try Data(json.utf8).write(to: runsDir.appendingPathComponent("run.json"))
+    }
+
+    /// Датасет для `refreshCurrentRun`/`isCurrentRun` (задача 92) — только `rootURL`
+    /// (где читается `runs/run.json`) и `workdir` (сверка с `FineTuneRun.workdir`) значимы.
+    private func makeDataset(workdir: String) -> FineTuneDataset {
+        FineTuneDataset(id: workdir, title: workdir, workdir: workdir, rootURL: tempDir,
+                        dataURL: tempDir.appendingPathComponent("data"), trainCount: 0, validCount: 0,
+                        split: nil, systemPromptPath: nil)
     }
 
     private func makeStore(runs: [FineTuneRun] = []) -> FineTuneStore {
@@ -143,10 +151,14 @@ final class FineTuneViewModelTests: XCTestCase {
 
     /// installBest принимает прогон параметром — не зависит от tailedRunID
     /// (который здесь вообще не установлен ни разу за тест).
-    func testInstallBestActsOnGivenRunNotActiveRun() async {
+    /// Задача 92: `installBest` теперь гейтит через `isCurrentRun` — показанный прогон
+    /// должен совпасть с `run.json` (`refreshCurrentRun` до клика), иначе no-op с ошибкой.
+    func testInstallBestActsOnGivenRunNotActiveRun() async throws {
         let store = makeStore()
-        let shownRun = makeRun(workdir: "dictation", status: .finished)
+        var shownRun = makeRun(workdir: "dictation", status: .finished)
+        shownRun.pid = 4242
         store.appendRun(shownRun)
+        try writeRunJSON(pid: 4242, startedAt: shownRun.startedAt.timeIntervalSince1970)
 
         var recordedWorkdir: String?
         let runner = FineTuneRunner(fineTuneRoot: nil, runCLI: { workdir, args in
@@ -154,6 +166,7 @@ final class FineTuneViewModelTests: XCTestCase {
             return .init(status: 0, output: "готово")
         }, registry: BackgroundProcessRegistry())
         let viewModel = FineTuneViewModel(store: store, runner: runner, fineTuneRoot: { nil })
+        await viewModel.refreshCurrentRun(dataset: makeDataset(workdir: "dictation"))
 
         await viewModel.installBest(run: shownRun)
 
@@ -162,18 +175,57 @@ final class FineTuneViewModelTests: XCTestCase {
         XCTAssertNil(viewModel.errorText)
     }
 
-    func testInstallBestFailureSetsErrorTextNotStatus() async {
+    func testInstallBestFailureSetsErrorTextNotStatus() async throws {
         let store = makeStore()
-        let run = makeRun()
+        var run = makeRun()
+        run.pid = 4242
+        try writeRunJSON(pid: 4242, startedAt: run.startedAt.timeIntervalSince1970)
         let runner = FineTuneRunner(fineTuneRoot: nil, runCLI: { _, _ in .init(status: 1, output: "нет чекпоинтов") },
                                     registry: BackgroundProcessRegistry())
         let viewModel = FineTuneViewModel(store: store, runner: runner, fineTuneRoot: { nil })
+        await viewModel.refreshCurrentRun(dataset: makeDataset(workdir: run.workdir))
 
         await viewModel.installBest(run: run)
 
         XCTAssertEqual(viewModel.errorText, "Не удалось установить лучший чекпоинт: нет чекпоинтов")
         XCTAssertNotEqual(viewModel.statusText, "нет чекпоинтов",
                           "провал не должен выглядеть обычным статусом (P6)")
+    }
+
+    /// `installBest` без предварительного `refreshCurrentRun` (кэш пуст) — ошибка про
+    /// run.json, `runCLI` не зовётся вовсе (никакого спекулятивного `--adapter-dir best`).
+    func testInstallBestWithoutRefreshFailsGuardWithoutCallingCLI() async {
+        let store = makeStore()
+        var run = makeRun()
+        run.pid = 4242
+        var cliCalled = false
+        let runner = FineTuneRunner(fineTuneRoot: nil, runCLI: { _, _ in cliCalled = true; return .init(status: 0, output: "ok") },
+                                    registry: BackgroundProcessRegistry())
+        let viewModel = FineTuneViewModel(store: store, runner: runner, fineTuneRoot: { nil })
+
+        await viewModel.installBest(run: run)
+
+        XCTAssertFalse(cliCalled, "гейт обязан отсечь вызов CLI без известного run.json")
+        XCTAssertNotNil(viewModel.errorText)
+    }
+
+    /// Показанный прогон устарел (run.json перезаписан вторым тюном того же workdir на
+    /// другой базе, задача 92) — установка чекпоинта на устаревшем прогоне запрещена.
+    func testInstallBestFailsWhenRunJSONBelongsToDifferentRun() async throws {
+        let store = makeStore()
+        var staleRun = makeRun(status: .finished)
+        staleRun.pid = 111
+        try writeRunJSON(pid: 222, startedAt: staleRun.startedAt.timeIntervalSince1970)
+        var cliCalled = false
+        let runner = FineTuneRunner(fineTuneRoot: nil, runCLI: { _, _ in cliCalled = true; return .init(status: 0, output: "ok") },
+                                    registry: BackgroundProcessRegistry())
+        let viewModel = FineTuneViewModel(store: store, runner: runner, fineTuneRoot: { nil })
+        await viewModel.refreshCurrentRun(dataset: makeDataset(workdir: staleRun.workdir))
+
+        await viewModel.installBest(run: staleRun)
+
+        XCTAssertFalse(cliCalled, "run.json принадлежит другому (более новому) прогону — best --install не зовётся")
+        XCTAssertNotNil(viewModel.errorText)
     }
 
     // MARK: - stopCurrent(run:) не лжёт при неуспехе и не зависит от тайлинга (В2)

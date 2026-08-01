@@ -78,11 +78,23 @@ struct FineTuneRunDetailView: View {
                 } label: {
                     Label("Взять лучший чекпоинт", systemImage: "checkmark.seal")
                 }
-                .disabled(displayedRun == nil)
+                .disabled(displayedRun == nil || !canInstallBest)
+                .help(canInstallBest ? "" : "run.json датасета перезаписан другим тюном — этот прогон больше не текущий.")
             }
         }
-        .onChange(of: displayedRun?.id) { _, _ in syncDraft() }
+        .onChange(of: displayedRun?.id) { _, _ in
+            syncDraft()
+            Task { await viewModel.refreshCurrentRun(dataset: dataset) }
+        }
         .onAppear(perform: syncDraft)
+        .task(id: dataset.workdir) { await viewModel.refreshCurrentRun(dataset: dataset) }
+    }
+
+    /// Кнопка «Взять лучший» недоступна прогону, чей run.json уже перезаписан другим
+    /// тюном этого датасета (run.json/train.log — синглтоны на workdir, задача 92).
+    private var canInstallBest: Bool {
+        guard let run = displayedRun else { return false }
+        return viewModel.isCurrentRun(run)
     }
 
     private func syncDraft() {
@@ -139,7 +151,19 @@ struct FineTuneRunDetailView: View {
     @ViewBuilder
     private var configSection: some View {
         Section("Гиперпараметры") {
-            TextField("Модель", text: $draftModel)
+            HStack {
+                TextField("Модель", text: $draftModel)
+                // accessibilityValue — по конвенции модуля; кнопка всё равно внутри
+                // Form/Section, где, по опыту этого экрана (см. комментарий к тулбару
+                // выше), AX не отдаёт даже её — смоук эту пару проверить не может,
+                // только ручной клик.
+                Button("3B") { draftModel = FineTuneViewModel.smallModel }
+                    .buttonStyle(.bordered)
+                    .accessibilityValue("3B")
+                Button("7B") { draftModel = FineTuneViewModel.defaultModel }
+                    .buttonStyle(.bordered)
+                    .accessibilityValue("7B")
+            }
             Stepper("Итерации: \(draftHyperparameters.iters)",
                     value: $draftHyperparameters.iters, in: 10...5000, step: 10)
             Stepper("Слои (LoRA): \(draftHyperparameters.numLayers)",

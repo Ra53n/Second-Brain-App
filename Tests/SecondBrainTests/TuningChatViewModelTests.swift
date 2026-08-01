@@ -65,6 +65,12 @@ final class TuningChatViewModelTests: XCTestCase {
         tempDir.appendingPathComponent("finetune-chat-\(UUID().uuidString).json")
     }
 
+    /// Ключ треда для дефолтной базы чата (задача 92, "variant|model") — VM без явного
+    /// `setChatBaseModel` держит легаси-7B (`MlxServerConfig.defaultModel`).
+    private func threadKey(_ variant: FineTuneModelVariant) -> String {
+        "\(variant.rawValue)|\(MlxServerConfig.defaultModel)"
+    }
+
     func testSendGuardsWhenTuneOrBaselineActive() async {
         let vm = TuningChatViewModel(
             server: makeReadyServer(),
@@ -113,7 +119,7 @@ final class TuningChatViewModelTests: XCTestCase {
         XCTAssertNil(vm.errorText)
 
         let persisted = TuningChatPersistence.load(from: fileURL)
-        XCTAssertEqual(persisted.threads[FineTuneModelVariant.baseline.rawValue]?.messages.count, 2)
+        XCTAssertEqual(persisted.threads[threadKey(.baseline)]?.messages.count, 2)
     }
 
     /// Дефолт задачи 86 — только constraint: `send()` без явного включения тумблеров
@@ -148,7 +154,7 @@ final class TuningChatViewModelTests: XCTestCase {
             fileURL: fileURL)
         vm.setPipelineConfig(.allEnabled)
 
-        XCTAssertEqual(TuningChatPersistence.load(from: fileURL).threads[FineTuneModelVariant.baseline.rawValue]?.pipelineConfig,
+        XCTAssertEqual(TuningChatPersistence.load(from: fileURL).threads[threadKey(.baseline)]?.pipelineConfig,
                        .allEnabled)
 
         vm.input = "фрагмент встречи"
@@ -359,9 +365,9 @@ final class TuningChatViewModelTests: XCTestCase {
 
         XCTAssertFalse(vm.isGenerating, "смена варианта отменяет прогон")
         XCTAssertTrue(vm.messages.isEmpty, "tuned-тред пуст — ответ baseline в него не упал")
-        XCTAssertEqual(vm.threads[FineTuneModelVariant.tuned.rawValue]?.messages.count ?? 0, 0)
+        XCTAssertEqual(vm.threads[threadKey(.tuned)]?.messages.count ?? 0, 0)
         // Ответ не дописался и в baseline-тред: прогон отменён до завершения.
-        let baselineMessages = vm.threads[FineTuneModelVariant.baseline.rawValue]?.messages ?? []
+        let baselineMessages = vm.threads[threadKey(.baseline)]?.messages ?? []
         XCTAssertEqual(baselineMessages.filter { $0.role == "assistant" }.count, 0)
     }
 
@@ -397,7 +403,7 @@ final class TuningChatViewModelTests: XCTestCase {
         // Критерий 2 задачи 87 проверяем в данных (дешевле и надёжнее UI): после
         // очистки на диске персистится пустая история.
         let document = TuningChatPersistence.load(from: fileURL)
-        XCTAssertTrue(document.threads[FineTuneModelVariant.baseline.rawValue]?.messages.isEmpty ?? true,
+        XCTAssertTrue(document.threads[threadKey(.baseline)]?.messages.isEmpty ?? true,
                       "после очистки finetune-chat.json хранит пустую историю активного треда")
     }
 
@@ -418,7 +424,7 @@ final class TuningChatViewModelTests: XCTestCase {
 
         XCTAssertEqual(vm.messages.count, 2)
         let persisted = TuningChatPersistence.load(from: fileURL)
-        XCTAssertTrue(persisted.threads[FineTuneModelVariant.tuned.rawValue]?.messages.isEmpty ?? true,
+        XCTAssertTrue(persisted.threads[threadKey(.tuned)]?.messages.isEmpty ?? true,
                       "tuned-тред не тронут отправкой в baseline")
     }
 
@@ -484,9 +490,9 @@ final class TuningChatViewModelTests: XCTestCase {
         XCTAssertEqual(vm.messages.count, 2, "baseline-тред цел в памяти")
 
         let persisted = TuningChatPersistence.load(from: fileURL)
-        XCTAssertEqual(persisted.threads[FineTuneModelVariant.baseline.rawValue]?.messages.count, 2,
+        XCTAssertEqual(persisted.threads[threadKey(.baseline)]?.messages.count, 2,
                        "baseline-тред цел на диске")
-        XCTAssertTrue(persisted.threads[FineTuneModelVariant.tuned.rawValue]?.messages.isEmpty ?? true,
+        XCTAssertTrue(persisted.threads[threadKey(.tuned)]?.messages.isEmpty ?? true,
                       "tuned-тред очищен на диске")
     }
 
@@ -507,7 +513,7 @@ final class TuningChatViewModelTests: XCTestCase {
         XCTAssertEqual(vm.pipelineConfig, .default, "tuned-тред не тронут setPipelineConfig в baseline")
 
         let persisted = TuningChatPersistence.load(from: fileURL)
-        XCTAssertEqual(persisted.threads[FineTuneModelVariant.baseline.rawValue]?.pipelineConfig, .allEnabled)
+        XCTAssertEqual(persisted.threads[threadKey(.baseline)]?.pipelineConfig, .allEnabled)
     }
 
     // MARK: - Задача 91: каскадная эскалация
@@ -744,5 +750,159 @@ final class TuningChatViewModelTests: XCTestCase {
             TuningChatMessage(role: "assistant", content: "второй", report: okReport, escalation: secondEscalation),
         ]
         XCTAssertEqual(vm.lastEscalation?.status, .succeeded, "lastEscalation — запись именно последнего ответа")
+    }
+
+    // MARK: - Задача 92: мульти-модельные тюны — база чата, TuneSelection
+
+    private func makeFinishedRun(workdir: String, model: String, adapterPath: String) -> FineTuneRun {
+        var run = FineTuneRun(workdir: workdir, datasetTitle: workdir, model: model,
+                              hyperparameters: FineTuneHyperparameters(), logPath: "runs/train.log",
+                              adapterPath: adapterPath)
+        run.status = .finished
+        return run
+    }
+
+    /// `setChatBaseModel` — переключение зеркально `modelVariant`: своя история на диске
+    /// и в памяти для каждой базы, без потерь при возврате.
+    func testSetChatBaseModelSwitchesThreadHistoryIsSeparate() async {
+        let dataset = makeDataset()
+        let vm = TuningChatViewModel(
+            server: makeReadyServer(),
+            providerFactory: { _ in MockChatProvider(responses: [self.okResponse]) },
+            dataset: { dataset },
+            isTuneOrBaselineActive: { false },
+            fileURL: tempFileURL())
+        vm.input = "на 7B"
+        await vm.send()
+        XCTAssertEqual(vm.messages.count, 2)
+        let sevenBMessages = vm.messages
+
+        vm.setChatBaseModel(FineTuneViewModel.smallModel)
+        XCTAssertTrue(vm.messages.isEmpty, "у новой базы свежий тред")
+
+        vm.input = "на 3B"
+        await vm.send()
+        XCTAssertEqual(vm.messages.count, 2)
+        let threeBMessages = vm.messages
+
+        vm.setChatBaseModel(MlxServerConfig.defaultModel)
+        XCTAssertEqual(vm.messages.map(\.content), sevenBMessages.map(\.content),
+                       "возврат на 7B восстанавливает её историю без потерь")
+
+        vm.setChatBaseModel(FineTuneViewModel.smallModel)
+        XCTAssertEqual(vm.messages.map(\.content), threeBMessages.map(\.content),
+                       "возврат на 3B восстанавливает её историю без потерь")
+    }
+
+    /// Повторный вызов с тем же значением — no-op (симметрично `modelVariant` guard'у).
+    func testSetChatBaseModelWithSameValueIsNoOp() {
+        let vm = TuningChatViewModel(
+            server: makeReadyServer(),
+            providerFactory: { _ in MockChatProvider(responses: [self.okResponse]) },
+            dataset: { self.makeDataset() },
+            isTuneOrBaselineActive: { false },
+            fileURL: tempFileURL())
+        let before = vm.chatBaseModel
+        vm.setChatBaseModel(before)
+        XCTAssertEqual(vm.chatBaseModel, before)
+    }
+
+    /// P5: смена базы во время генерации отменяет прогон — ответ не должен упасть
+    /// в тред новой базы (симметрично `testSwitchingVariantDuringGenerationCancelsAndKeepsThreadsClean`).
+    func testSetChatBaseModelDuringGenerationCancelsAndKeepsThreadsClean() async throws {
+        let dataset = makeDataset()
+        let provider = MockChatProvider(responses: [okResponse])
+        provider.delay = 0.2
+        let vm = TuningChatViewModel(
+            server: makeReadyServer(),
+            providerFactory: { _ in provider },
+            dataset: { dataset },
+            isTuneOrBaselineActive: { false },
+            fileURL: tempFileURL())
+        vm.input = "фрагмент встречи"
+
+        let task = Task { await vm.send() }
+        try? await Task.sleep(nanoseconds: 50_000_000) // основной вызов в полёте
+        vm.setChatBaseModel(FineTuneViewModel.smallModel)
+        await task.value
+
+        XCTAssertFalse(vm.isGenerating, "смена базы отменяет прогон")
+        XCTAssertTrue(vm.messages.isEmpty, "тред новой базы пуст — ответ старой базы в него не упал")
+        let oldBaseMessages = vm.threads["\(FineTuneModelVariant.baseline.rawValue)|\(MlxServerConfig.defaultModel)"]?.messages ?? []
+        XCTAssertEqual(oldBaseMessages.filter { $0.role == "assistant" }.count, 0,
+                       "ответ не дописался и в тред прежней базы — прогон отменён до завершения")
+    }
+
+    /// `.tuned` резолвит пару «база прогона + его адаптер» через `runs()` —
+    /// сервер поднимается с моделью и adapterPath ИМЕННО finished-прогона выбранной базы.
+    func testTunedSendUsesModelAndAdapterPathFromMatchingFinishedRun() async throws {
+        let dataset = makeDataset()
+        let adapterDir = tempDir.appendingPathComponent("adapters/Qwen2.5-3B-Instruct-4bit")
+        try FileManager.default.createDirectory(at: adapterDir, withIntermediateDirectories: true)
+        try Data().write(to: adapterDir.appendingPathComponent("adapters.safetensors"))
+        let run = makeFinishedRun(workdir: dataset.workdir, model: FineTuneViewModel.smallModel,
+                                  adapterPath: adapterDir.path)
+
+        var recordedConfig: MlxServerConfig?
+        let vm = TuningChatViewModel(
+            server: makeReadyServer(),
+            providerFactory: { config in
+                recordedConfig = config
+                return MockChatProvider(responses: [self.okResponse])
+            },
+            dataset: { dataset },
+            runs: { [run] },
+            isTuneOrBaselineActive: { false },
+            fileURL: tempFileURL())
+        vm.modelVariant = .tuned
+        vm.setChatBaseModel(FineTuneViewModel.smallModel)
+        vm.input = "фрагмент встречи"
+        await vm.send()
+
+        XCTAssertNil(vm.errorText)
+        let config = try XCTUnwrap(recordedConfig)
+        XCTAssertEqual(config.model, FineTuneViewModel.smallModel)
+        XCTAssertEqual(config.adapterPath?.path, adapterDir.path)
+    }
+
+    /// `.tuned` на базе 3B без единой finished-записи — легаси-fallback запрещён (он
+    /// только для дефолтной 7B), ошибка называет запрошенную базу по имени.
+    func testTunedWithSmallBaseAndNoRunsShowsTunedRunMissingErrorMentioningModel() async {
+        let dataset = makeDataset() // без легаси-адаптера и без прогонов
+        let vm = TuningChatViewModel(
+            server: makeReadyServer(),
+            providerFactory: { _ in MockChatProvider(responses: [self.okResponse]) },
+            dataset: { dataset },
+            runs: { [] },
+            isTuneOrBaselineActive: { false },
+            fileURL: tempFileURL())
+        vm.modelVariant = .tuned
+        vm.setChatBaseModel(FineTuneViewModel.smallModel)
+        vm.input = "фрагмент встречи"
+        await vm.send()
+
+        XCTAssertEqual(vm.errorText, FineTuneError.tunedRunMissing(model: FineTuneViewModel.smallModel).errorDescription)
+        XCTAssertTrue(vm.errorText?.contains("3B") ?? false, "ошибка называет запрошенную (3B) базу")
+        XCTAssertTrue(vm.messages.isEmpty)
+    }
+
+    /// `availableBaseModels` — дефолты (3B, 7B) + distinct-модели finished-прогонов
+    /// этого workdir (задача 92, `TuneSelection.chatBaseModels`).
+    func testAvailableBaseModelsContainsDefaultsAndFinishedRunModels() {
+        let dataset = makeDataset()
+        let customRun = makeFinishedRun(workdir: dataset.workdir, model: "custom-finetuned-model",
+                                        adapterPath: "adapters/custom-finetuned-model")
+        let otherWorkdirRun = makeFinishedRun(workdir: "other-dataset", model: "should-not-appear",
+                                              adapterPath: "adapters/should-not-appear")
+        let vm = TuningChatViewModel(
+            server: makeReadyServer(),
+            providerFactory: { _ in MockChatProvider(responses: [self.okResponse]) },
+            dataset: { dataset },
+            runs: { [customRun, otherWorkdirRun] },
+            isTuneOrBaselineActive: { false },
+            fileURL: tempFileURL())
+
+        XCTAssertEqual(vm.availableBaseModels,
+                       [FineTuneViewModel.smallModel, MlxServerConfig.defaultModel, "custom-finetuned-model"])
     }
 }

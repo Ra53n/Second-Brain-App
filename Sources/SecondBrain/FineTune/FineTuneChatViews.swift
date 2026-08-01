@@ -61,6 +61,7 @@ struct FineTuneChatDetailView: View {
             Circle().fill(statusColor).frame(width: 8, height: 8)
             Text(statusText).font(.caption).lineLimit(1)
             Spacer()
+            basePicker
             variantButton(.baseline)
             variantButton(.tuned)
             Button {
@@ -100,6 +101,25 @@ struct FineTuneChatDetailView: View {
 
     private func variantLabel(_ variant: FineTuneModelVariant) -> String {
         variant == .baseline ? "Базовая" : "Тюн"
+    }
+
+    /// Пикер базы чата (задача 92): baseline↔тюн сравниваются на одной базе, смена
+    /// базы — рестарт mlx-сервера (см. `.help`), поэтому заблокирован во время генерации.
+    private var basePicker: some View {
+        Picker("База", selection: chatBaseModelBinding) {
+            ForEach(viewModel.availableBaseModels, id: \.self) { model in
+                Text(TuneSelection.adapterDirName(model: model)).tag(model)
+            }
+        }
+        .labelsHidden()
+        .frame(maxWidth: 170)
+        .disabled(viewModel.isGenerating)
+        .accessibilityValue(TuneSelection.adapterDirName(model: viewModel.chatBaseModel))
+        .help("Смена базы перезапускает mlx-сервер — загрузка модели может занять до минуты.")
+    }
+
+    private var chatBaseModelBinding: Binding<String> {
+        Binding(get: { viewModel.chatBaseModel }, set: { viewModel.setChatBaseModel($0) })
     }
 
     private func variantButton(_ variant: FineTuneModelVariant) -> some View {
