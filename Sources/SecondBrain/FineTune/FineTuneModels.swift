@@ -361,6 +361,19 @@ enum FineTuneError: LocalizedError, Equatable {
     case noChatProvider
     /// Модель ответила пустым текстом на генерацию критериев.
     case emptyCriteriaResponse
+    /// `mlx_lm.server` не поднялся: нет python/модуля, порт занят чужим,
+    /// не ответил за отведённое время (задача 85).
+    case mlxServerUnavailable(String)
+    /// Тюн или baseline активен — mlx не тянет их одновременно с чатом/батчем (задача 85).
+    case tuneActive
+    /// `.tuned` без `adapters/adapters.safetensors` — сначала прогнать тюн (задача 85).
+    case adapterMissing
+    /// Мини-чат/батч (задача 85): `dataset()` не нашёл датасет «Встречи» — каталог
+    /// ещё не просканирован (не путать с `.noRepoRoot` — репозиторий может быть задан).
+    case datasetNotFound
+    /// Батч-прогон (задача 85): `valid.jsonl` пуст или ни одна строка не разобралась
+    /// как валидный пример — пустой отчёт молча затёр бы прежний артефакт (P6).
+    case validSetEmpty(String)
 
     var errorDescription: String? {
         switch self {
@@ -382,6 +395,16 @@ enum FineTuneError: LocalizedError, Equatable {
             return "Нет доступного провайдера чата — настройте модель в Настройки → Модели."
         case .emptyCriteriaResponse:
             return "Модель вернула пустой ответ."
+        case let .mlxServerUnavailable(detail):
+            return "mlx-сервер недоступен: \(detail)"
+        case .tuneActive:
+            return "Идёт тюн или снятие baseline — чат и батч недоступны, дождитесь завершения."
+        case .adapterMissing:
+            return "Адаптер не найден — сначала прогоните тюн."
+        case .datasetNotFound:
+            return "Датасет «Встречи» не найден — открой раздел «Тюнинг»."
+        case let .validSetEmpty(path):
+            return "valid.jsonl пуст или не содержит валидных примеров: \(path)"
         }
     }
 }

@@ -15,6 +15,8 @@ enum FineTuneDatasetTab: String, CaseIterable, Identifiable {
     case baseline = "Baseline"
     case criteria = "Критерии"
     case runs = "Прогоны"
+    /// Мини-чат оценки уверенности (задача 85) — только для датасета «Встречи».
+    case chat = "Чат"
 
     var id: String { rawValue }
 
@@ -25,6 +27,7 @@ enum FineTuneDatasetTab: String, CaseIterable, Identifiable {
         case .baseline: return "chart.bar.doc.horizontal"
         case .criteria: return "checklist"
         case .runs: return "chart.xyaxis.line"
+        case .chat: return "bubble.left.and.text.bubble.right"
         }
     }
 }

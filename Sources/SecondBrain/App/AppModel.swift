@@ -43,6 +43,10 @@ final class AppModel: ObservableObject {
     let fineTuneStore: FineTuneStore
     let fineTuneRunner: FineTuneRunner
     let fineTuneViewModel: FineTuneViewModel
+    /// Мини-чат оценки уверенности (задача 85): `mlx_lm.server` — управляемый child-процесс,
+    /// один на приложение (тюн/baseline и чат/батч исключены взаимным guard'ом по памяти).
+    let mlxServerManager: MlxServerManager
+    let tuningChatViewModel: TuningChatViewModel
 
     private var cancellables: Set<AnyCancellable> = []
 
@@ -107,9 +111,34 @@ final class AppModel: ObservableObject {
         self.fineTuneStore = fineTuneStore
         let fineTuneRunner = FineTuneRunner(fineTuneRoot: fineTuneRoot())
         self.fineTuneRunner = fineTuneRunner
+
+        // Мини-чат тюнинга (задача 85): резолвер python привязан к реальному
+        // fineTuneRoot (дефолт MlxServerManager бьёт в ~/finetune — здесь тот же
+        // репозиторий, что и у остального раздела «Тюнинг»).
+        let mlxServerManager = MlxServerManager(pythonResolver: {
+            guard let root = fineTuneRoot() else { return nil }
+            var environment = ProcessInfo.processInfo.environment
+            environment["PATH"] = MCPEnv.augmentedPATH(extra: environment["PATH"] ?? "")
+            let candidates = FineTuneEnvironment.candidates(fineTuneRoot: root, environment: environment)
+            return await Task.detached { candidates.first { MlxServerManager.probeServerModule($0) } }.value
+        })
+        self.mlxServerManager = mlxServerManager
+
         fineTuneViewModel = FineTuneViewModel(store: fineTuneStore, runner: fineTuneRunner,
                                               fineTuneRoot: fineTuneRoot,
-                                              criteriaProviders: { router.resolveChatProviders(for: .finetuneCriteria) })
+                                              criteriaProviders: { router.resolveChatProviders(for: .finetuneCriteria) },
+                                              stopMlxServer: { [weak mlxServerManager] in mlxServerManager?.stopNow() })
+
+        let fineTuneViewModelForChat = fineTuneViewModel
+        tuningChatViewModel = TuningChatViewModel(
+            server: mlxServerManager,
+            dataset: { [weak fineTuneViewModelForChat] in
+                fineTuneViewModelForChat?.datasets.first { $0.workdir == "meetings" }
+            },
+            isTuneOrBaselineActive: { [weak fineTuneStore, weak fineTuneViewModelForChat] in
+                (fineTuneStore?.runs.contains { $0.status == .running } ?? false)
+                    || (fineTuneViewModelForChat?.isSnapshottingBaseline ?? false)
+            })
 
         wire()
     }

@@ -60,6 +60,9 @@ final class FineTuneViewModel: ObservableObject {
     private let runner: FineTuneRunner
     private let fineTuneRoot: () -> URL?
     private let criteriaGenerator: FineTuneCriteriaGenerator
+    /// Взаимный guard по mlx-памяти (задача 85): тюн/baseline и мини-чат не тянут
+    /// mlx одновременно — старт любого из них гасит наш mlx-сервер первым.
+    private let stopMlxServer: () -> Void
 
     private var runGen = 0
     private var environmentGen = 0
@@ -82,11 +85,13 @@ final class FineTuneViewModel: ObservableObject {
     private var isTicking = false
 
     init(store: FineTuneStore, runner: FineTuneRunner, fineTuneRoot: @escaping () -> URL?,
-        criteriaProviders: @escaping () -> [ResolvedChatProvider] = { [] }) {
+        criteriaProviders: @escaping () -> [ResolvedChatProvider] = { [] },
+        stopMlxServer: @escaping () -> Void = {}) {
         self.store = store
         self.runner = runner
         self.fineTuneRoot = fineTuneRoot
         self.criteriaGenerator = FineTuneCriteriaGenerator(providers: criteriaProviders)
+        self.stopMlxServer = stopMlxServer
     }
 
     /// Repeating-таймер сам себя не гасит: run loop держит его вечно, даже когда
@@ -200,6 +205,7 @@ final class FineTuneViewModel: ObservableObject {
             baselineErrorText = "Идёт обучение — mlx не потянет два процесса, дождитесь или остановите тюн."
             return
         }
+        stopMlxServer()
         snapshotGen += 1
         let gen = snapshotGen
         isSnapshottingBaseline = true
@@ -379,6 +385,7 @@ final class FineTuneViewModel: ObservableObject {
     }
 
     func start(dataset: FineTuneDataset, model: String, hyperparameters: FineTuneHyperparameters) async {
+        stopMlxServer()
         runGen += 1
         let gen = runGen
         errorText = nil

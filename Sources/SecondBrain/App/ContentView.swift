@@ -191,7 +191,8 @@ struct ContentView: View {
                                mcpViewModel: model.mcpServersViewModel,
                                knowledgeBaseStore: model.knowledgeBaseStore)
         } else if selection == .finetune {
-            FineTuneDetailView(store: model.fineTuneStore, viewModel: model.fineTuneViewModel)
+            FineTuneDetailView(store: model.fineTuneStore, viewModel: model.fineTuneViewModel,
+                              chatViewModel: model.tuningChatViewModel, mlxServer: model.mlxServerManager)
         } else if selection == .notes {
             if let url = vaultManager.selection,
                let node = vaultManager.root?.find(url) {

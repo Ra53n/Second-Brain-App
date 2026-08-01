@@ -163,6 +163,9 @@ struct FineTuneRunRow: View {
 struct FineTuneDetailView: View {
     @ObservedObject var store: FineTuneStore
     @ObservedObject var viewModel: FineTuneViewModel
+    /// Мини-чат оценки уверенности (задача 85) — вкладка «Чат».
+    @ObservedObject var chatViewModel: TuningChatViewModel
+    @ObservedObject var mlxServer: MlxServerManager
 
     var body: some View {
         Group {
@@ -200,6 +203,9 @@ struct FineTuneDetailView: View {
                 .id(dataset.id)
         case .runs:
             FineTuneRunDetailView(dataset: dataset, store: store, viewModel: viewModel)
+                .id(dataset.id)
+        case .chat:
+            FineTuneChatDetailView(dataset: dataset, viewModel: chatViewModel, server: mlxServer)
                 .id(dataset.id)
         }
     }
