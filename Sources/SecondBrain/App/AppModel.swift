@@ -138,6 +138,10 @@ final class AppModel: ObservableObject {
             isTuneOrBaselineActive: { [weak fineTuneStore, weak fineTuneViewModelForChat] in
                 (fineTuneStore?.runs.contains { $0.status == .running } ?? false)
                     || (fineTuneViewModelForChat?.isSnapshottingBaseline ?? false)
+            },
+            escalationResolver: { [weak registry] target in
+                guard let registry else { return .unavailable(reason: "провайдер недоступен") }
+                return EscalationTargetResolver.resolve(target: target, registry: registry)
             })
 
         wire()

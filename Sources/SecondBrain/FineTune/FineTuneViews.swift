@@ -166,6 +166,8 @@ struct FineTuneDetailView: View {
     /// Мини-чат оценки уверенности (задача 85) — вкладка «Чат».
     @ObservedObject var chatViewModel: TuningChatViewModel
     @ObservedObject var mlxServer: MlxServerManager
+    /// Пикер цели эскалации (задача 91) — провайдеры и модели чата.
+    @ObservedObject var registry: ProviderRegistry
 
     var body: some View {
         Group {
@@ -205,7 +207,7 @@ struct FineTuneDetailView: View {
             FineTuneRunDetailView(dataset: dataset, store: store, viewModel: viewModel)
                 .id(dataset.id)
         case .chat:
-            FineTuneChatDetailView(dataset: dataset, viewModel: chatViewModel, server: mlxServer)
+            FineTuneChatDetailView(dataset: dataset, viewModel: chatViewModel, server: mlxServer, registry: registry)
                 .id(dataset.id)
         }
     }

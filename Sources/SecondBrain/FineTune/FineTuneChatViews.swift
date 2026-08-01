@@ -13,6 +13,7 @@ struct FineTuneChatDetailView: View {
     let dataset: FineTuneDataset
     @ObservedObject var viewModel: TuningChatViewModel
     @ObservedObject var server: MlxServerManager
+    @ObservedObject var registry: ProviderRegistry
 
     @State private var reportsSnapshot: TuningChatViewModel.BatchReportsSnapshot?
 
@@ -39,6 +40,9 @@ struct FineTuneChatDetailView: View {
             sessionStatsSection
             Divider()
             pipelineConfigRow
+            if viewModel.escalationEnabled {
+                escalationTargetRow
+            }
             Divider()
             inputArea
             Divider()
@@ -129,6 +133,9 @@ struct FineTuneChatDetailView: View {
                             if let report = message.report {
                                 ConfidenceVerdictChip(report: report)
                             }
+                            if let escalation = message.escalation {
+                                EscalationBadge(record: escalation, shownVerdict: message.report?.verdict)
+                            }
                         }
                         .id(message.id)
                     }
@@ -167,6 +174,13 @@ struct FineTuneChatDetailView: View {
                                             formattedTokens(last.metrics.completionTokens)))
                             }
                         }
+                        if let escalation = viewModel.lastEscalation {
+                            GridRow {
+                                Text("")
+                                Text(lastEscalationLine(escalation, shownVerdict: last.verdict))
+                                    .foregroundStyle(escalation.status == .succeeded ? .purple : .orange)
+                            }
+                        }
                     }
                     .font(.caption)
                     Divider()
@@ -201,6 +215,15 @@ struct FineTuneChatDetailView: View {
                         Text("Токены (cost)").foregroundStyle(.secondary)
                         Text("\(formattedTokens(stats.promptTokens)) запрос + \(formattedTokens(stats.completionTokens)) ответ")
                     }
+                    if stats.escalatedCount + stats.escalationFailedCount > 0 {
+                        GridRow {
+                            Text("Эскалация").foregroundStyle(.secondary)
+                            Text(String(format: "%d из %d (%.0f%%) · неудач %d · +%.1f с · +%@ ток.",
+                                        stats.escalatedCount, stats.answered, stats.escalationShare * 100,
+                                        stats.escalationFailedCount, stats.escalationAddedLatency,
+                                        formattedTokens(stats.escalationPromptTokens + stats.escalationCompletionTokens)))
+                        }
+                    }
                 }
                 .font(.caption)
             } else {
@@ -213,8 +236,10 @@ struct FineTuneChatDetailView: View {
         // Голый VStack не гарантированно всплывает в AX-дерево — схлопываем в один
         // элемент, чтобы value доходил до System Events (замечание ревью задачи 88).
         .accessibilityElement(children: .combine)
-        .accessibilityValue(stats.map { sessionStatsAccessibilityValue($0, lastReport: lastReport, variant: viewModel.modelVariant) }
-                            ?? "статистика (\(variantLabel(viewModel.modelVariant))): пока нет ответов")
+        .accessibilityValue(stats.map {
+            sessionStatsAccessibilityValue($0, lastReport: lastReport, lastEscalation: viewModel.lastEscalation,
+                                            variant: viewModel.modelVariant)
+        } ?? "статистика (\(variantLabel(viewModel.modelVariant))): пока нет ответов")
         .padding(.horizontal, 10)
         .padding(.vertical, 6)
     }
@@ -232,15 +257,40 @@ struct FineTuneChatDetailView: View {
         value.formatted(.number.grouping(.automatic).locale(Locale(identifier: "ru_RU")))
     }
 
+    /// Строка эскалации последнего ответа для блока «Последний запрос»: успех —
+    /// оба вердикта (триггер дешёвой → итог показанного), неудача — причина.
+    private func lastEscalationLine(_ escalation: EscalationRecord, shownVerdict: ConfidenceVerdict) -> String {
+        switch escalation.status {
+        case .succeeded:
+            return "эскалация: \(escalation.providerID ?? "?")/\(escalation.model ?? "?"), " +
+                "\(escalation.trigger.uiLabel) → \(shownVerdict.uiLabel)"
+        case .failed:
+            return "эскалация не удалась: \(escalation.failureReason ?? "причина неизвестна")"
+        case .unavailable:
+            return "эскалация недоступна: \(escalation.failureReason ?? "причина неизвестна")"
+        }
+    }
+
     private func sessionStatsAccessibilityValue(_ stats: TuningChatSessionStats,
                                                  lastReport: ConfidenceReport?,
+                                                 lastEscalation: EscalationRecord?,
                                                  variant: FineTuneModelVariant) -> String {
         let last = lastReport.map {
             "последний запрос: \($0.verdict.uiLabel), вызовов \($0.metrics.totalCalls); "
         } ?? ""
-        return "статистика (\(variantLabel(variant))): \(last)сессия: отвечено \(stats.answered), " +
-        "отклонено \(stats.rejected), повторный инференс \(stats.needingReinference), " +
-        "доп. вызовов \(stats.extraCallsTotal), наценка latency ×\(String(format: "%.2f", stats.latencyFactor))"
+        let escalationLast: String
+        if let lastReport, let lastEscalation {
+            escalationLast = "\(lastEscalationLine(lastEscalation, shownVerdict: lastReport.verdict)); "
+        } else {
+            escalationLast = ""
+        }
+        let escalationSession = (stats.escalatedCount + stats.escalationFailedCount) > 0
+            ? "эскалаций \(stats.escalatedCount), неудач \(stats.escalationFailedCount); "
+            : ""
+        return "статистика (\(variantLabel(variant))): \(last)\(escalationLast)\(escalationSession)" +
+        "сессия: отвечено \(stats.answered), отклонено \(stats.rejected), " +
+        "повторный инференс \(stats.needingReinference), доп. вызовов \(stats.extraCallsTotal), " +
+        "наценка latency ×\(String(format: "%.2f", stats.latencyFactor))"
     }
 
     // MARK: - Регулировка пайплайна
@@ -267,10 +317,72 @@ struct FineTuneChatDetailView: View {
                 config.selfCheckEnabled = on
                 viewModel.setPipelineConfig(config)
             }
+            pipelineChip("Эскалация", isOn: viewModel.escalationEnabled) { on in
+                viewModel.setEscalationEnabled(on)
+            }
+            .help("UNSURE/FAIL дешёвой модели повторяется на выбранной сильной; при всех выключенных проверках вердикт всегда UNSURE — эскалация сработает на каждом сообщении")
             Spacer()
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 6)
+    }
+
+    // MARK: - Цель эскалации
+
+    private var escalationTargetRow: some View {
+        HStack(spacing: 8) {
+            Picker("Сильная модель", selection: escalationProviderBinding) {
+                Text("Не выбрано").tag(Self.noProviderTag)
+                ForEach(registry.descriptors(supporting: .chat)) { descriptor in
+                    Text(descriptor.displayName).tag(Optional(descriptor.id))
+                }
+            }
+            .labelsHidden()
+            .frame(maxWidth: 220)
+            .accessibilityValue(escalationProviderAccessibilityValue)
+            TextField("модель", text: escalationModelBinding)
+                .textFieldStyle(.roundedBorder)
+                .frame(width: 180)
+                .disabled(viewModel.escalationTarget == nil)
+            Spacer()
+        }
+        .disabled(viewModel.isGenerating)
+        .padding(.horizontal, 10)
+        .padding(.bottom, 6)
+    }
+
+    private static let noProviderTag: ProviderID? = nil
+
+    private var escalationProviderBinding: Binding<ProviderID?> {
+        Binding(
+            get: { viewModel.escalationTarget?.providerID },
+            set: { newID in
+                guard let newID else {
+                    viewModel.setEscalationTarget(nil)
+                    return
+                }
+                let model = registry.preferredDefaultModel(for: newID, capability: .chat) ?? ""
+                viewModel.setEscalationTarget(EscalationTarget(providerID: newID, model: model))
+            }
+        )
+    }
+
+    private var escalationModelBinding: Binding<String> {
+        Binding(
+            get: { viewModel.escalationTarget?.model ?? "" },
+            set: { newModel in
+                guard let providerID = viewModel.escalationTarget?.providerID else { return }
+                viewModel.setEscalationTarget(EscalationTarget(providerID: providerID, model: newModel))
+            }
+        )
+    }
+
+    private var escalationProviderAccessibilityValue: String {
+        guard let target = viewModel.escalationTarget,
+              let descriptor = registry.descriptor(for: target.providerID) else {
+            return "Не выбрано"
+        }
+        return descriptor.displayName
     }
 
     private func pipelineChip(_ label: String, isOn: Bool, toggle: @escaping (Bool) -> Void) -> some View {
@@ -472,6 +584,50 @@ private struct ConfidenceVerdictChip: View {
         let m = report.metrics
         return "вызовов \(m.totalCalls) · latency осн. \(String(format: "%.1f", m.primaryLatency)) с / " +
             "полная \(String(format: "%.1f", m.totalLatency)) с · токены \(m.promptTokens)+\(m.completionTokens)"
+    }
+}
+
+/// Бейдж эскалации под сообщением (задача 91): успех — фиолетовая капсула с целью
+/// эскалации + оба вердикта; неудача/недоступность — оранжевая капсула с причиной.
+private struct EscalationBadge: View {
+    let record: EscalationRecord
+    let shownVerdict: ConfidenceVerdict?
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Text(capsuleLabel)
+                .font(.caption.bold())
+                .padding(.horizontal, 8)
+                .padding(.vertical, 2)
+                .background(Capsule().fill(color.opacity(0.18)))
+                .foregroundStyle(color)
+            Text(detailText)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityValue("эскалация: \(capsuleLabel) — \(detailText)")
+    }
+
+    private var color: Color { record.status == .succeeded ? .purple : .orange }
+
+    private var capsuleLabel: String {
+        switch record.status {
+        case .succeeded: return "⤴ \(record.providerID ?? "?")/\(record.model ?? "?")"
+        case .failed: return "эскалация не удалась"
+        // Недоступность — эскалация не запускалась вовсе, «не удалась» вводила бы в заблуждение.
+        case .unavailable: return "эскалация недоступна"
+        }
+    }
+
+    private var detailText: String {
+        switch record.status {
+        case .succeeded:
+            return "\(record.trigger.uiLabel) → \(shownVerdict?.uiLabel ?? "?")"
+        case .failed, .unavailable:
+            return record.failureReason ?? "причина неизвестна"
+        }
     }
 }
 

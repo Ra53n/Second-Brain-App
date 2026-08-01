@@ -1,6 +1,8 @@
 // TuningChatStoreTests.swift — персистентность мини-чата тюнинга (задача 85, P2, задача
 // 89 — раздельные треды по варианту): round-trip, карантин битого файла, миграция
 // плоского старого документа в `threads`, незнакомый вариант в ключе не роняет декод.
+// Задача 91: миграция документа без escalation-полей (тред/документ/сообщение), round-trip
+// с заполненными escalationTarget/escalationEnabled/escalation.
 
 import XCTest
 @testable import SecondBrain
@@ -122,6 +124,72 @@ final class TuningChatStoreTests: XCTestCase {
         let url = tempDir.appendingPathComponent("chat.json")
         try Data("{}".utf8).write(to: url)
         XCTAssertEqual(TuningChatPersistence.load(from: url), TuningChatDocument())
+    }
+
+    // MARK: - Задача 91: каскадная эскалация
+
+    /// Документ ДО задачи 91: threads с messages/pipelineConfig, но без escalation-полей
+    /// нигде (ни `escalationEnabled` в треде, ни `escalationTarget` в документе, ни
+    /// `escalation` в сообщении) — миграция на дефолты, без потерь истории.
+    func testMigrationFromPreEscalationDocumentDefaultsAllNewFields() throws {
+        let url = tempDir.appendingPathComponent("chat.json")
+        let json = """
+        {"threads":{"baseline":{"messages":[{"id":"11111111-1111-1111-1111-111111111111","role":"user","content":"Привет"},
+        {"id":"22222222-2222-2222-2222-222222222222","role":"assistant","content":"{}"}],
+        "pipelineConfig":{"constraintEnabled":true,"redundancyEnabled":false,"scoringEnabled":false,"selfCheckEnabled":false}}},
+        "modelVariant":"baseline"}
+        """
+        try Data(json.utf8).write(to: url)
+        let loaded = TuningChatPersistence.load(from: url)
+
+        XCTAssertNil(loaded.escalationTarget, "документная цель эскалации появилась в задаче 91")
+        let baselineThread = try XCTUnwrap(loaded.threads["baseline"])
+        XCTAssertFalse(baselineThread.escalationEnabled, "тумблер эскалации мигрирует в false")
+        XCTAssertEqual(baselineThread.messages.count, 2, "история цела")
+        XCTAssertNil(baselineThread.messages[0].escalation)
+        XCTAssertNil(baselineThread.messages[1].escalation)
+    }
+
+    /// Совсем старый плоский документ (задача 85, до треды/эскалации) — та же миграция
+    /// на дефолты, но ещё и через ветку плоского документа `init(from:)`.
+    func testMigrationFromFlatPreEscalationDocumentDefaultsEscalationFields() throws {
+        let url = tempDir.appendingPathComponent("chat.json")
+        let json = """
+        {"messages":[{"id":"11111111-1111-1111-1111-111111111111","role":"user","content":"Привет"}],
+        "modelVariant":"baseline",
+        "pipelineConfig":{"constraintEnabled":true,"redundancyEnabled":false,"scoringEnabled":false,"selfCheckEnabled":false}}
+        """
+        try Data(json.utf8).write(to: url)
+        let loaded = TuningChatPersistence.load(from: url)
+
+        XCTAssertNil(loaded.escalationTarget)
+        let baselineThread = try XCTUnwrap(loaded.threads["baseline"])
+        XCTAssertFalse(baselineThread.escalationEnabled)
+        XCTAssertEqual(baselineThread.messages.count, 1)
+    }
+
+    func testRoundTripWithEscalationTargetEnabledAndMessageRecord() {
+        let url = tempDir.appendingPathComponent("chat.json")
+        let cheapReport = ConfidenceReport(verdict: .unsure, reasons: ["предупреждение"],
+                                            metrics: ConfidenceMetrics(totalCalls: 1), checks: [])
+        let strongReport = ConfidenceReport(verdict: .ok, reasons: [],
+                                             metrics: ConfidenceMetrics(totalCalls: 1), checks: [])
+        let escalation = EscalationRecord(status: .succeeded, trigger: .unsure, providerID: "openai",
+                                           model: "gpt-5", primaryReport: cheapReport)
+        let document = TuningChatDocument(
+            threads: [
+                "baseline": TuningChatThread(
+                    messages: [
+                        TuningChatMessage(role: "user", content: "Привет"),
+                        TuningChatMessage(role: "assistant", content: "сильный ответ", report: strongReport,
+                                          modelVariant: "baseline", escalation: escalation),
+                    ],
+                    pipelineConfig: .default, escalationEnabled: true),
+            ],
+            modelVariant: "baseline",
+            escalationTarget: EscalationTarget(providerID: "openai", model: "gpt-5"))
+        TuningChatPersistence.save(document, to: url)
+        XCTAssertEqual(TuningChatPersistence.load(from: url), document)
     }
 
     /// Новый формат: незнакомый вариант в ключе `threads` («значение из будущего») —

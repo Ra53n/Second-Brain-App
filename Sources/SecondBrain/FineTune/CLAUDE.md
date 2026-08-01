@@ -43,6 +43,12 @@
 - `FineTuneCriteriaPrompts` (P1) / `FineTuneCriteriaGenerator` — генерация `criteria.md`
   по примерам датасета через `FunctionRouter` (`AppFunction.finetuneCriteria`), фоллбэк
   по кандидатам как в `MeetingPipeline.summarizeStep`.
+- `Confidence/EscalationCore` (P1) — каскадная эскалация (задача 91): дешёвая модель
+  чата тюнинга не уверена (UNSURE/FAIL) → повтор на выбранной пользователем сильной.
+  `EscalationTargetResolver` — единственная точка контакта эскалации с
+  `ProviderRegistry`. Инвариант: `TuningChatMessage.report` — всегда отчёт ПОКАЗАННОГО
+  ответа; отчёт дешёвой ступени при успешной эскалации лежит в
+  `escalation.primaryReport`, при неудаче/недоступности — не дублируется (`nil`).
 
 ## Инварианты
 

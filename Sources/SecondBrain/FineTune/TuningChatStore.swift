@@ -16,15 +16,17 @@ struct TuningChatMessage: Identifiable, Codable, Equatable {
     var report: ConfidenceReport?
     var modelVariant: String?
     var createdAt: Date
+    var escalation: EscalationRecord?
 
     init(id: UUID = UUID(), role: String, content: String, report: ConfidenceReport? = nil,
-         modelVariant: String? = nil, createdAt: Date = Date()) {
+         modelVariant: String? = nil, createdAt: Date = Date(), escalation: EscalationRecord? = nil) {
         self.id = id
         self.role = role
         self.content = content
         self.report = report
         self.modelVariant = modelVariant
         self.createdAt = createdAt
+        self.escalation = escalation
     }
 
     init(from decoder: Decoder) throws {
@@ -35,6 +37,7 @@ struct TuningChatMessage: Identifiable, Codable, Equatable {
         report = try c.decodeIfPresent(ConfidenceReport.self, forKey: .report)
         modelVariant = try c.decodeIfPresent(String.self, forKey: .modelVariant)
         createdAt = try c.decodeIfPresent(Date.self, forKey: .createdAt) ?? Date()
+        escalation = try c.decodeIfPresent(EscalationRecord.self, forKey: .escalation)
     }
 }
 
@@ -43,26 +46,35 @@ struct TuningChatMessage: Identifiable, Codable, Equatable {
 struct TuningChatThread: Codable, Equatable {
     var messages: [TuningChatMessage]
     var pipelineConfig: ConfidencePipelineConfig
+    var escalationEnabled: Bool
 
-    init(messages: [TuningChatMessage] = [], pipelineConfig: ConfidencePipelineConfig = .default) {
+    init(messages: [TuningChatMessage] = [], pipelineConfig: ConfidencePipelineConfig = .default,
+         escalationEnabled: Bool = false) {
         self.messages = messages
         self.pipelineConfig = pipelineConfig
+        self.escalationEnabled = escalationEnabled
     }
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         messages = try c.decodeIfPresent([TuningChatMessage].self, forKey: .messages) ?? []
         pipelineConfig = try c.decodeIfPresent(ConfidencePipelineConfig.self, forKey: .pipelineConfig) ?? .default
+        escalationEnabled = try c.decodeIfPresent(Bool.self, forKey: .escalationEnabled) ?? false
     }
 }
 
 struct TuningChatDocument: Codable, Equatable {
     var threads: [String: TuningChatThread]
     var modelVariant: String
+    /// Доверенная сильная модель эскалации — свойство окружения, не варианта:
+    /// per-document, а не per-thread (иначе настраивать дважды).
+    var escalationTarget: EscalationTarget?
 
-    init(threads: [String: TuningChatThread] = [:], modelVariant: String = FineTuneModelVariant.baseline.rawValue) {
+    init(threads: [String: TuningChatThread] = [:], modelVariant: String = FineTuneModelVariant.baseline.rawValue,
+         escalationTarget: EscalationTarget? = nil) {
         self.threads = threads
         self.modelVariant = modelVariant
+        self.escalationTarget = escalationTarget
     }
 
     /// Миграция задачи 89: старый плоский документ (`messages`/`pipelineConfig` на
@@ -73,6 +85,7 @@ struct TuningChatDocument: Codable, Equatable {
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         modelVariant = try c.decodeIfPresent(String.self, forKey: .modelVariant) ?? FineTuneModelVariant.baseline.rawValue
+        escalationTarget = try c.decodeIfPresent(EscalationTarget.self, forKey: .escalationTarget)
         if let decodedThreads = try c.decodeIfPresent([String: TuningChatThread].self, forKey: .threads) {
             threads = decodedThreads
             return
@@ -99,10 +112,11 @@ struct TuningChatDocument: Codable, Equatable {
         var c = encoder.container(keyedBy: CodingKeys.self)
         try c.encode(threads, forKey: .threads)
         try c.encode(modelVariant, forKey: .modelVariant)
+        try c.encodeIfPresent(escalationTarget, forKey: .escalationTarget)
     }
 
     private enum CodingKeys: String, CodingKey {
-        case threads, modelVariant, messages, pipelineConfig
+        case threads, modelVariant, messages, pipelineConfig, escalationTarget
     }
 }
 

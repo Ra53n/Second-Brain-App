@@ -7,6 +7,12 @@
 // `pipelineConfig` остаются `@Published`-проекциями активного треда, чтобы не
 // трогать вьюхи и тесты, завязанные на них. Единственная точка записи в тред —
 // `syncActiveThread()`, зовётся после каждой мутации проекций перед `persistNow()`.
+//
+// Задача 91: каскадная эскалация — `escalationEnabled` тредовая (симметрично
+// `pipelineConfig`), `escalationTarget` документная (доверенная сильная модель —
+// свойство окружения, не варианта). Вторая ступень — обычный `ConfidencePipeline`
+// поверх резолвнутого провайдера, `CancellationError` перебрасывается наверх и не
+// деградирует в `.failed` (P5-отмена).
 
 import Foundation
 
@@ -34,10 +40,13 @@ final class TuningChatViewModel: ObservableObject {
             let next = threads[modelVariant.rawValue] ?? TuningChatThread()
             messages = next.messages
             pipelineConfig = next.pipelineConfig
+            escalationEnabled = next.escalationEnabled
             persistNow()
         }
     }
     @Published var pipelineConfig: ConfidencePipelineConfig
+    @Published var escalationEnabled: Bool
+    @Published var escalationTarget: EscalationTarget?
     @Published private(set) var threads: [String: TuningChatThread]
     @Published private(set) var isGenerating = false
     @Published var progressText: String?
@@ -56,6 +65,7 @@ final class TuningChatViewModel: ObservableObject {
     private let fileURL: URL
     private let systemPromptLoader: (FineTuneDataset) -> String?
     private let redundancyCount: Int
+    private let escalationResolver: @MainActor (EscalationTarget?) -> EscalationResolution
 
     private var chatGen = 0
     /// Текущая генерация (send/runBatch) — держим Task, чтобы clearChat()/deinit
@@ -69,7 +79,10 @@ final class TuningChatViewModel: ObservableObject {
          isTuneOrBaselineActive: @escaping () -> Bool,
          fileURL: URL = TuningChatPersistence.defaultFileURL,
          systemPromptLoader: @escaping (FineTuneDataset) -> String? = TuningChatViewModel.defaultSystemPromptLoader,
-         redundancyCount: Int = 3) {
+         redundancyCount: Int = 3,
+         escalationResolver: @escaping @MainActor (EscalationTarget?) -> EscalationResolution = { _ in
+             .unavailable(reason: "модель эскалации не выбрана")
+         }) {
         self.server = server
         self.providerFactory = providerFactory
         self.dataset = dataset
@@ -77,6 +90,7 @@ final class TuningChatViewModel: ObservableObject {
         self.fileURL = fileURL
         self.systemPromptLoader = systemPromptLoader
         self.redundancyCount = redundancyCount
+        self.escalationResolver = escalationResolver
 
         let document = TuningChatPersistence.load(from: fileURL)
         threads = document.threads
@@ -85,6 +99,8 @@ final class TuningChatViewModel: ObservableObject {
         let activeThread = document.threads[variant.rawValue] ?? TuningChatThread()
         messages = activeThread.messages
         pipelineConfig = activeThread.pipelineConfig
+        escalationEnabled = activeThread.escalationEnabled
+        escalationTarget = document.escalationTarget
     }
 
     /// Тумблер действует только на следующее сообщение (допущение задачи 86) — точка
@@ -95,14 +111,33 @@ final class TuningChatViewModel: ObservableObject {
         persistNow()
     }
 
-    /// Пишет проекции (`messages`/`pipelineConfig`) в тред активного варианта — единая
-    /// точка синхронизации перед каждым `persistNow()`.
+    /// Тумблер эскалации действует только на следующее сообщение активного треда —
+    /// симметрично `setPipelineConfig`.
+    func setEscalationEnabled(_ enabled: Bool) {
+        escalationEnabled = enabled
+        syncActiveThread()
+        persistNow()
+    }
+
+    /// Цель эскалации — свойство документа, не треда/варианта: доверенная сильная
+    /// модель одна на весь чат тюнинга.
+    func setEscalationTarget(_ target: EscalationTarget?) {
+        escalationTarget = target
+        // Поле документное, но контракт makeDocument требует синхронизацию перед каждым
+        // сохранением — иначе несинхронизированные проекции треда уехали бы на диск.
+        syncActiveThread()
+        persistNow()
+    }
+
+    /// Пишет проекции (`messages`/`pipelineConfig`/`escalationEnabled`) в тред активного
+    /// варианта — единая точка синхронизации перед каждым `persistNow()`.
     private func syncActiveThread() {
         saveThread(for: modelVariant)
     }
 
     private func saveThread(for variant: FineTuneModelVariant) {
-        threads[variant.rawValue] = TuningChatThread(messages: messages, pipelineConfig: pipelineConfig)
+        threads[variant.rawValue] = TuningChatThread(messages: messages, pipelineConfig: pipelineConfig,
+                                                       escalationEnabled: escalationEnabled)
     }
 
     var sessionStats: TuningChatSessionStats? {
@@ -112,6 +147,11 @@ final class TuningChatViewModel: ObservableObject {
     /// Отчёт последнего ответа активного треда — для блока «Последний запрос» (задача 90).
     var lastReport: ConfidenceReport? {
         messages.last(where: { $0.role == "assistant" })?.report
+    }
+
+    /// Запись эскалации последнего ответа активного треда — рядом с `lastReport`.
+    var lastEscalation: EscalationRecord? {
+        messages.last(where: { $0.role == "assistant" })?.escalation
     }
 
     nonisolated static func defaultSystemPromptLoader(dataset: FineTuneDataset) -> String? {
@@ -161,6 +201,11 @@ final class TuningChatViewModel: ObservableObject {
         let settings = ChatSettings(model: config.model, temperature: FineTuneRunner.baselineTemperature)
         let pipeline = ConfidencePipeline(provider: provider, settings: settings, redundancyCount: redundancyCount,
                                            config: pipelineConfig)
+        // Снимок ДО Task: тумблер/цель/конфиг эскалации не должны подхватить
+        // изменение, сделанное пользователем, пока запрос уже летит.
+        let escalationEnabledSnapshot = escalationEnabled
+        let escalationTargetSnapshot = escalationTarget
+        let escalationConfig = EscalationCore.escalationPipelineConfig(from: pipelineConfig)
 
         // Task, а не голый await: clearChat()/deinit зовут Task.cancel() — без него
         // отмена была бы только косметической (chatGen-гейт режет запись результата,
@@ -176,8 +221,42 @@ final class TuningChatViewModel: ObservableObject {
                     }
                 }
                 guard gen == chatGen else { return }
-                messages.append(TuningChatMessage(role: "assistant", content: result.answerRaw,
-                                                   report: result.report, modelVariant: variant.rawValue))
+
+                var attempt: EscalationCore.Attempt?
+                if EscalationCore.shouldEscalate(enabled: escalationEnabledSnapshot, verdict: result.report.verdict) {
+                    switch escalationResolver(escalationTargetSnapshot) {
+                    case let .unavailable(reason):
+                        attempt = .unavailable(reason: reason)
+                    case let .resolved(strong):
+                        progressText = "Эскалация: \(strong.displayName)…"
+                        let strongSettings = ChatSettings(model: strong.model, temperature: FineTuneRunner.baselineTemperature)
+                        let strongPipeline = ConfidencePipeline(provider: strong.provider, settings: strongSettings,
+                                                                 redundancyCount: redundancyCount, config: escalationConfig)
+                        do {
+                            let strongResult = try await strongPipeline.run(system: system, transcript: text, reference: nil) { step in
+                                Task { @MainActor [self] in
+                                    guard gen == self.chatGen else { return }
+                                    self.progressText = "Эскалация: \(step)"
+                                }
+                            }
+                            guard gen == chatGen else { return }
+                            attempt = .succeeded(answer: strongResult.answerRaw, report: strongResult.report,
+                                                  providerID: strong.providerID.rawValue, model: strong.model)
+                        } catch is CancellationError {
+                            throw CancellationError() // не деградирует в .failed — ловит внешний catch
+                        } catch {
+                            guard gen == chatGen else { return }
+                            attempt = .failed(reason: (error as? LocalizedError)?.errorDescription ?? error.localizedDescription,
+                                               providerID: strong.providerID.rawValue, model: strong.model)
+                        }
+                    }
+                }
+
+                guard gen == chatGen else { return }
+                let composed = EscalationCore.composeMessage(primaryAnswer: result.answerRaw, primaryReport: result.report,
+                                                              attempt: attempt)
+                messages.append(TuningChatMessage(role: "assistant", content: composed.content, report: composed.report,
+                                                   modelVariant: variant.rawValue, escalation: composed.escalation))
                 isGenerating = false
                 progressText = nil
                 generationTask = nil
@@ -228,7 +307,7 @@ final class TuningChatViewModel: ObservableObject {
     /// Общая точка сборки документа (паттерн `FineTuneStore.makeDocument`) — вызывающий
     /// код обязан звать `syncActiveThread()` перед мутацией, которую хочет сохранить.
     private func makeDocument() -> TuningChatDocument {
-        TuningChatDocument(threads: threads, modelVariant: modelVariant.rawValue)
+        TuningChatDocument(threads: threads, modelVariant: modelVariant.rawValue, escalationTarget: escalationTarget)
     }
 
     // MARK: - Батч-прогон (задача 85, критерий 6)

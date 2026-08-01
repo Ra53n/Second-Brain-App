@@ -192,7 +192,8 @@ struct ContentView: View {
                                knowledgeBaseStore: model.knowledgeBaseStore)
         } else if selection == .finetune {
             FineTuneDetailView(store: model.fineTuneStore, viewModel: model.fineTuneViewModel,
-                              chatViewModel: model.tuningChatViewModel, mlxServer: model.mlxServerManager)
+                              chatViewModel: model.tuningChatViewModel, mlxServer: model.mlxServerManager,
+                              registry: model.providerRegistry)
         } else if selection == .notes {
             if let url = vaultManager.selection,
                let node = vaultManager.root?.find(url) {

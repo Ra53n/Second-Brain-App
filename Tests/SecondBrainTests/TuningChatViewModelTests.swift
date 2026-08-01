@@ -3,6 +3,9 @@
 // персистит, clearChat во время генерации не роняет и не воскрешает поздний ответ.
 // Задача 89: независимость тредов по варианту — история/конфиг/статистика не текут
 // между baseline и tuned, переключение варианта возвращает всё без потерь.
+// Задача 91: каскадная эскалация — succeeded/unavailable/failed через инжектированный
+// escalationResolver, OK/тумблер выключен не зовёт вторую ступень, персист тумблера/цели,
+// lastEscalation.
 
 import XCTest
 @testable import SecondBrain
@@ -505,5 +508,241 @@ final class TuningChatViewModelTests: XCTestCase {
 
         let persisted = TuningChatPersistence.load(from: fileURL)
         XCTAssertEqual(persisted.threads[FineTuneModelVariant.baseline.rawValue]?.pipelineConfig, .allEnabled)
+    }
+
+    // MARK: - Задача 91: каскадная эскалация
+
+    /// Assignee/due вне транскрипта — мягкий constraint-провал (severity .warning),
+    /// достаточный для UNSURE уже при дефолтном пайплайне (только constraint, 1 вызов).
+    private let unsureResponse = #"{"action_items":[{"assignee":"Незнакомец","task":"сделать","due":"вчера"}]}"#
+    private let okResponse = #"{"action_items":[]}"#
+
+    func testSuccessfulEscalationReplacesAnswerAndReportWithStrongOneAndKeepsPrimaryReport() async throws {
+        let dataset = makeDataset()
+        let cheapProvider = MockChatProvider(responses: [unsureResponse])
+        let strongProvider = MockChatProvider(responses: ["{\"action_items\":[]}"])
+        let vm = TuningChatViewModel(
+            server: makeReadyServer(),
+            providerFactory: { _ in cheapProvider },
+            dataset: { dataset },
+            isTuneOrBaselineActive: { false },
+            fileURL: tempFileURL(),
+            escalationResolver: { _ in
+                .resolved(ResolvedChatProvider(provider: strongProvider, model: "strong-model",
+                                                providerID: "openai", displayName: "OpenAI"))
+            })
+        vm.escalationEnabled = true
+        vm.escalationTarget = EscalationTarget(providerID: "openai", model: "strong-model")
+        vm.input = "фрагмент встречи"
+        await vm.send()
+
+        XCTAssertNil(vm.errorText)
+        XCTAssertEqual(vm.messages.count, 2)
+        let assistant = vm.messages[1]
+        XCTAssertEqual(assistant.content, okResponse, "показанный ответ — сильной модели")
+        XCTAssertEqual(assistant.report?.verdict, .ok, "показанный report — сильной модели")
+        let escalation = try XCTUnwrap(assistant.escalation)
+        XCTAssertEqual(escalation.status, .succeeded)
+        XCTAssertEqual(escalation.trigger, .unsure, "trigger — вердикт дешёвой ступени")
+        XCTAssertNotNil(escalation.primaryReport, "дешёвый отчёт сохранён в записи")
+        XCTAssertEqual(escalation.primaryReport?.verdict, .unsure)
+        XCTAssertEqual(strongProvider.receivedMessages.count, 1, "сильная модель вызвана ровно один раз")
+    }
+
+    func testUnavailableEscalationKeepsCheapAnswerWithReasonAndNoErrorText() async throws {
+        let dataset = makeDataset()
+        let cheapProvider = MockChatProvider(responses: [unsureResponse])
+        let vm = TuningChatViewModel(
+            server: makeReadyServer(),
+            providerFactory: { _ in cheapProvider },
+            dataset: { dataset },
+            isTuneOrBaselineActive: { false },
+            fileURL: tempFileURL(),
+            escalationResolver: { _ in .unavailable(reason: "модель эскалации не выбрана") })
+        vm.escalationEnabled = true
+        vm.input = "фрагмент встречи"
+        await vm.send()
+
+        XCTAssertNil(vm.errorText, "недоступность цели — P6-деградация, не ошибка")
+        XCTAssertEqual(vm.messages.count, 2)
+        let assistant = vm.messages[1]
+        XCTAssertEqual(assistant.content, unsureResponse, "ответ дешёвой ступени сохранён")
+        let escalation = try XCTUnwrap(assistant.escalation)
+        XCTAssertEqual(escalation.status, .unavailable)
+        XCTAssertEqual(escalation.failureReason, "модель эскалации не выбрана")
+    }
+
+    func testStrongProviderErrorMarksEscalationFailedAndKeepsCheapAnswer() async throws {
+        let dataset = makeDataset()
+        let cheapProvider = MockChatProvider(responses: [unsureResponse])
+        let strongProvider = MockChatProvider(responses: ["{}"])
+        strongProvider.errorToThrow = LLMError.providerUnavailable("openai")
+        let vm = TuningChatViewModel(
+            server: makeReadyServer(),
+            providerFactory: { _ in cheapProvider },
+            dataset: { dataset },
+            isTuneOrBaselineActive: { false },
+            fileURL: tempFileURL(),
+            escalationResolver: { _ in
+                .resolved(ResolvedChatProvider(provider: strongProvider, model: "strong-model",
+                                                providerID: "openai", displayName: "OpenAI"))
+            })
+        vm.escalationEnabled = true
+        vm.escalationTarget = EscalationTarget(providerID: "openai", model: "strong-model")
+        vm.input = "фрагмент встречи"
+        await vm.send()
+
+        XCTAssertNil(vm.errorText, "ошибка сильной ступени не поднимается в errorText")
+        XCTAssertEqual(vm.messages.count, 2)
+        let assistant = vm.messages[1]
+        XCTAssertEqual(assistant.content, unsureResponse, "ответ дешёвой ступени сохранён при провале эскалации")
+        let escalation = try XCTUnwrap(assistant.escalation)
+        XCTAssertEqual(escalation.status, .failed)
+        XCTAssertNotNil(escalation.failureReason)
+    }
+
+    /// Допущение задачи 91: отмена посреди второй ступени — `CancellationError`
+    /// перебрасывается наружу, а не деградирует в `.failed`; сообщение не дописывается
+    /// (симметрично `testClearChatCancelsInFlightPipelineAndNoFurtherCallsArrive`).
+    func testCancellationDuringEscalationSecondStageDoesNotDegradeToFailedOrAppendMessage() async throws {
+        let dataset = makeDataset()
+        let cheapProvider = MockChatProvider(responses: [unsureResponse])
+        let strongProvider = MockChatProvider(responses: [okResponse])
+        strongProvider.delay = 0.2
+        let vm = TuningChatViewModel(
+            server: makeReadyServer(),
+            providerFactory: { _ in cheapProvider },
+            dataset: { dataset },
+            isTuneOrBaselineActive: { false },
+            fileURL: tempFileURL(),
+            escalationResolver: { _ in
+                .resolved(ResolvedChatProvider(provider: strongProvider, model: "strong-model",
+                                                providerID: "openai", displayName: "OpenAI"))
+            })
+        vm.escalationEnabled = true
+        vm.escalationTarget = EscalationTarget(providerID: "openai", model: "strong-model")
+        vm.input = "фрагмент встречи"
+
+        let task = Task { await vm.send() }
+        try? await Task.sleep(nanoseconds: 50_000_000) // дешёвый вызов завершился, сильный уже в полёте
+        vm.clearChat()
+        await task.value
+
+        XCTAssertTrue(vm.messages.isEmpty, "отмена посреди эскалации — сообщение не дописывается")
+        XCTAssertNil(vm.errorText, "CancellationError не деградирует в errorText/.failed")
+        XCTAssertFalse(vm.isGenerating)
+    }
+
+    func testOkVerdictDoesNotEscalateEvenWithToggleOn() async throws {
+        let dataset = makeDataset()
+        let cheapProvider = MockChatProvider(responses: [okResponse])
+        let strongProvider = MockChatProvider(responses: ["{}"])
+        let vm = TuningChatViewModel(
+            server: makeReadyServer(),
+            providerFactory: { _ in cheapProvider },
+            dataset: { dataset },
+            isTuneOrBaselineActive: { false },
+            fileURL: tempFileURL(),
+            escalationResolver: { _ in
+                .resolved(ResolvedChatProvider(provider: strongProvider, model: "strong-model",
+                                                providerID: "openai", displayName: "OpenAI"))
+            })
+        vm.escalationEnabled = true
+        vm.escalationTarget = EscalationTarget(providerID: "openai", model: "strong-model")
+        vm.input = "фрагмент встречи"
+        await vm.send()
+
+        XCTAssertNil(vm.messages.last?.escalation, "вердикт OK — эскалация не триггерится")
+        XCTAssertEqual(strongProvider.receivedMessages.count, 0, "сильная модель не вызывалась")
+    }
+
+    func testToggleOffDoesNotEscalateEvenWithUnsureVerdict() async throws {
+        let dataset = makeDataset()
+        let cheapProvider = MockChatProvider(responses: [unsureResponse])
+        let strongProvider = MockChatProvider(responses: ["{}"])
+        let vm = TuningChatViewModel(
+            server: makeReadyServer(),
+            providerFactory: { _ in cheapProvider },
+            dataset: { dataset },
+            isTuneOrBaselineActive: { false },
+            fileURL: tempFileURL(),
+            escalationResolver: { _ in
+                .resolved(ResolvedChatProvider(provider: strongProvider, model: "strong-model",
+                                                providerID: "openai", displayName: "OpenAI"))
+            })
+        vm.escalationEnabled = false
+        vm.escalationTarget = EscalationTarget(providerID: "openai", model: "strong-model")
+        vm.input = "фрагмент встречи"
+        await vm.send()
+
+        XCTAssertEqual(vm.messages.last?.report?.verdict, .unsure, "вердикт честно UNSURE")
+        XCTAssertNil(vm.messages.last?.escalation, "тумблер выключен — эскалация не запускается")
+        XCTAssertEqual(strongProvider.receivedMessages.count, 0, "сильная модель не вызывалась")
+    }
+
+    /// Тумблер/цель переживают перезапуск VM из того же файла; тумблер — per-thread
+    /// (симметрично `pipelineConfig` задачи 89).
+    func testEscalationEnabledAndTargetPersistAcrossReload() {
+        let fileURL = tempFileURL()
+        let vm = TuningChatViewModel(
+            server: makeReadyServer(),
+            providerFactory: { _ in MockChatProvider(responses: [self.okResponse]) },
+            dataset: { self.makeDataset() },
+            isTuneOrBaselineActive: { false },
+            fileURL: fileURL)
+        vm.setEscalationEnabled(true)
+        vm.setEscalationTarget(EscalationTarget(providerID: "openai", model: "gpt-5"))
+
+        let reloaded = TuningChatViewModel(
+            server: makeReadyServer(),
+            providerFactory: { _ in MockChatProvider(responses: [self.okResponse]) },
+            dataset: { self.makeDataset() },
+            isTuneOrBaselineActive: { false },
+            fileURL: fileURL)
+        XCTAssertTrue(reloaded.escalationEnabled)
+        XCTAssertEqual(reloaded.escalationTarget, EscalationTarget(providerID: "openai", model: "gpt-5"))
+    }
+
+    /// `escalationTarget` документный (общий на все варианты), `escalationEnabled` —
+    /// тредовый: включение в baseline не должно включать его в tuned.
+    func testEscalationEnabledIsPerThreadNotSharedAcrossVariants() throws {
+        let dataset = makeDataset(withTunedAdapter: true)
+        let fileURL = tempFileURL()
+        let vm = TuningChatViewModel(
+            server: makeReadyServer(),
+            providerFactory: { _ in MockChatProvider(responses: [self.okResponse]) },
+            dataset: { dataset },
+            isTuneOrBaselineActive: { false },
+            fileURL: fileURL)
+        vm.setEscalationEnabled(true)
+        XCTAssertTrue(vm.escalationEnabled)
+
+        vm.modelVariant = .tuned
+        XCTAssertFalse(vm.escalationEnabled, "у tuned свой (выключенный) тумблер")
+
+        vm.modelVariant = .baseline
+        XCTAssertTrue(vm.escalationEnabled, "baseline-тумблер не тронут переключением")
+    }
+
+    /// `lastEscalation` — запись эскалации именно последнего ассистентского сообщения.
+    func testLastEscalationReturnsLatestAssistantEscalationOrNil() {
+        let vm = TuningChatViewModel(
+            server: makeReadyServer(),
+            providerFactory: { _ in MockChatProvider(responses: [self.okResponse]) },
+            dataset: { self.makeDataset() },
+            isTuneOrBaselineActive: { false },
+            fileURL: tempFileURL())
+        XCTAssertNil(vm.lastEscalation, "пустой тред — эскалации нет")
+
+        let okReport = ConfidenceReport(verdict: .ok, reasons: [], metrics: ConfidenceMetrics(totalCalls: 1), checks: [])
+        let firstEscalation = EscalationRecord(status: .unavailable, trigger: .unsure, failureReason: "первая причина")
+        let secondEscalation = EscalationRecord(status: .succeeded, trigger: .fail, providerID: "openai",
+                                                 model: "gpt-5", primaryReport: okReport)
+        vm.messages = [
+            TuningChatMessage(role: "assistant", content: "первый", report: okReport, escalation: firstEscalation),
+            TuningChatMessage(role: "user", content: "вопрос"),
+            TuningChatMessage(role: "assistant", content: "второй", report: okReport, escalation: secondEscalation),
+        ]
+        XCTAssertEqual(vm.lastEscalation?.status, .succeeded, "lastEscalation — запись именно последнего ответа")
     }
 }
