@@ -150,10 +150,29 @@ struct FineTuneChatDetailView: View {
 
     private var sessionStatsSection: some View {
         let stats = viewModel.sessionStats // один вызов на проход body (computed по сообщениям)
+        let lastReport = viewModel.lastReport
         return VStack(alignment: .leading, spacing: 6) {
-            Text("Статистика сессии — \(variantLabel(viewModel.modelVariant))").font(.caption.bold())
+            Text("Статистика — \(variantLabel(viewModel.modelVariant))").font(.caption.bold())
             if let stats {
+                if let last = lastReport {
+                    Grid(alignment: .leadingFirstTextBaseline, horizontalSpacing: 12, verticalSpacing: 3) {
+                        GridRow {
+                            Text("Последний запрос").foregroundStyle(.secondary).gridColumnAlignment(.leading)
+                            HStack(spacing: 6) {
+                                statChip(last.verdict.uiLabel, color: last.verdict.uiColor)
+                                Text(String(format: "вызовов %d (доп. %d) · ответ %.1f с / всего %.1f с · %@ + %@ ток.",
+                                            last.metrics.totalCalls, last.metrics.extraCalls,
+                                            last.metrics.primaryLatency, last.metrics.totalLatency,
+                                            formattedTokens(last.metrics.promptTokens),
+                                            formattedTokens(last.metrics.completionTokens)))
+                            }
+                        }
+                    }
+                    .font(.caption)
+                    Divider()
+                }
                 HStack(spacing: 6) {
+                    Text("Сессия").font(.caption).foregroundStyle(.secondary)
                     statChip("Ответов: \(stats.answered)", color: .secondary)
                     statChip("OK: \(stats.ok)", color: .green)
                     statChip("UNSURE: \(stats.unsure)", color: .yellow)
@@ -194,8 +213,8 @@ struct FineTuneChatDetailView: View {
         // Голый VStack не гарантированно всплывает в AX-дерево — схлопываем в один
         // элемент, чтобы value доходил до System Events (замечание ревью задачи 88).
         .accessibilityElement(children: .combine)
-        .accessibilityValue(stats.map { sessionStatsAccessibilityValue($0, variant: viewModel.modelVariant) }
-                            ?? "статистика сессии (\(variantLabel(viewModel.modelVariant))): пока нет ответов")
+        .accessibilityValue(stats.map { sessionStatsAccessibilityValue($0, lastReport: lastReport, variant: viewModel.modelVariant) }
+                            ?? "статистика (\(variantLabel(viewModel.modelVariant))): пока нет ответов")
         .padding(.horizontal, 10)
         .padding(.vertical, 6)
     }
@@ -214,10 +233,14 @@ struct FineTuneChatDetailView: View {
     }
 
     private func sessionStatsAccessibilityValue(_ stats: TuningChatSessionStats,
+                                                 lastReport: ConfidenceReport?,
                                                  variant: FineTuneModelVariant) -> String {
-        "статистика сессии (\(variantLabel(variant))): отвечено \(stats.answered), отклонено \(stats.rejected), " +
-        "повторный инференс \(stats.needingReinference), доп. вызовов \(stats.extraCallsTotal), " +
-        "наценка latency ×\(String(format: "%.2f", stats.latencyFactor))"
+        let last = lastReport.map {
+            "последний запрос: \($0.verdict.uiLabel), вызовов \($0.metrics.totalCalls); "
+        } ?? ""
+        return "статистика (\(variantLabel(variant))): \(last)сессия: отвечено \(stats.answered), " +
+        "отклонено \(stats.rejected), повторный инференс \(stats.needingReinference), " +
+        "доп. вызовов \(stats.extraCallsTotal), наценка latency ×\(String(format: "%.2f", stats.latencyFactor))"
     }
 
     // MARK: - Регулировка пайплайна
@@ -441,25 +464,33 @@ private struct ConfidenceVerdictChip: View {
         .accessibilityValue("вердикт: \(verdictLabel)")
     }
 
-    private var verdictLabel: String {
-        switch report.verdict {
+    private var verdictLabel: String { report.verdict.uiLabel }
+
+    private var verdictColor: Color { report.verdict.uiColor }
+
+    private var metricsLine: String {
+        let m = report.metrics
+        return "вызовов \(m.totalCalls) · latency осн. \(String(format: "%.1f", m.primaryLatency)) с / " +
+            "полная \(String(format: "%.1f", m.totalLatency)) с · токены \(m.promptTokens)+\(m.completionTokens)"
+    }
+}
+
+// Единый маппинг вердикта в подпись и цвет — используется и чипом сообщения,
+// и блоком «Последний запрос» (ревью задачи 90: третья копия недопустима).
+extension ConfidenceVerdict {
+    var uiLabel: String {
+        switch self {
         case .ok: return "OK"
         case .unsure: return "UNSURE"
         case .fail: return "FAIL"
         }
     }
 
-    private var verdictColor: Color {
-        switch report.verdict {
+    var uiColor: Color {
+        switch self {
         case .ok: return .green
         case .unsure: return .yellow
         case .fail: return .red
         }
-    }
-
-    private var metricsLine: String {
-        let m = report.metrics
-        return "вызовов \(m.totalCalls) · latency осн. \(String(format: "%.1f", m.primaryLatency)) с / " +
-            "полная \(String(format: "%.1f", m.totalLatency)) с · токены \(m.promptTokens)+\(m.completionTokens)"
     }
 }

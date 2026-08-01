@@ -301,6 +301,40 @@ final class TuningChatViewModelTests: XCTestCase {
                        "после clearChat() ни один следующий вызов пайплайна не должен прийти")
     }
 
+    // Задача 90: `lastReport` — отчёт последнего ассистентского сообщения активного треда.
+    func testLastReportReturnsLatestAssistantReportOrNil() async {
+        let dataset = makeDataset()
+        let vm = TuningChatViewModel(
+            server: makeReadyServer(),
+            providerFactory: { _ in MockChatProvider(responses: ["{\"action_items\":[]}"]) },
+            dataset: { dataset },
+            isTuneOrBaselineActive: { false },
+            fileURL: tempFileURL())
+        XCTAssertNil(vm.lastReport, "пустой тред — отчёта нет")
+
+        vm.input = "первый фрагмент"
+        await vm.send()
+        let first = vm.lastReport
+        XCTAssertNotNil(first)
+
+        // «Последний, а не первый»: засеваем два ответа с разными вердиктами напрямую.
+        let okReport = ConfidenceReport(verdict: .ok, reasons: [], metrics: ConfidenceMetrics(
+            totalCalls: 1, extraCalls: 0, primaryLatency: 1, totalLatency: 1,
+            promptTokens: 1, completionTokens: 1), checks: [])
+        let failReport = ConfidenceReport(verdict: .fail, reasons: ["причина"], metrics: ConfidenceMetrics(
+            totalCalls: 1, extraCalls: 0, primaryLatency: 1, totalLatency: 1,
+            promptTokens: 1, completionTokens: 1), checks: [])
+        vm.messages = [
+            TuningChatMessage(role: "assistant", content: "первый", report: okReport),
+            TuningChatMessage(role: "user", content: "вопрос"),
+            TuningChatMessage(role: "assistant", content: "второй", report: failReport)
+        ]
+        XCTAssertEqual(vm.lastReport?.verdict, .fail, "lastReport — отчёт именно последнего ответа")
+        // Переключение варианта меняет тред — у пустого треда отчёта нет.
+        vm.modelVariant = .tuned
+        XCTAssertNil(vm.lastReport)
+    }
+
     // Задача 89 (ревью, P5): программная смена варианта во время генерации не должна
     // уронить ответ в чужой тред — прогон отменяется, как при clearChat().
     func testSwitchingVariantDuringGenerationCancelsAndKeepsThreadsClean() async throws {

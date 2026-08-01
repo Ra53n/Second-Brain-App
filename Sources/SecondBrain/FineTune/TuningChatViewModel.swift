@@ -109,6 +109,11 @@ final class TuningChatViewModel: ObservableObject {
         TuningChatSessionStats.compute(messages: messages)
     }
 
+    /// Отчёт последнего ответа активного треда — для блока «Последний запрос» (задача 90).
+    var lastReport: ConfidenceReport? {
+        messages.last(where: { $0.role == "assistant" })?.report
+    }
+
     nonisolated static func defaultSystemPromptLoader(dataset: FineTuneDataset) -> String? {
         guard let path = dataset.systemPromptPath else { return nil }
         return try? String(contentsOfFile: path, encoding: .utf8)
