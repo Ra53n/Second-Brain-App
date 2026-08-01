@@ -6,6 +6,10 @@
 // Задача 91: каскадная эскалация — succeeded/unavailable/failed через инжектированный
 // escalationResolver, OK/тумблер выключен не зовёт вторую ступень, персист тумблера/цели,
 // lastEscalation.
+// Задача 93: цель эскалации `.localTuned` — путь VM не отличает провайдера "mlx-local" от
+// облачного (резолвер уже отдал готовый ResolvedChatProvider), providerID/status
+// прокидываются в EscalationRecord как есть; availableTunedModels — пусто без прогонов,
+// distinct-базы finished-прогонов этого workdir (без дефолтов, в отличие от availableBaseModels).
 
 import XCTest
 @testable import SecondBrain
@@ -750,6 +754,106 @@ final class TuningChatViewModelTests: XCTestCase {
             TuningChatMessage(role: "assistant", content: "второй", report: okReport, escalation: secondEscalation),
         ]
         XCTAssertEqual(vm.lastEscalation?.status, .succeeded, "lastEscalation — запись именно последнего ответа")
+    }
+
+    // MARK: - Задача 93: локальная mlx-цель эскалации (.localTuned)
+
+    /// VM не отличает `.localTuned` от `.registry` в рантайме — резолвер (в проде
+    /// `EscalationTargetResolver` + строитель `localTune` из AppModel) уже отдал готовый
+    /// `ResolvedChatProvider` с сентинел-providerID "mlx-local". Мок здесь эмулирует именно
+    /// эту точку: успешная эскалация на локальную тюненую модель проходит confidence-пайплайн
+    /// и providerID/model записи — "mlx-local"/база тюна.
+    func testLocalTunedEscalationSucceedsWithMlxLocalProviderIDInRecord() async throws {
+        let dataset = makeDataset()
+        let cheapProvider = MockChatProvider(responses: [unsureResponse])
+        let strongProvider = MockChatProvider(responses: [okResponse])
+        let vm = TuningChatViewModel(
+            server: makeReadyServer(),
+            providerFactory: { _ in cheapProvider },
+            dataset: { dataset },
+            isTuneOrBaselineActive: { false },
+            fileURL: tempFileURL(),
+            escalationResolver: { target in
+                XCTAssertEqual(target?.kind, .localTuned)
+                return .resolved(ResolvedChatProvider(provider: strongProvider, model: "Qwen2.5-7B-Instruct-4bit",
+                                                       providerID: .localTunedProviderID, displayName: "Тюн 7B (локально)"))
+            })
+        vm.escalationEnabled = true
+        vm.escalationTarget = EscalationTarget(providerID: .localTunedProviderID, model: "Qwen2.5-7B-Instruct-4bit", kind: .localTuned)
+        vm.input = "фрагмент встречи"
+        await vm.send()
+
+        XCTAssertNil(vm.errorText)
+        let assistant = try XCTUnwrap(vm.messages.last)
+        XCTAssertEqual(assistant.content, okResponse, "показанный ответ — локальной тюненой модели")
+        let escalation = try XCTUnwrap(assistant.escalation)
+        XCTAssertEqual(escalation.status, .succeeded)
+        XCTAssertEqual(escalation.providerID, "mlx-local")
+        XCTAssertEqual(escalation.model, "Qwen2.5-7B-Instruct-4bit")
+        XCTAssertEqual(strongProvider.receivedMessages.count, 1)
+    }
+
+    /// Строитель `localTune` (в проде — нет finished-тюна выбранной базы) отдал
+    /// `.unavailable` — дешёвый ответ сохранён, причина названа, ошибки в errorText нет.
+    func testLocalTunedEscalationUnavailableKeepsCheapAnswerWithReason() async throws {
+        let dataset = makeDataset()
+        let cheapProvider = MockChatProvider(responses: [unsureResponse])
+        let vm = TuningChatViewModel(
+            server: makeReadyServer(),
+            providerFactory: { _ in cheapProvider },
+            dataset: { dataset },
+            isTuneOrBaselineActive: { false },
+            fileURL: tempFileURL(),
+            escalationResolver: { _ in .unavailable(reason: "нет тюна базы «Qwen2.5-7B-Instruct-4bit»") })
+        vm.escalationEnabled = true
+        vm.escalationTarget = EscalationTarget(providerID: .localTunedProviderID, model: "Qwen2.5-7B-Instruct-4bit", kind: .localTuned)
+        vm.input = "фрагмент встречи"
+        await vm.send()
+
+        XCTAssertNil(vm.errorText)
+        let assistant = try XCTUnwrap(vm.messages.last)
+        XCTAssertEqual(assistant.content, unsureResponse)
+        let escalation = try XCTUnwrap(assistant.escalation)
+        XCTAssertEqual(escalation.status, .unavailable)
+        XCTAssertEqual(escalation.failureReason, "нет тюна базы «Qwen2.5-7B-Instruct-4bit»")
+    }
+
+    /// `availableTunedModels` — без единого finished-прогона пуст (в отличие от
+    /// `availableBaseModels`, у которого всегда есть дефолты 3B/7B).
+    func testAvailableTunedModelsIsEmptyWithoutFinishedRuns() {
+        let dataset = makeDataset()
+        let vm = TuningChatViewModel(
+            server: makeReadyServer(),
+            providerFactory: { _ in MockChatProvider(responses: [self.okResponse]) },
+            dataset: { dataset },
+            runs: { [] },
+            isTuneOrBaselineActive: { false },
+            fileURL: tempFileURL())
+        XCTAssertEqual(vm.availableTunedModels, [])
+    }
+
+    /// distinct-базы finished-прогонов ЭТОГО workdir, без дублей и без прогонов
+    /// других датасетов/незавершённых прогонов.
+    func testAvailableTunedModelsContainsDistinctFinishedRunModelsOfThisWorkdirOnly() {
+        let dataset = makeDataset()
+        let finishedA = makeFinishedRun(workdir: dataset.workdir, model: "Qwen2.5-7B-Instruct-4bit",
+                                        adapterPath: "adapters/7b")
+        let finishedADup = makeFinishedRun(workdir: dataset.workdir, model: "Qwen2.5-7B-Instruct-4bit",
+                                           adapterPath: "adapters/7b-2")
+        var runningB = makeFinishedRun(workdir: dataset.workdir, model: "still-running-model",
+                                       adapterPath: "adapters/running")
+        runningB.status = .running
+        let otherWorkdirRun = makeFinishedRun(workdir: "other-dataset", model: "should-not-appear",
+                                              adapterPath: "adapters/should-not-appear")
+        let vm = TuningChatViewModel(
+            server: makeReadyServer(),
+            providerFactory: { _ in MockChatProvider(responses: [self.okResponse]) },
+            dataset: { dataset },
+            runs: { [finishedA, finishedADup, runningB, otherWorkdirRun] },
+            isTuneOrBaselineActive: { false },
+            fileURL: tempFileURL())
+        XCTAssertEqual(vm.availableTunedModels, ["Qwen2.5-7B-Instruct-4bit"],
+                       "дубль базы не повторяется, running/чужой workdir не попадают")
     }
 
     // MARK: - Задача 92: мульти-модельные тюны — база чата, TuneSelection

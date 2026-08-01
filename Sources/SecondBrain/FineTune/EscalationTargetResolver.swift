@@ -11,9 +11,19 @@ enum EscalationResolution {
 
 @MainActor
 enum EscalationTargetResolver {
-    static func resolve(target: EscalationTarget?, registry: ProviderRegistry) -> EscalationResolution {
+    /// `localTune` — строитель резолюции для `.localTuned` (задача 93), инжектируется
+    /// вызывающим (в AppModel — `TuneSelection.selectTunedRun` + второй `MlxServerManager`).
+    /// Ветка ДО контакта с реестром — единственная точка контакта с `ProviderRegistry`
+    /// остаётся `.registry`.
+    static func resolve(target: EscalationTarget?, registry: ProviderRegistry,
+                         localTune: (String) -> EscalationResolution = { _ in
+                             .unavailable(reason: "локальная цель не настроена")
+                         }) -> EscalationResolution {
         guard let target else {
             return .unavailable(reason: "модель эскалации не выбрана")
+        }
+        if target.kind == .localTuned {
+            return localTune(target.model)
         }
         guard let descriptor = registry.descriptor(for: target.providerID), registry.isAvailable(target.providerID) else {
             return .unavailable(reason: "провайдер «\(target.providerID.rawValue)» недоступен")

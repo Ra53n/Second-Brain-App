@@ -13,6 +13,9 @@ import Foundation
 struct MlxServerConfig: Equatable {
     static let defaultModel = "mlx-community/Qwen2.5-7B-Instruct-4bit"
     static let defaultPort = 18765
+    /// Порт второго сервера — цель эскалации на локальную тюненую модель (задача 93):
+    /// отдельный процесс, каскад «тюн-3B → тюн-7B» не рестартует основной чат.
+    static let escalationPort = 18766
 
     var model: String
     var adapterPath: URL?

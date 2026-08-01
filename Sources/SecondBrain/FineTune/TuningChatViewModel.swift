@@ -176,6 +176,13 @@ final class TuningChatViewModel: ObservableObject {
                                             defaults: [FineTuneViewModel.smallModel, MlxServerConfig.defaultModel])
     }
 
+    /// Базы с хотя бы одним finished-тюном этого датасета — пункты «Локально (mlx)»
+    /// пикера цели эскалации (задача 93, `TuneSelection.chatBaseModels` без дефолтов).
+    var availableTunedModels: [String] {
+        let workdir = dataset()?.workdir ?? ""
+        return TuneSelection.chatBaseModels(runs: runs(), workdir: workdir, defaults: [])
+    }
+
     /// Ключ треда — `"<variant.rawValue>|<chatBaseModel>"`: статистика per (variant,
     /// база) раздельная, переключение базы не смешивает историю разных моделей.
     private func threadKey(variant: FineTuneModelVariant) -> String {

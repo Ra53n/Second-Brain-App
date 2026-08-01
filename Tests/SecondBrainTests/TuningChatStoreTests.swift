@@ -5,6 +5,7 @@
 // с заполненными escalationTarget/escalationEnabled/escalation.
 // Задача 92: ключ треда — "<variant>|<model>"; легаси-ключи `baseline`/`tuned` (в т.ч.
 // с escalation-полями эпохи 91) мигрируют на "…|<7B>"; round-trip `chatBaseModel`.
+// Задача 93: round-trip документа с `EscalationTarget.kind == .localTuned`.
 
 import XCTest
 @testable import SecondBrain
@@ -270,6 +271,35 @@ final class TuningChatStoreTests: XCTestCase {
             chatBaseModel: legacy7B)
         TuningChatPersistence.save(document, to: url)
         XCTAssertEqual(TuningChatPersistence.load(from: url), document)
+    }
+
+    /// Задача 93: цель эскалации `.localTuned` (сентинел providerID "mlx-local") —
+    /// `kind` не теряется при записи/чтении, документ переживает round-trip как есть.
+    func testRoundTripWithLocalTunedEscalationTarget() {
+        let url = tempDir.appendingPathComponent("chat.json")
+        let document = TuningChatDocument(
+            threads: ["baseline|\(legacy7B)": TuningChatThread(escalationEnabled: true)],
+            modelVariant: "baseline",
+            escalationTarget: EscalationTarget(providerID: .localTunedProviderID,
+                                                model: "Qwen2.5-7B-Instruct-4bit", kind: .localTuned),
+            chatBaseModel: legacy7B)
+        TuningChatPersistence.save(document, to: url)
+        let loaded = TuningChatPersistence.load(from: url)
+        XCTAssertEqual(loaded, document)
+        XCTAssertEqual(loaded.escalationTarget?.kind, .localTuned)
+        XCTAssertEqual(loaded.escalationTarget?.providerID, ProviderID(rawValue: "mlx-local"))
+    }
+
+    /// Файл эпохи 91/92 (без `kind` в `escalationTarget`) — миграция на `.registry`, не краш.
+    func testEscalationTargetWithoutKindInDocumentMigratesToRegistry() throws {
+        let url = tempDir.appendingPathComponent("chat.json")
+        let json = """
+        {"threads":{},"modelVariant":"baseline",
+        "escalationTarget":{"providerID":"openai","model":"gpt-5"}}
+        """
+        try Data(json.utf8).write(to: url)
+        let loaded = TuningChatPersistence.load(from: url)
+        XCTAssertEqual(loaded.escalationTarget?.kind, .registry)
     }
 
     /// Новый формат: незнакомый вариант в ключе `threads` («значение из будущего») —

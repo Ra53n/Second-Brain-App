@@ -349,21 +349,40 @@ struct FineTuneChatDetailView: View {
 
     // MARK: - Цель эскалации
 
+    /// Tag-тип пикера цели эскалации (задача 93): `.registry` — провайдер
+    /// `ProviderRegistry` (как раньше), `.localTuned` — база локального тюна из
+    /// `viewModel.availableTunedModels` (ядро 92, реестр/стор во View не тянутся).
+    private enum EscalationPickerChoice: Hashable {
+        case none
+        case registry(ProviderID)
+        case localTuned(String)
+    }
+
     private var escalationTargetRow: some View {
         HStack(spacing: 8) {
-            Picker("Сильная модель", selection: escalationProviderBinding) {
-                Text("Не выбрано").tag(Self.noProviderTag)
+            Picker("Сильная модель", selection: escalationChoiceBinding) {
+                Text("Не выбрано").tag(EscalationPickerChoice.none)
                 ForEach(registry.descriptors(supporting: .chat)) { descriptor in
-                    Text(descriptor.displayName).tag(Optional(descriptor.id))
+                    Text(descriptor.displayName).tag(EscalationPickerChoice.registry(descriptor.id))
+                }
+                if !viewModel.availableTunedModels.isEmpty {
+                    Section("Локально (mlx)") {
+                        ForEach(viewModel.availableTunedModels, id: \.self) { model in
+                            Text(Self.localTunedLabel(model))
+                                .tag(EscalationPickerChoice.localTuned(model))
+                        }
+                    }
                 }
             }
             .labelsHidden()
             .frame(maxWidth: 220)
-            .accessibilityValue(escalationProviderAccessibilityValue)
-            TextField("модель", text: escalationModelBinding)
-                .textFieldStyle(.roundedBorder)
-                .frame(width: 180)
-                .disabled(viewModel.escalationTarget == nil)
+            .accessibilityValue(escalationChoiceAccessibilityValue)
+            if viewModel.escalationTarget?.kind != .localTuned {
+                TextField("модель", text: escalationModelBinding)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(width: 180)
+                    .disabled(viewModel.escalationTarget == nil)
+            }
             Spacer()
         }
         .disabled(viewModel.isGenerating)
@@ -371,18 +390,30 @@ struct FineTuneChatDetailView: View {
         .padding(.bottom, 6)
     }
 
-    private static let noProviderTag: ProviderID? = nil
+    private static func localTunedLabel(_ model: String) -> String {
+        TuneSelection.localTunedDisplayName(model: model)
+    }
 
-    private var escalationProviderBinding: Binding<ProviderID?> {
+    private var escalationChoiceBinding: Binding<EscalationPickerChoice> {
         Binding(
-            get: { viewModel.escalationTarget?.providerID },
-            set: { newID in
-                guard let newID else {
-                    viewModel.setEscalationTarget(nil)
-                    return
+            get: {
+                guard let target = viewModel.escalationTarget else { return .none }
+                switch target.kind {
+                case .registry: return .registry(target.providerID)
+                case .localTuned: return .localTuned(target.model)
                 }
-                let model = registry.preferredDefaultModel(for: newID, capability: .chat) ?? ""
-                viewModel.setEscalationTarget(EscalationTarget(providerID: newID, model: model))
+            },
+            set: { choice in
+                switch choice {
+                case .none:
+                    viewModel.setEscalationTarget(nil)
+                case let .registry(providerID):
+                    let model = registry.preferredDefaultModel(for: providerID, capability: .chat) ?? ""
+                    viewModel.setEscalationTarget(EscalationTarget(providerID: providerID, model: model, kind: .registry))
+                case let .localTuned(model):
+                    viewModel.setEscalationTarget(
+                        EscalationTarget(providerID: .localTunedProviderID, model: model, kind: .localTuned))
+                }
             }
         )
     }
@@ -397,12 +428,14 @@ struct FineTuneChatDetailView: View {
         )
     }
 
-    private var escalationProviderAccessibilityValue: String {
-        guard let target = viewModel.escalationTarget,
-              let descriptor = registry.descriptor(for: target.providerID) else {
-            return "Не выбрано"
+    private var escalationChoiceAccessibilityValue: String {
+        guard let target = viewModel.escalationTarget else { return "Не выбрано" }
+        switch target.kind {
+        case .registry:
+            return registry.descriptor(for: target.providerID)?.displayName ?? "Не выбрано"
+        case .localTuned:
+            return Self.localTunedLabel(target.model)
         }
-        return descriptor.displayName
     }
 
     private func pipelineChip(_ label: String, isOn: Bool, toggle: @escaping (Bool) -> Void) -> some View {

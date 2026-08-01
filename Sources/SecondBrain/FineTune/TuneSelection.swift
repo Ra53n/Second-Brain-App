@@ -5,6 +5,12 @@
 import Foundation
 
 enum TuneSelection {
+    /// Единая подпись локальной цели эскалации — её показывают и пикер
+    /// (`FineTuneChatViews`), и `displayName` резолвнутого провайдера (`AppModel`).
+    static func localTunedDisplayName(model: String) -> String {
+        "Тюн \(adapterDirName(model: model)) (локально)"
+    }
+
     /// Последний компонент id модели, санитизированный под имя каталога. Модель
     /// приходит из TextField (FineTuneRunViews) — опечатка/копипаста возможна.
     /// Вырожденные входы (пусто, только слэши, `.`/`..`/`../..`) → "default": пустой

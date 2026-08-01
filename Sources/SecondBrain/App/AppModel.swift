@@ -46,6 +46,9 @@ final class AppModel: ObservableObject {
     /// Мини-чат оценки уверенности (задача 85): `mlx_lm.server` — управляемый child-процесс,
     /// один на приложение (тюн/baseline и чат/батч исключены взаимным guard'ом по памяти).
     let mlxServerManager: MlxServerManager
+    /// Второй `mlx_lm.server` (задача 93, порт `MlxServerConfig.escalationPort`) — цель
+    /// эскалации на локальную тюненую модель, живёт независимо от основного чата.
+    let mlxEscalationServerManager: MlxServerManager
     let tuningChatViewModel: TuningChatViewModel
 
     private var cancellables: Set<AnyCancellable> = []
@@ -115,21 +118,55 @@ final class AppModel: ObservableObject {
         // Мини-чат тюнинга (задача 85): резолвер python привязан к реальному
         // fineTuneRoot (дефолт MlxServerManager бьёт в ~/finetune — здесь тот же
         // репозиторий, что и у остального раздела «Тюнинг»).
-        let mlxServerManager = MlxServerManager(pythonResolver: {
+        let pythonResolverForMlx: () async -> URL? = {
             guard let root = fineTuneRoot() else { return nil }
             var environment = ProcessInfo.processInfo.environment
             environment["PATH"] = MCPEnv.augmentedPATH(extra: environment["PATH"] ?? "")
             let candidates = FineTuneEnvironment.candidates(fineTuneRoot: root, environment: environment)
             return await Task.detached { candidates.first { MlxServerManager.probeServerModule($0) } }.value
-        })
+        }
+        let mlxServerManager = MlxServerManager(pythonResolver: pythonResolverForMlx)
         self.mlxServerManager = mlxServerManager
+        // Задача 93: второй сервер под ту же логику поиска python, свой процесс/статус —
+        // эскалация на локальную тюненую модель не трогает основной чат.
+        let mlxEscalationServerManager = MlxServerManager(pythonResolver: pythonResolverForMlx)
+        self.mlxEscalationServerManager = mlxEscalationServerManager
 
         fineTuneViewModel = FineTuneViewModel(store: fineTuneStore, runner: fineTuneRunner,
                                               fineTuneRoot: fineTuneRoot,
                                               criteriaProviders: { router.resolveChatProviders(for: .finetuneCriteria) },
-                                              stopMlxServer: { [weak mlxServerManager] in mlxServerManager?.stopNow() })
+                                              stopMlxServer: { [weak mlxServerManager, weak mlxEscalationServerManager] in
+                                                  mlxServerManager?.stopNow()
+                                                  mlxEscalationServerManager?.stopNow()
+                                              })
 
         let fineTuneViewModelForChat = fineTuneViewModel
+        // Задача 93: строитель `.localTuned` — единственный, кто знает про
+        // TuneSelection/второй сервер; EscalationTargetResolver его только вызывает.
+        // Чат тюнинга привязан к датасету meetings (единственный со строгим контрактом).
+        let localTune: (String) -> EscalationResolution = {
+            [weak fineTuneStore, weak mlxEscalationServerManager] baseModel in
+            guard let fineTuneStore, let mlxEscalationServerManager else {
+                return .unavailable(reason: "чат тюнинга выгружен — эскалация недоступна")
+            }
+            guard let run = TuneSelection.selectTunedRun(runs: fineTuneStore.runs, workdir: "meetings", baseModel: baseModel),
+                  FileManager.default.fileExists(
+                      atPath: URL(fileURLWithPath: run.adapterPath).appendingPathComponent("adapters.safetensors").path)
+            else {
+                return .unavailable(reason: "нет завершённого тюна базы \(baseModel)")
+            }
+            let adapterURL = URL(fileURLWithPath: run.adapterPath)
+            let config = MlxServerConfig(model: run.model, adapterPath: adapterURL, port: MlxServerConfig.escalationPort)
+            let provider = MlxChatProvider(
+                port: MlxServerConfig.escalationPort,
+                beforeSend: { [weak mlxEscalationServerManager] in try await mlxEscalationServerManager?.ensureRunning(config) },
+                afterSend: { [weak mlxEscalationServerManager] in
+                    Task { @MainActor in mlxEscalationServerManager?.markUsed() }
+                })
+            return .resolved(ResolvedChatProvider(provider: provider, model: run.model,
+                                                   providerID: .localTunedProviderID,
+                                                   displayName: TuneSelection.localTunedDisplayName(model: run.model)))
+        }
         tuningChatViewModel = TuningChatViewModel(
             server: mlxServerManager,
             dataset: { [weak fineTuneViewModelForChat] in
@@ -142,7 +179,7 @@ final class AppModel: ObservableObject {
             },
             escalationResolver: { [weak registry] target in
                 guard let registry else { return .unavailable(reason: "провайдер недоступен") }
-                return EscalationTargetResolver.resolve(target: target, registry: registry)
+                return EscalationTargetResolver.resolve(target: target, registry: registry, localTune: localTune)
             })
 
         wire()

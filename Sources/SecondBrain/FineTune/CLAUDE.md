@@ -46,9 +46,16 @@
 - `Confidence/EscalationCore` (P1) — каскадная эскалация (задача 91): дешёвая модель
   чата тюнинга не уверена (UNSURE/FAIL) → повтор на выбранной пользователем сильной.
   `EscalationTargetResolver` — единственная точка контакта эскалации с
-  `ProviderRegistry`. Инвариант: `TuningChatMessage.report` — всегда отчёт ПОКАЗАННОГО
-  ответа; отчёт дешёвой ступени при успешной эскалации лежит в
-  `escalation.primaryReport`, при неудаче/недоступности — не дублируется (`nil`).
+  `ProviderRegistry` (только для `EscalationTarget.kind == .registry`). Инвариант:
+  `TuningChatMessage.report` — всегда отчёт ПОКАЗАННОГО ответа; отчёт дешёвой ступени
+  при успешной эскалации лежит в `escalation.primaryReport`, при неудаче/
+  недоступности — не дублируется (`nil`). Задача 93: цель может быть `.localTuned` —
+  локальная тюненая модель поверх ВТОРОГО `mlx_lm.server` (`AppModel.mlxEscalationServerManager`,
+  порт `MlxServerConfig.escalationPort` = 18766, независим от основного чата, гасится
+  вместе с ним из `stopMlxServer`). `EscalationTargetResolver.resolve` ветвит на
+  `.localTuned` ДО контакта с реестром через инжектируемый строитель `localTune`
+  (в AppModel — `TuneSelection.selectTunedRun` по датасету meetings). Незнакомый/
+  отсутствующий `kind` (файлы эпохи 91) декодируется в `.registry` молча.
 - `TuneSelection` (P1, задача 92) — мульти-модельные тюны одного датасета: `adapterDir(model:)`
   каталог нового прогона (`adapters/<slug>`, санитизация в `adapterDirName`),
   `selectTunedRun` — последний `.finished` прогон workdir+базы для чата `.tuned`,

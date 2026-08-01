@@ -6,10 +6,47 @@
 
 import Foundation
 
-/// Сильная модель эскалации — выбор пользователя в `ProviderRegistry`.
+/// Разновидность цели эскалации (задача 93): `.registry` — провайдер `ProviderRegistry`
+/// (как раньше), `.localTuned` — локальная тюненая модель поверх второго `mlx_lm.server`.
+enum EscalationTargetKind: String, Codable {
+    case registry
+    case localTuned
+
+    /// Незнакомое значение «из будущего» → `.registry`: резолв даст `.unavailable`,
+    /// не краш — тот же приём, что `EscalationStatus`.
+    init(from decoder: Decoder) throws {
+        let raw = try decoder.singleValueContainer().decode(String.self)
+        self = EscalationTargetKind(rawValue: raw) ?? .registry
+    }
+}
+
+extension ProviderID {
+    /// Сентинел для `.localTuned`: не регистрируется в `ProviderRegistry` (BACKLOG 48) —
+    /// эскалация резолвит его отдельной веткой ДО контакта с реестром.
+    static let localTunedProviderID = ProviderID(rawValue: "mlx-local")
+}
+
+/// Сильная модель эскалации — выбор пользователя. Для `.registry` — провайдер
+/// `ProviderRegistry`; для `.localTuned` — `model` это база тюна, `providerID` —
+/// `localTunedProviderID`.
 struct EscalationTarget: Equatable, Codable {
     var providerID: ProviderID
     var model: String // пустая строка → дефолт провайдера в момент send
+    var kind: EscalationTargetKind = .registry
+
+    init(providerID: ProviderID, model: String, kind: EscalationTargetKind = .registry) {
+        self.providerID = providerID
+        self.model = model
+        self.kind = kind
+    }
+
+    /// Файлы эпохи 91 (без `kind`) мигрируют на `.registry` молча.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        providerID = try c.decode(ProviderID.self, forKey: .providerID)
+        model = try c.decode(String.self, forKey: .model)
+        kind = try c.decodeIfPresent(EscalationTargetKind.self, forKey: .kind) ?? .registry
+    }
 }
 
 enum EscalationStatus: String, Codable {

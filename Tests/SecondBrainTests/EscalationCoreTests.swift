@@ -3,6 +3,8 @@
 // redundancy, composeMessage по всем ветками Attempt (nil/succeeded/failed/unavailable),
 // снисходительные декодеры EscalationStatus/EscalationRecord («значение из будущего»,
 // `{}` → дефолты), round-trip Codable.
+// Задача 93: `EscalationTargetKind` — миграция файлов эпохи 91 (JSON без `kind`) на
+// `.registry`, незнакомый `kind` «из будущего» → `.registry`, round-trip `.localTuned`.
 
 import XCTest
 @testable import SecondBrain
@@ -158,5 +160,53 @@ final class EscalationCoreTests: XCTestCase {
         let data = try JSONEncoder().encode(target)
         let decoded = try JSONDecoder().decode(EscalationTarget.self, from: data)
         XCTAssertEqual(decoded, target)
+    }
+
+    // MARK: - Задача 93: EscalationTargetKind
+
+    /// Файл эпохи 91 — `kind` в JSON нет вовсе. `decodeIfPresent` обязан молча дать `.registry`.
+    func testEscalationTargetFromEpoch91JSONWithoutKindMigratesToRegistry() throws {
+        let json = Data(#"{"providerID":"openai","model":"gpt-5"}"#.utf8)
+        let decoded = try JSONDecoder().decode(EscalationTarget.self, from: json)
+        XCTAssertEqual(decoded.kind, .registry)
+        XCTAssertEqual(decoded.providerID, "openai")
+        XCTAssertEqual(decoded.model, "gpt-5")
+    }
+
+    /// Незнакомое значение `kind` «из будущего» — деградация в `.registry`, не краш
+    /// декодера (симметрично `EscalationStatus`).
+    func testEscalationTargetKindUnknownRawValueDecodesToRegistry() throws {
+        let json = Data(#""будущий-kind""#.utf8)
+        let decoded = try JSONDecoder().decode(EscalationTargetKind.self, from: json)
+        XCTAssertEqual(decoded, .registry)
+    }
+
+    func testEscalationTargetWithFutureKindInJSONMigratesToRegistry() throws {
+        let json = Data(#"{"providerID":"mlx-local","model":"Qwen2.5-7B-Instruct-4bit","kind":"из-будущего"}"#.utf8)
+        let decoded = try JSONDecoder().decode(EscalationTarget.self, from: json)
+        XCTAssertEqual(decoded.kind, .registry, "незнакомый kind → безопасная деградация в .registry")
+    }
+
+    func testEscalationTargetKindKnownValuesRoundTrip() throws {
+        for kind: EscalationTargetKind in [.registry, .localTuned] {
+            let data = try JSONEncoder().encode(kind)
+            let decoded = try JSONDecoder().decode(EscalationTargetKind.self, from: data)
+            XCTAssertEqual(decoded, kind, "kind=\(kind)")
+        }
+    }
+
+    /// Цель `.localTuned` — providerID сентинел `localTunedProviderID`, `kind` сохраняется
+    /// (не теряется/не мигрирует на `.registry` при явном значении).
+    func testEscalationTargetLocalTunedRoundTripKeepsKindAndSentinelProviderID() throws {
+        let target = EscalationTarget(providerID: .localTunedProviderID, model: "Qwen2.5-7B-Instruct-4bit", kind: .localTuned)
+        let data = try JSONEncoder().encode(target)
+        let decoded = try JSONDecoder().decode(EscalationTarget.self, from: data)
+        XCTAssertEqual(decoded, target)
+        XCTAssertEqual(decoded.kind, .localTuned)
+        XCTAssertEqual(decoded.providerID, ProviderID(rawValue: "mlx-local"))
+    }
+
+    func testLocalTunedProviderIDRawValue() {
+        XCTAssertEqual(ProviderID.localTunedProviderID.rawValue, "mlx-local")
     }
 }
