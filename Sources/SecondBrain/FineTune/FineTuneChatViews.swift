@@ -61,6 +61,18 @@ struct FineTuneChatDetailView: View {
             Spacer()
             variantButton(.baseline)
             variantButton(.tuned)
+            Button {
+                viewModel.clearChat()
+            } label: {
+                Label("Очистить чат", systemImage: "trash")
+                    .font(.caption)
+                    .labelStyle(.titleAndIcon)
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(.secondary)
+            .accessibilityValue("Очистить чат")
+            .help("Удалить историю, обнулить статистику сессии и отменить текущую генерацию или батч")
+            .disabled(viewModel.messages.isEmpty && !viewModel.isGenerating)
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 6)
@@ -367,12 +379,22 @@ private struct ConfidenceVerdictChip: View {
             }
             .padding(.top, 4)
         } label: {
-            Text(verdictLabel)
-                .font(.caption.bold())
-                .padding(.horizontal, 8)
-                .padding(.vertical, 2)
-                .background(Capsule().fill(verdictColor.opacity(0.18)))
-                .foregroundStyle(verdictColor)
+            HStack(spacing: 6) {
+                Text(verdictLabel)
+                    .font(.caption.bold())
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 2)
+                    .background(Capsule().fill(verdictColor.opacity(0.18)))
+                    .foregroundStyle(verdictColor)
+                // Первая причина видна без раскрытия — «FAIL» без объяснения ставит
+                // пользователя в тупик (фидбэк задачи 87).
+                if report.verdict != .ok, let reason = report.reasons.first {
+                    Text(reason)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+            }
         }
         .accessibilityValue("вердикт: \(verdictLabel)")
     }

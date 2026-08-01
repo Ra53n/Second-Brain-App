@@ -158,6 +158,11 @@ final class TuningChatViewModel: ObservableObject {
         messages = []
         errorText = nil
         progressText = nil
+        // Очистка доступна и во время батча (задача 87): отменённый прогон обязан
+        // сбросить и свои поля — иначе счётчик «N/M» замерзает на экране навсегда
+        // (гейт `gen == chatGen` в catch уже провален и сам их не сбросит).
+        batchProgress = nil
+        batchErrorText = nil
         isGenerating = false
         persistNow()
     }

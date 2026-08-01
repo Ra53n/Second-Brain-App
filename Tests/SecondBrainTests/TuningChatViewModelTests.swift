@@ -294,4 +294,39 @@ final class TuningChatViewModelTests: XCTestCase {
         XCTAssertEqual(provider.receivedMessages.count, callsRightAfterCancel,
                        "после clearChat() ни один следующий вызов пайплайна не должен прийти")
     }
+
+    // Задача 87: кнопка «Очистить чат» доступна и во время батча — отменённый прогон
+    // обязан сбросить batchProgress/batchErrorText (иначе счётчик «N/M» замерзает:
+    // гейт `gen == chatGen` в catch после бампа поколения сам их не сбросит).
+    func testClearChatDuringBatchResetsBatchProgressAndPersistsEmpty() async throws {
+        let dataset = makeDataset()
+        let provider = MockChatProvider(responses: ["{\"action_items\":[]}"])
+        provider.delay = 0.2
+        let fileURL = tempFileURL()
+        let vm = TuningChatViewModel(
+            server: makeReadyServer(),
+            providerFactory: { _ in provider },
+            dataset: { dataset },
+            isTuneOrBaselineActive: { false },
+            fileURL: fileURL)
+
+        // makeDataset() не пишет valid.jsonl — без него runBatch падает мгновенно
+        // (datasetUnreadable) и прогресс сбрасывается раньше первой проверки.
+        let line = #"{"messages":[{"role":"system","content":"s"},{"role":"user","content":"фрагмент"},{"role":"assistant","content":"{\"action_items\": []}"}]}"#
+        try Data(line.utf8).write(to: dataset.dataURL.appendingPathComponent("valid.jsonl"))
+
+        let task = Task { await vm.runBatch(variant: .baseline) }
+        try? await Task.sleep(nanoseconds: 50_000_000) // батч дошёл до первого вызова
+        XCTAssertNotNil(vm.batchProgress, "прогон стартовал — прогресс виден")
+        vm.clearChat()
+        await task.value
+
+        XCTAssertNil(vm.batchProgress, "clearChat() во время батча сбрасывает счётчик прогресса")
+        XCTAssertNil(vm.batchErrorText)
+        XCTAssertFalse(vm.isGenerating)
+        // Критерий 2 задачи 87 проверяем в данных (дешевле и надёжнее UI): после
+        // очистки на диске персистится пустая история.
+        let document = TuningChatPersistence.load(from: fileURL)
+        XCTAssertTrue(document.messages.isEmpty, "после очистки finetune-chat.json хранит пустую историю")
+    }
 }
