@@ -96,4 +96,52 @@ final class ConfidencePromptsTests: XCTestCase {
         let signal = ConfidencePrompts.parseSelfCheck(raw, expectedCount: 1)
         XCTAssertEqual(signal?.supported, [true])
     }
+
+    // MARK: - Задача 97: пустой ответ и кламп
+
+    /// Кламп к expectedCount: модель выдумала пункты сверх реального ответа —
+    /// лишние не считаются (живой источник ложных FAIL на валидных ответах).
+    func testParseSelfCheckClampsInventedItemsToExpectedCount() {
+        let raw = """
+        {"items": [{"supported": true, "reason": "а"}, {"supported": false, "reason": "б"},
+                   {"supported": false, "reason": "в"}], "missed": false}
+        """
+        let signal = ConfidencePrompts.parseSelfCheck(raw, expectedCount: 1)
+        XCTAssertEqual(signal?.supported, [true], "считается только первый (реальный) пункт")
+    }
+
+    /// Модель вернула МЕНЬШЕ пунктов, чем в ответе: считаем пришедшие (оптимистично,
+    /// прежнее поведение) — кламп режет только лишнее.
+    func testParseSelfCheckFewerItemsThanExpectedCountsWhatCame() {
+        let raw = "{\"items\": [{\"supported\": false, \"reason\": \"а\"}], \"missed\": false}"
+        let signal = ConfidencePrompts.parseSelfCheck(raw, expectedCount: 3)
+        XCTAssertEqual(signal?.supported, [false])
+    }
+
+    func testParseSelfCheckEmptyAnswerRequiresOnlyMissed() {
+        let signal = ConfidencePrompts.parseSelfCheck("{\"missed\": true}", expectedCount: 0)
+        XCTAssertEqual(signal?.supported, [])
+        XCTAssertEqual(signal?.missed, true)
+    }
+
+    /// Модель проигнорировала инструкцию и прислала items на пустой ответ —
+    /// выдуманные пункты отбрасываются целиком, missed берётся.
+    func testParseSelfCheckEmptyAnswerIgnoresInventedItems() {
+        let raw = "{\"items\": [{\"supported\": false, \"reason\": \"выдумано\"}], \"missed\": false}"
+        let signal = ConfidencePrompts.parseSelfCheck(raw, expectedCount: 0)
+        XCTAssertEqual(signal?.supported, [])
+        XCTAssertEqual(signal?.missed, false)
+    }
+
+    func testParseSelfCheckEmptyAnswerWithoutMissedKeyIsNil() {
+        XCTAssertNil(ConfidencePrompts.parseSelfCheck("{\"items\": []}", expectedCount: 0))
+        XCTAssertNil(ConfidencePrompts.parseSelfCheck("мусор", expectedCount: 0))
+    }
+
+    func testSelfCheckEmptyPromptMentionsMissedOnlyContract() {
+        let prompt = ConfidencePrompts.selfCheckEmptyPrompt(transcript: "Тимлид: обсудим завтра.")
+        XCTAssertTrue(prompt.contains("Тимлид: обсудим завтра."))
+        XCTAssertTrue(prompt.contains("{\"missed\": true|false}"))
+        XCTAssertFalse(prompt.contains("\"items\""), "per-item подтверждений на пустом ответе нет")
+    }
 }

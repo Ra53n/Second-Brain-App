@@ -51,6 +51,19 @@ enum ActionItemsParser {
         return (valid, badCount)
     }
 
+    /// Вырожденный «пустой» ответ модели (задача 97): ровно пустой JSON-объект `{}`
+    /// (с любыми пробелами) семантически означает «поручений нет» — трактуется как
+    /// канонический пустой список, не как невалидный формат. Всё остальное — без
+    /// изменений; отклонение от строгого python-контракта осознанное и только здесь
+    /// (validate/evaluate тулчейна остаются строгими).
+    static func normalizeDegenerateEmpty(_ raw: String) -> (text: String, wasNormalized: Bool) {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let data = trimmed.data(using: .utf8),
+              let value = try? JSONSerialization.jsonObject(with: data),
+              let dict = value as? [String: Any], dict.isEmpty else { return (raw, false) }
+        return ("{\"action_items\": []}", true)
+    }
+
     /// lowercase + схлопывание пробельных в один + trim — без замены «ё»→«е»
     /// (python `normalize()` её не делает: `str.lower()` кириллицу «ё» не трогает).
     static func normalize(_ text: String?) -> String {

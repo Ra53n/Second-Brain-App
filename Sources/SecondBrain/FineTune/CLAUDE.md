@@ -62,6 +62,15 @@
   `.localTuned` ДО контакта с реестром через инжектируемый строитель `localTune`
   (в AppModel — `TuneSelection.selectTunedRun` по датасету meetings). Незнакомый/
   отсутствующий `kind` (файлы эпохи 91) декодируется в `.registry` молча.
+- Задача 97 — пустой ответ валиден: вырожденный `{}` нормализуется пайплайном в
+  `{"action_items": []}` (предупреждение → UNSURE, не hard-fail; повторы redundancy —
+  та же нормализация); self-check при 0 пунктов задаёт ТОЛЬКО вопрос о пропущенных
+  поручениях (`selfCheckEmptyPrompt`), per-item подтверждения на пустом списке — живой
+  источник ложных FAIL (модель выдумывает пункты); `parseSelfCheck` клампит items к
+  `expectedCount`. Причины «…недоступна» — только для включённого, но не давшего
+  сигнала подхода (`ConfidenceSignals.*Enabled`). Осознанное отклонение от строгого
+  python-контракта (`validate.py`/`evaluate.py` остаются строгими) — только в
+  Swift-пайплайне чата/батча.
 - `Confidence/StagedInference` (P1, задача 94) — декомпозиция primary-запроса на цепочку
   дешёвых стадий (говорящие → задачи с исполнителями → сроки → сборка), compact JSON между
   ними. `ConfidencePipeline.primary: PrimaryStrategy` (`.monolithic`/`.staged`) переключает

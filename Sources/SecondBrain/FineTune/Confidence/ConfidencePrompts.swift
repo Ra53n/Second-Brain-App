@@ -52,6 +52,26 @@ enum ConfidencePrompts {
         """
     }
 
+    /// Self-check для ПУСТОГО ответа (задача 97): per-item подтверждать нечего —
+    /// спрашивать «для каждого поручения» бессмысленно (модель выдумывает пункты,
+    /// живой источник ложных FAIL). Остаётся единственный осмысленный вопрос: не
+    /// пропущено ли поручение.
+    static func selfCheckEmptyPrompt(transcript: String) -> String {
+        """
+        Проверь свой ответ на извлечение поручений: ты ответил, что во фрагменте
+        встречи ниже поручений нет (пустой список).
+
+        Фрагмент встречи:
+        \(transcript)
+
+        Перечитай фрагмент. Есть ли в нём явно прозвучавшее поручение (договорённость,
+        что кто-то сделает конкретную работу), которое ты пропустил? Обсуждения, мнения,
+        вопросы и идеи без принятого решения поручением не являются. Ответь СТРОГО одним
+        JSON-объектом без пояснений и без ```-обёртки:
+        {"missed": true|false}
+        """
+    }
+
     static func parseScoring(_ raw: String) -> ScoringSignal? {
         if let object = extractFirstJSONObject(raw) {
             let status = object["status"] as? String
@@ -64,17 +84,25 @@ enum ConfidencePrompts {
         return ScoringSignal(status: nil, confidence: confidence)
     }
 
+    /// Задача 97: `expectedCount` — кламп. Модель порой выдумывает пункты сверх
+    /// реального ответа (на пустом списке — целиком); считать их значит валить
+    /// валидные ответы. При 0 пунктов items не требуются вовсе — только `missed`.
     static func parseSelfCheck(_ raw: String, expectedCount: Int) -> SelfCheckSignal? {
-        guard let object = extractFirstJSONObject(raw), let itemsRaw = object["items"] as? [Any] else { return nil }
+        guard let object = extractFirstJSONObject(raw) else { return nil }
+        let missedValue = boolValue(object["missed"])
+        if expectedCount == 0 {
+            guard let missed = missedValue else { return nil }
+            return SelfCheckSignal(supported: [], reasons: [], missed: missed)
+        }
+        guard let itemsRaw = object["items"] as? [Any] else { return nil }
         var supported: [Bool] = []
         var reasons: [String] = []
-        for element in itemsRaw {
+        for element in itemsRaw.prefix(expectedCount) {
             guard let dict = element as? [String: Any] else { continue }
             supported.append(boolValue(dict["supported"]) ?? false)
             reasons.append((dict["reason"] as? String) ?? "")
         }
-        let missed = boolValue(object["missed"]) ?? false
-        return SelfCheckSignal(supported: supported, reasons: reasons, missed: missed)
+        return SelfCheckSignal(supported: supported, reasons: reasons, missed: missedValue ?? false)
     }
 
     /// Первый JSON-объект как подстрока текста (задача 94: разделяемо со

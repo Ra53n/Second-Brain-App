@@ -200,4 +200,71 @@ final class ConfidenceVerdictReducerTests: XCTestCase {
         XCTAssertEqual(verdict, .fail)
         XCTAssertFalse(reasons.contains { $0.contains("Стадия") }, "hard fail завершает reduce до stageParseFailures")
     }
+
+    // MARK: - Задача 97: нормализация {} и честные «недоступна»
+
+    func testFormatNormalizedCapsVerdictAtUnsureWithReason() {
+        let (verdict, reasons) = ConfidenceVerdict.reduce(
+            ConfidenceSignals(constraintChecks: passChecks, formatNormalized: true))
+        XCTAssertEqual(verdict, .unsure)
+        XCTAssertTrue(reasons.contains { $0.contains("нормализован") })
+    }
+
+    func testFormatNormalizedDoesNotDowngradeFail() {
+        let (verdict, _) = ConfidenceVerdict.reduce(
+            ConfidenceSignals(constraintChecks: passChecks, redundancy: .disagree, formatNormalized: true))
+        XCTAssertEqual(verdict, .fail, "worse-семантика: disagree сильнее предупреждения")
+    }
+
+    /// Все тумблеры выключены, но `{}` нормализован — это не «ни один подход не
+    /// включён», а честное UNSURE с причиной нормализации.
+    func testFormatNormalizedAloneBeatsNothingEnabledGuard() {
+        let (verdict, reasons) = ConfidenceVerdict.reduce(
+            ConfidenceSignals(constraintChecks: [], formatNormalized: true,
+                              redundancyEnabled: false, scoringEnabled: false, selfCheckEnabled: false))
+        XCTAssertEqual(verdict, .unsure)
+        XCTAssertTrue(reasons.contains { $0.contains("нормализован") })
+        XCTAssertFalse(reasons.contains("ни один подход не включён"))
+    }
+
+    /// Ранний hard-fail не глотает причину нормализации: пользователь видит, почему
+    /// текст ответа не совпадает с тем, что прислала модель.
+    func testHardFailKeepsNormalizationReason() {
+        let hardFail = [ConfidenceCheck(name: "эталон", outcome: .fail("расхождение"), severity: .hard)]
+        let (verdict, reasons) = ConfidenceVerdict.reduce(
+            ConfidenceSignals(constraintChecks: hardFail, formatNormalized: true))
+        XCTAssertEqual(verdict, .fail)
+        XCTAssertTrue(reasons.contains { $0.contains("нормализован") })
+    }
+
+    /// «…недоступна» — только для включённого, но не давшего сигнала подхода;
+    /// выключенный тумблер причин не порождает (живой случай — отчёт эскалации).
+    func testUnavailableReasonsAppearOnlyForEnabledSignals() {
+        let disabledAll = ConfidenceVerdict.reduce(
+            ConfidenceSignals(constraintChecks: passChecks, redundancyEnabled: false,
+                              scoringEnabled: false, selfCheckEnabled: false))
+        XCTAssertFalse(disabledAll.reasons.contains { $0.contains("недоступна") },
+                       "выключенные тумблеры молчат")
+
+        let enabledButMissing = ConfidenceVerdict.reduce(
+            ConfidenceSignals(constraintChecks: passChecks, redundancyEnabled: true,
+                              scoringEnabled: true, selfCheckEnabled: true))
+        XCTAssertTrue(enabledButMissing.reasons.contains("Сверка повторов недоступна"))
+        XCTAssertTrue(enabledButMissing.reasons.contains("Самопроверка недоступна"))
+        XCTAssertTrue(enabledButMissing.reasons.contains("Оценка уверенности недоступна"))
+    }
+
+    /// Самопроверка пустого ответа: только missed-сигнал, «не подтверждено N из N»
+    /// на нуле пунктов невозможно по построению (supported пуст).
+    func testEmptyAnswerSelfCheckOnlyMissedVotes() {
+        let missedTrue = ConfidenceVerdict.reduce(signals(
+            selfCheck: SelfCheckSignal(supported: [], reasons: [], missed: true)))
+        XCTAssertEqual(missedTrue.verdict, .unsure)
+        XCTAssertTrue(missedTrue.reasons.contains { $0.contains("пропущенное поручение") })
+
+        let missedFalse = ConfidenceVerdict.reduce(signals(
+            selfCheck: SelfCheckSignal(supported: [], reasons: [], missed: false)))
+        XCTAssertEqual(missedFalse.verdict, .ok)
+        XCTAssertFalse(missedFalse.reasons.contains { $0.contains("не подтверждено") })
+    }
 }

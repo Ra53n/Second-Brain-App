@@ -142,4 +142,35 @@ final class ConfidenceParserTests: XCTestCase {
     func testAssigneeAsNestedObjectReturnsNil() {
         XCTAssertNil(ActionItemsParser.parse(#"{"action_items": [{"assignee": {"name": "Аня"}, "task": "сделать", "due": null}]}"#))
     }
+
+    // MARK: - normalizeDegenerateEmpty (задача 97)
+
+    /// Ровно пустой JSON-объект → канонический пустой список; всё остальное — как есть.
+    func testNormalizeDegenerateEmptyTableOfCases() {
+        let normalized: [(String, String)] = [
+            ("{}", "ровно пустой объект"),
+            ("  {} \n", "пустой объект с пробелами"),
+            ("{ }", "пробел внутри скобок"),
+            ("{\n}", "перенос внутри скобок"),
+        ]
+        for (input, name) in normalized {
+            let result = ActionItemsParser.normalizeDegenerateEmpty(input)
+            XCTAssertTrue(result.wasNormalized, name)
+            XCTAssertEqual(result.text, "{\"action_items\": []}", name)
+        }
+
+        let untouched: [(String, String)] = [
+            ("{\"action_items\": []}", "валидный пустой список"),
+            ("{\"action_items\": null}", "null вместо списка — не нормализуется"),
+            ("{\"a\": 1}", "непустой объект"),
+            ("[]", "массив, не объект"),
+            ("", "пустая строка"),
+            ("поручений нет", "проза"),
+        ]
+        for (input, name) in untouched {
+            let result = ActionItemsParser.normalizeDegenerateEmpty(input)
+            XCTAssertFalse(result.wasNormalized, name)
+            XCTAssertEqual(result.text, input, name)
+        }
+    }
 }

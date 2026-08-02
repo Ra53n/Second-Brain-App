@@ -564,13 +564,14 @@ final class TuningChatViewModelTests: XCTestCase {
         XCTAssertEqual(strongProvider.receivedMessages.count, 1, "сильная модель вызвана ровно один раз")
     }
 
-    /// Задача 95: сильная модель отвечает `{}` — hard-fail constraint, строго хуже
-    /// UNSURE дешёвой. Показан ответ дешёвой, `status == .notImproved`, отчёт сильной
-    /// сохранён в `strongReport` для статистики.
+    /// Задача 95: сильная модель отвечает невалидно (проза вместо JSON) — hard-fail
+    /// constraint, строго хуже UNSURE дешёвой. Показан ответ дешёвой,
+    /// `status == .notImproved`, отчёт сильной сохранён в `strongReport` для статистики.
+    /// (Фикстура была `{}`, но задача 97 нормализует его в валидный пустой список.)
     func testHardFailStrongResponseMarksEscalationNotImprovedAndKeepsCheapAnswer() async throws {
         let dataset = makeDataset()
         let cheapProvider = MockChatProvider(responses: [unsureResponse])
-        let strongProvider = MockChatProvider(responses: ["{}"])
+        let strongProvider = MockChatProvider(responses: ["кажется, поручений тут нет"])
         let vm = TuningChatViewModel(
             server: makeReadyServer(),
             providerFactory: { _ in cheapProvider },

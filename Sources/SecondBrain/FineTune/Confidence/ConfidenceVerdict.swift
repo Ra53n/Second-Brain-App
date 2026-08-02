@@ -55,15 +55,30 @@ struct ConfidenceSignals {
     /// (задача 94) — финальная стадия и так проверяется constraint'ом, двойного
     /// наказания нет.
     let stageParseFailures: [String]
+    /// Задача 97: вырожденный `{}` нормализован в пустой список — вердикт не лучше
+    /// UNSURE с причиной (семантика ясна, но формат модель нарушила).
+    let formatNormalized: Bool
+    /// Задача 97: «…недоступна» в reasons — только для ВКЛЮЧЁННОГО, но не давшего
+    /// сигнала подхода. nil-сигнал выключенного тумблера — не новость (живой пример:
+    /// отчёт ступени эскалации с принудительно выключенными повторами выглядел
+    /// сломанным). Дефолты true сохраняют поведение прямых вызовов reduce.
+    let redundancyEnabled: Bool
+    let scoringEnabled: Bool
+    let selfCheckEnabled: Bool
 
     init(constraintChecks: [ConfidenceCheck], redundancy: RedundancyAgreement? = nil,
          scoring: ScoringSignal? = nil, selfCheck: SelfCheckSignal? = nil,
-         stageParseFailures: [String] = []) {
+         stageParseFailures: [String] = [], formatNormalized: Bool = false,
+         redundancyEnabled: Bool = true, scoringEnabled: Bool = true, selfCheckEnabled: Bool = true) {
         self.constraintChecks = constraintChecks
         self.redundancy = redundancy
         self.scoring = scoring
         self.selfCheck = selfCheck
         self.stageParseFailures = stageParseFailures
+        self.formatNormalized = formatNormalized
+        self.redundancyEnabled = redundancyEnabled
+        self.scoringEnabled = scoringEnabled
+        self.selfCheckEnabled = selfCheckEnabled
     }
 }
 
@@ -145,7 +160,7 @@ extension ConfidenceVerdict {
         // constraint от «есть проверки, но все прошли».
         guard !signals.constraintChecks.isEmpty || signals.redundancy != nil
                 || signals.scoring != nil || signals.selfCheck != nil
-                || !signals.stageParseFailures.isEmpty else {
+                || !signals.stageParseFailures.isEmpty || signals.formatNormalized else {
             return (.unsure, ["ни один подход не включён"])
         }
 
@@ -153,6 +168,11 @@ extension ConfidenceVerdict {
 
         let hardFailures = signals.constraintChecks.filter { $0.severity == .hard && isFail($0.outcome) }
         guard hardFailures.isEmpty else {
+            // Нормализация видна и при раннем FAIL — иначе пользователь видит
+            // канонический текст вместо своего `{}` без объяснения.
+            if signals.formatNormalized {
+                reasons.append("Формат: пустой объект {} нормализован в {\"action_items\": []}")
+            }
             for check in hardFailures {
                 reasons.append("Провалена проверка «\(check.name)»: \(detailText(check.outcome))")
             }
@@ -160,6 +180,11 @@ extension ConfidenceVerdict {
         }
 
         var verdict: ConfidenceVerdict = .ok
+
+        if signals.formatNormalized {
+            verdict = worse(verdict, .unsure)
+            reasons.append("Формат: пустой объект {} нормализован в {\"action_items\": []}")
+        }
 
         if !signals.stageParseFailures.isEmpty {
             verdict = worse(verdict, .unsure)
@@ -186,7 +211,7 @@ extension ConfidenceVerdict {
                 verdict = worse(verdict, .fail)
                 reasons.append("Повторные прогоны не сошлись")
             }
-        } else {
+        } else if signals.redundancyEnabled {
             reasons.append("Сверка повторов недоступна")
         }
 
@@ -206,7 +231,7 @@ extension ConfidenceVerdict {
                 verdict = worse(verdict, .unsure)
                 reasons.append("Самопроверка: возможно пропущенное поручение")
             }
-        } else {
+        } else if signals.selfCheckEnabled {
             reasons.append("Самопроверка недоступна")
         }
 
@@ -230,7 +255,7 @@ extension ConfidenceVerdict {
                 }
             }
             if let scoreVerdict { verdict = worse(verdict, scoreVerdict) }
-        } else {
+        } else if signals.scoringEnabled {
             reasons.append("Оценка уверенности недоступна")
         }
 

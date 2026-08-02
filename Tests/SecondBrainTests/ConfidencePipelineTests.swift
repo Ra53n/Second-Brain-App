@@ -397,4 +397,55 @@ final class ConfidencePipelineTests: XCTestCase {
             XCTFail("ожидалась CancellationError, получено \(error)")
         }
     }
+
+    // MARK: - Задача 97: пустой ответ — валидный кейс
+
+    /// Вырожденный `{}` нормализуется до проверок: hard-fail «валидный JSON» не
+    /// срабатывает, показан канонический пустой список, вердикт UNSURE с причиной.
+    func testDegenerateEmptyObjectIsNormalizedNotHardFailed() async throws {
+        let provider = MockChatProvider(responses: ["{}"])
+        let pipeline = ConfidencePipeline(provider: provider, settings: ChatSettings(model: "mlx"))
+        let (raw, report) = try await pipeline.run(system: "s", transcript: "Тимлид: обсудим завтра.", reference: nil)
+        XCTAssertEqual(raw, "{\"action_items\": []}")
+        XCTAssertEqual(report.verdict, .unsure)
+        XCTAssertTrue(report.reasons.contains { $0.contains("нормализован") })
+        XCTAssertFalse(report.reasons.contains { $0.contains("валидный JSON") })
+    }
+
+    /// Повтор redundancy тоже может ответить `{}` — нормализуется и сравнивается как
+    /// пустой список, а не валит сверку в disagree.
+    func testRedundancyNormalizesDegenerateEmptyRepeats() async throws {
+        let provider = MockChatProvider(responses: ["{\"action_items\": []}", "{}", "{}"])
+        let config = ConfidencePipelineConfig(constraintEnabled: true, redundancyEnabled: true,
+                                               scoringEnabled: false, selfCheckEnabled: false)
+        let pipeline = ConfidencePipeline(provider: provider, settings: ChatSettings(model: "mlx"),
+                                           redundancyCount: 3, config: config)
+        let (_, report) = try await pipeline.run(system: "s", transcript: "Тимлид: обсудим завтра.", reference: nil)
+        XCTAssertEqual(report.redundancy, .agree, "три пустых списка согласны")
+        XCTAssertEqual(report.verdict, .ok)
+    }
+
+    /// Пустой ответ + self-check: уходит промпт только про пропущенные поручения,
+    /// «не подтверждено N из N» невозможно; missed=false → OK.
+    func testEmptyAnswerSelfCheckUsesMissedOnlyPrompt() async throws {
+        let provider = MockChatProvider(responses: ["{\"action_items\": []}", "{\"missed\": false}"])
+        let config = ConfidencePipelineConfig(constraintEnabled: true, redundancyEnabled: false,
+                                               scoringEnabled: false, selfCheckEnabled: true)
+        let pipeline = ConfidencePipeline(provider: provider, settings: ChatSettings(model: "mlx"), config: config)
+        let (_, report) = try await pipeline.run(system: "s", transcript: "Тимлид: обсудим завтра.", reference: nil)
+        XCTAssertEqual(report.verdict, .ok)
+        XCTAssertFalse(report.reasons.contains { $0.contains("не подтверждено") })
+        let selfCheckRequest = try XCTUnwrap(provider.receivedMessages.last?.first?.content)
+        XCTAssertTrue(selfCheckRequest.contains("Перечитай фрагмент"), "ушёл missed-only промпт")
+        XCTAssertFalse(selfCheckRequest.contains("\"items\""))
+    }
+
+    /// Отчёт ступени с выключенными тумблерами больше не пугает «недоступна»
+    /// (живой случай — отчёт эскалации с принудительно выключенными повторами).
+    func testDisabledTogglesProduceNoUnavailableReasons() async throws {
+        let provider = MockChatProvider(responses: ["{\"action_items\": []}"])
+        let pipeline = ConfidencePipeline(provider: provider, settings: ChatSettings(model: "mlx"))
+        let (_, report) = try await pipeline.run(system: "s", transcript: "t", reference: nil)
+        XCTAssertFalse(report.reasons.contains { $0.contains("недоступна") })
+    }
 }

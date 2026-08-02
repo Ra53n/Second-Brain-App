@@ -100,6 +100,7 @@
 | 94 | [Multi-stage inference в чате тюнинга](94-multi-stage-inference.md) | 85, 86, 91, 92, 93 | [x] |
 | 95 | [Вердикт-осознанная композиция эскалации](95-verdict-aware-escalation.md) | 91, 94 | [x] |
 | 96 | [Строка «Micro-first» в статистике сессии](96-micro-first-stats.md) | 91, 95 | [x] |
+| 97 | [Пустой ответ — валидный кейс](97-empty-answer-validity.md) | 85, 86, 91 | [x] |
 
 ## Рекомендуемый порядок
 

@@ -63,7 +63,7 @@ struct ConfidencePipeline {
     func run(system: String, transcript: String, reference: String?,
              progress: @escaping (String) -> Void = { _ in }
     ) async throws -> (answerRaw: String, report: ConfidenceReport) {
-        let primaryText: String
+        var primaryText: String
         let primaryLatency: TimeInterval
         let stageCount: Int
         var stageMetrics: [StageMetric]?
@@ -140,6 +140,12 @@ struct ConfidencePipeline {
         }
         try Task.checkCancellation()
 
+        // Задача 97: вырожденный `{}` семантически = «поручений нет». Нормализуем ДО
+        // проверок — hard-fail «валидный JSON» на нём нечестен; предупреждение уходит
+        // в редьюсер (вердикт не лучше UNSURE), показывается нормализованный текст.
+        let (normalizedPrimary, formatNormalized) = ActionItemsParser.normalizeDegenerateEmpty(primaryText)
+        primaryText = normalizedPrimary
+
         var totalLatency = primaryLatency
         var extraCalls = 0
 
@@ -149,7 +155,11 @@ struct ConfidencePipeline {
             : []
 
         guard !config.constraintEnabled || !hasHardFailure(constraintChecks) else {
-            let signals = ConfidenceSignals(constraintChecks: constraintChecks, stageParseFailures: stageParseFailures)
+            let signals = ConfidenceSignals(constraintChecks: constraintChecks, stageParseFailures: stageParseFailures,
+                                             formatNormalized: formatNormalized,
+                                             redundancyEnabled: config.redundancyEnabled,
+                                             scoringEnabled: config.scoringEnabled,
+                                             selfCheckEnabled: config.selfCheckEnabled)
             let (verdict, reasons) = ConfidenceVerdict.reduce(signals)
             let metrics = ConfidenceMetrics(totalCalls: stageCount, extraCalls: 0, primaryLatency: primaryLatency,
                                              totalLatency: totalLatency, promptTokens: promptTokens,
@@ -179,7 +189,9 @@ struct ConfidencePipeline {
                 extraCalls += 1
                 promptTokens += result.usage?.promptTokens ?? 0
                 completionTokens += result.usage?.completionTokens ?? 0
-                if let parsed = ActionItemsParser.parse(result.text) {
+                // Повтор тоже может ответить вырожденным `{}` — та же нормализация,
+                // иначе валидный пустой кейс давал бы ложный disagree.
+                if let parsed = ActionItemsParser.parse(ActionItemsParser.normalizeDegenerateEmpty(result.text).text) {
                     parsedAnswers.append(parsed)
                 } else {
                     parseFailures += 1
@@ -208,9 +220,14 @@ struct ConfidencePipeline {
         if config.selfCheckEnabled {
             try Task.checkCancellation()
             let expectedCount = ActionItemsParser.parse(primaryText)?.count ?? 0
+            // Задача 97: на пустом ответе per-item подтверждать нечего — отдельный
+            // промпт только про пропущенные поручения (иначе модель выдумывает пункты).
+            let selfCheckPrompt = expectedCount == 0
+                ? ConfidencePrompts.selfCheckEmptyPrompt(transcript: transcript)
+                : ConfidencePrompts.selfCheckPrompt(transcript: transcript, answer: primaryText)
             let selfCheckStart = Date()
             let selfCheckResult = try await provider.send(
-                [ChatMessageDTO(role: .user, content: ConfidencePrompts.selfCheckPrompt(transcript: transcript, answer: primaryText))],
+                [ChatMessageDTO(role: .user, content: selfCheckPrompt)],
                 settings: settings)
             totalLatency += Date().timeIntervalSince(selfCheckStart)
             extraCalls += 1
@@ -220,7 +237,11 @@ struct ConfidencePipeline {
         }
 
         let signals = ConfidenceSignals(constraintChecks: constraintChecks, redundancy: redundancy,
-                                         scoring: scoring, selfCheck: selfCheck, stageParseFailures: stageParseFailures)
+                                         scoring: scoring, selfCheck: selfCheck, stageParseFailures: stageParseFailures,
+                                         formatNormalized: formatNormalized,
+                                         redundancyEnabled: config.redundancyEnabled,
+                                         scoringEnabled: config.scoringEnabled,
+                                         selfCheckEnabled: config.selfCheckEnabled)
         let (verdict, reasons) = ConfidenceVerdict.reduce(signals)
         let metrics = ConfidenceMetrics(totalCalls: stageCount + extraCalls, extraCalls: extraCalls,
                                          primaryLatency: primaryLatency, totalLatency: totalLatency,
