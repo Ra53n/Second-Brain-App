@@ -49,7 +49,13 @@
   `ProviderRegistry` (только для `EscalationTarget.kind == .registry`). Инвариант:
   `TuningChatMessage.report` — всегда отчёт ПОКАЗАННОГО ответа; отчёт дешёвой ступени
   при успешной эскалации лежит в `escalation.primaryReport`, при неудаче/
-  недоступности — не дублируется (`nil`). Задача 93: цель может быть `.localTuned` —
+  недоступности — не дублируется (`nil`). Задача 95: сильная модель обязана быть НЕ ХУЖЕ
+  дешёвой по вердикту (`ok > unsure > fail`, сравнение — только в `composeMessage`, не
+  во View) — иначе `EscalationRecord.status == .notImproved`: показан ответ дешёвой,
+  `report` = её отчёт (инвариант «report — показанный ответ» держится и здесь),
+  `primaryReport` nil (не дублируется — показанный и есть primary), отчёт сильной — в
+  `strongReport` (её стоимость всё равно входит в `TuningChatSessionStats`). Старый билд,
+  не знающий `notImproved`, декодирует его в `.failed` (снисходительный декодер). Задача 93: цель может быть `.localTuned` —
   локальная тюненая модель поверх ВТОРОГО `mlx_lm.server` (`AppModel.mlxEscalationServerManager`,
   порт `MlxServerConfig.escalationPort` = 18766, независим от основного чата, гасится
   вместе с ним из `stopMlxServer`). `EscalationTargetResolver.resolve` ветвит на

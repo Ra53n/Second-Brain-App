@@ -5,6 +5,9 @@
 // `{}` → дефолты), round-trip Codable.
 // Задача 93: `EscalationTargetKind` — миграция файлов эпохи 91 (JSON без `kind`) на
 // `.registry`, незнакомый `kind` «из будущего» → `.registry`, round-trip `.localTuned`.
+// Задача 95: composeMessage сравнивает вердикты succeeded-ветки (ok > unsure > fail) —
+// таблица случаев, `.notImproved` при строго худшей сильной, round-trip `strongReport`,
+// `notImproved` в старом декодере деградирует в `.failed`.
 
 import XCTest
 @testable import SecondBrain
@@ -85,6 +88,57 @@ final class EscalationCoreTests: XCTestCase {
         XCTAssertNil(record.failureReason)
     }
 
+    // MARK: - Задача 95: вердикт-осознанная композиция
+
+    /// Ветка succeeded ранжирует вердикты (ok > unsure > fail): сильная НЕ ХУЖЕ дешёвой
+    /// (в т.ч. равенство) → как раньше, `.succeeded`, показан ответ сильной; строго хуже
+    /// → `.notImproved`, показан ответ дешёвой. Четвёртый случай (strong unsure / primary
+    /// ok) в реальности недостижим — эскалация не стартует на OK-вердикте дешёвой
+    /// (`shouldEscalate`), но чистое ядро обязано вести себя тотально на любом входе.
+    func testComposeMessageSucceededBranchComparesVerdicts() throws {
+        let cases: [(strong: ConfidenceVerdict, primary: ConfidenceVerdict, expected: EscalationStatus)] = [
+            (.ok, .unsure, .succeeded),
+            (.unsure, .unsure, .succeeded),
+            (.fail, .unsure, .notImproved),
+            (.unsure, .ok, .notImproved),
+        ]
+        for c in cases {
+            let name = "strong=\(c.strong) primary=\(c.primary)"
+            let cheapReport = makeReport(verdict: c.primary)
+            let strongReport = makeReport(verdict: c.strong, promptTokens: 99)
+            let attempt = EscalationCore.Attempt.succeeded(answer: "сильный ответ", report: strongReport,
+                                                            providerID: "openai", model: "gpt-5")
+            let result = EscalationCore.composeMessage(primaryAnswer: "дешёвый ответ", primaryReport: cheapReport, attempt: attempt)
+            let record = try XCTUnwrap(result.escalation, name)
+            XCTAssertEqual(record.status, c.expected, name)
+            if c.expected == .succeeded {
+                XCTAssertEqual(result.content, "сильный ответ", name)
+                XCTAssertEqual(result.report, strongReport, name)
+                XCTAssertEqual(record.primaryReport, cheapReport, name)
+                XCTAssertNil(record.strongReport, name)
+            } else {
+                XCTAssertEqual(result.content, "дешёвый ответ", name)
+                XCTAssertEqual(result.report, cheapReport, name)
+                XCTAssertNil(record.primaryReport, "показанный и есть primary — не дублируется: \(name)")
+                XCTAssertEqual(record.strongReport, strongReport, name)
+            }
+            XCTAssertEqual(record.providerID, "openai", name)
+            XCTAssertEqual(record.model, "gpt-5", name)
+            XCTAssertEqual(record.trigger, c.primary, "trigger — вердикт дешёвой ступени: \(name)")
+            XCTAssertNil(record.failureReason, name)
+        }
+    }
+
+    func testEscalationRecordWithStrongReportAndNotImprovedStatusRoundTrips() throws {
+        let strongReport = makeReport(verdict: .fail, promptTokens: 77)
+        let record = EscalationRecord(status: .notImproved, trigger: .unsure, providerID: "openai",
+                                       model: "tuned-7b", strongReport: strongReport)
+        let data = try JSONEncoder().encode(record)
+        let decoded = try JSONDecoder().decode(EscalationRecord.self, from: data)
+        XCTAssertEqual(decoded, record)
+        XCTAssertNil(decoded.primaryReport)
+    }
+
     func testComposeMessageFailedKeepsCheapAnswerWithFailureReasonAndNoPrimaryReportDup() throws {
         let cheapReport = makeReport(verdict: .fail)
         let attempt = EscalationCore.Attempt.failed(reason: "сеть недоступна", providerID: "openai", model: "gpt-5")
@@ -121,7 +175,7 @@ final class EscalationCoreTests: XCTestCase {
     }
 
     func testEscalationStatusKnownValuesRoundTrip() throws {
-        for status: EscalationStatus in [.succeeded, .failed, .unavailable] {
+        for status: EscalationStatus in [.succeeded, .failed, .unavailable, .notImproved] {
             let data = try JSONEncoder().encode(status)
             let decoded = try JSONDecoder().decode(EscalationStatus.self, from: data)
             XCTAssertEqual(decoded, status)
@@ -137,6 +191,16 @@ final class EscalationCoreTests: XCTestCase {
         XCTAssertNil(decoded.model)
         XCTAssertNil(decoded.failureReason)
         XCTAssertNil(decoded.primaryReport)
+        XCTAssertNil(decoded.strongReport)
+    }
+
+    /// Задача 95, миграция: записи эпохи ≤94 (без `strongReport` в JSON) декодируются —
+    /// `decodeIfPresent` даёт `nil`, не падение.
+    func testEscalationRecordWithoutStrongReportFieldDecodesToNil() throws {
+        let json = Data(#"{"status":"succeeded","trigger":"unsure","providerID":"openai","model":"gpt-5"}"#.utf8)
+        let decoded = try JSONDecoder().decode(EscalationRecord.self, from: json)
+        XCTAssertEqual(decoded.status, .succeeded)
+        XCTAssertNil(decoded.strongReport)
     }
 
     func testEscalationRecordWithFutureStatusInJSONDecodesToFailed() throws {

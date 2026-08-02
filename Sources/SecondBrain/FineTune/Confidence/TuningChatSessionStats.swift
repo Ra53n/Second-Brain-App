@@ -6,6 +6,10 @@
 // стоимостные агрегаты (токены, вызовы, latency) считаются по «полной стоимости»
 // сообщения: метрики показанного `report` плюс `escalation.primaryReport.metrics`
 // у успешно эскалированных (дешёвая ступень, чей ответ не показан, но чей вызов был).
+// Задача 95: та же логика для `.notImproved` — сильную ступень оплатили, хоть её ответ
+// и не показан; полная стоимость = показанный (дешёвый) `report` + `strongReport.metrics`.
+// `escalatedCount` (успешно улучшила) и `escalationNotImprovedCount` (отработала, но не
+// помогла) — разные счётчики, не смешиваются с `escalationFailedCount` (failed/unavailable).
 
 import Foundation
 
@@ -25,6 +29,7 @@ struct TuningChatSessionStats: Equatable {
     var avgLatencyWithoutExtraCalls: TimeInterval?
     var escalatedCount: Int
     var escalationFailedCount: Int
+    var escalationNotImprovedCount: Int
     var escalationShare: Double
     var escalationAddedLatency: TimeInterval
     var escalationPromptTokens: Int
@@ -49,20 +54,25 @@ struct TuningChatSessionStats: Equatable {
         guard !entries.isEmpty else { return nil }
         let reports = entries.map(\.report)
 
-        // Полная стоимость сообщения: показанный отчёт + дешёвая ступень при успехе.
-        // primaryLatency сообщения — это primaryLatency дешёвой ступени (первый реальный
-        // вызов модели), totalLatency — сумма обеих ступеней.
+        // Полная стоимость сообщения: показанный отчёт + оплаченная, но не показанная
+        // ступень (дешёвая при успехе — её ответ не показан; сильная при notImproved —
+        // её ответ не показан). primaryLatency сообщения — это primaryLatency ПЕРВОГО
+        // реального вызова модели, totalLatency — сумма обеих ступеней.
         let fullMetrics: [ConfidenceMetrics] = entries.map { entry in
-            guard let primary = entry.escalation?.primaryReport?.metrics, entry.escalation?.status == .succeeded else {
-                return entry.report.metrics
+            let extra: ConfidenceMetrics?
+            switch entry.escalation?.status {
+            case .succeeded: extra = entry.escalation?.primaryReport?.metrics
+            case .notImproved: extra = entry.escalation?.strongReport?.metrics
+            default: extra = nil
             }
+            guard let extra else { return entry.report.metrics }
             return ConfidenceMetrics(
-                totalCalls: entry.report.metrics.totalCalls + primary.totalCalls,
-                extraCalls: entry.report.metrics.extraCalls + primary.extraCalls,
-                primaryLatency: primary.primaryLatency,
-                totalLatency: entry.report.metrics.totalLatency + primary.totalLatency,
-                promptTokens: entry.report.metrics.promptTokens + primary.promptTokens,
-                completionTokens: entry.report.metrics.completionTokens + primary.completionTokens)
+                totalCalls: entry.report.metrics.totalCalls + extra.totalCalls,
+                extraCalls: entry.report.metrics.extraCalls + extra.extraCalls,
+                primaryLatency: entry.escalation?.status == .succeeded ? extra.primaryLatency : entry.report.metrics.primaryLatency,
+                totalLatency: entry.report.metrics.totalLatency + extra.totalLatency,
+                promptTokens: entry.report.metrics.promptTokens + extra.promptTokens,
+                completionTokens: entry.report.metrics.completionTokens + extra.completionTokens)
         }
 
         let withExtra = fullMetrics.filter { $0.extraCalls > 0 }.map(\.totalLatency)
@@ -71,6 +81,10 @@ struct TuningChatSessionStats: Equatable {
         let avgTotalLatency = average(fullMetrics.map(\.totalLatency))
 
         let succeededReports = entries.filter { $0.escalation?.status == .succeeded }.map(\.report)
+        let notImprovedStrongReports = entries.compactMap { entry -> ConfidenceReport? in
+            guard entry.escalation?.status == .notImproved else { return nil }
+            return entry.escalation?.strongReport
+        }
         let failedCount = entries.filter { $0.escalation?.status == .failed || $0.escalation?.status == .unavailable }.count
 
         let stagedReports = reports.filter { $0.stages != nil }
@@ -94,10 +108,11 @@ struct TuningChatSessionStats: Equatable {
             avgLatencyWithoutExtraCalls: withoutExtra.isEmpty ? nil : average(withoutExtra),
             escalatedCount: succeededReports.count,
             escalationFailedCount: failedCount,
+            escalationNotImprovedCount: notImprovedStrongReports.count,
             escalationShare: reports.isEmpty ? 0 : Double(succeededReports.count) / Double(reports.count),
-            escalationAddedLatency: succeededReports.reduce(0) { $0 + $1.metrics.totalLatency },
-            escalationPromptTokens: succeededReports.reduce(0) { $0 + $1.metrics.promptTokens },
-            escalationCompletionTokens: succeededReports.reduce(0) { $0 + $1.metrics.completionTokens },
+            escalationAddedLatency: (succeededReports + notImprovedStrongReports).reduce(0) { $0 + $1.metrics.totalLatency },
+            escalationPromptTokens: (succeededReports + notImprovedStrongReports).reduce(0) { $0 + $1.metrics.promptTokens },
+            escalationCompletionTokens: (succeededReports + notImprovedStrongReports).reduce(0) { $0 + $1.metrics.completionTokens },
             stagedAnswered: stagedReports.count,
             stagedOK: stagedReports.filter { $0.verdict == .ok }.count,
             monoOK: monoReports.filter { $0.verdict == .ok }.count,

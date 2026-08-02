@@ -13,6 +13,8 @@
 // Задача 94: тумблер `stagesEnabled` включает цепочку стадий (report.stages != nil),
 // per-thread (не течёт между вариантами), `stages` — per-document, снимок primaryStrategy
 // до Task, effectiveStages пустой при включённом тумблере → монолит без бейджа.
+// Задача 95: сильная модель отвечает `{}` (hard-fail) на UNSURE дешёвой — `.notImproved`,
+// показан ответ дешёвой, `errorText` нетронут, `strongReport` сохранён.
 
 import XCTest
 @testable import SecondBrain
@@ -559,6 +561,42 @@ final class TuningChatViewModelTests: XCTestCase {
         XCTAssertEqual(escalation.trigger, .unsure, "trigger — вердикт дешёвой ступени")
         XCTAssertNotNil(escalation.primaryReport, "дешёвый отчёт сохранён в записи")
         XCTAssertEqual(escalation.primaryReport?.verdict, .unsure)
+        XCTAssertEqual(strongProvider.receivedMessages.count, 1, "сильная модель вызвана ровно один раз")
+    }
+
+    /// Задача 95: сильная модель отвечает `{}` — hard-fail constraint, строго хуже
+    /// UNSURE дешёвой. Показан ответ дешёвой, `status == .notImproved`, отчёт сильной
+    /// сохранён в `strongReport` для статистики.
+    func testHardFailStrongResponseMarksEscalationNotImprovedAndKeepsCheapAnswer() async throws {
+        let dataset = makeDataset()
+        let cheapProvider = MockChatProvider(responses: [unsureResponse])
+        let strongProvider = MockChatProvider(responses: ["{}"])
+        let vm = TuningChatViewModel(
+            server: makeReadyServer(),
+            providerFactory: { _ in cheapProvider },
+            dataset: { dataset },
+            isTuneOrBaselineActive: { false },
+            fileURL: tempFileURL(),
+            escalationResolver: { _ in
+                .resolved(ResolvedChatProvider(provider: strongProvider, model: "strong-model",
+                                                providerID: "openai", displayName: "OpenAI"))
+            })
+        vm.escalationEnabled = true
+        vm.escalationTarget = EscalationTarget(providerID: "openai", model: "strong-model")
+        vm.input = "фрагмент встречи"
+        await vm.send()
+
+        XCTAssertNil(vm.errorText)
+        XCTAssertEqual(vm.messages.count, 2)
+        let assistant = vm.messages[1]
+        XCTAssertEqual(assistant.content, unsureResponse, "показан ответ дешёвой — сильная строго хуже")
+        XCTAssertEqual(assistant.report?.verdict, .unsure, "показанный report — дешёвой ступени")
+        let escalation = try XCTUnwrap(assistant.escalation)
+        XCTAssertEqual(escalation.status, .notImproved)
+        XCTAssertEqual(escalation.trigger, .unsure)
+        XCTAssertNil(escalation.primaryReport, "показанный и есть primary — не дублируется")
+        let strongReport = try XCTUnwrap(escalation.strongReport, "отчёт сильной сохранён для статистики")
+        XCTAssertEqual(strongReport.verdict, .fail)
         XCTAssertEqual(strongProvider.receivedMessages.count, 1, "сильная модель вызвана ровно один раз")
     }
 

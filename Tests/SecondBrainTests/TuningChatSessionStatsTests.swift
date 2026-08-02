@@ -5,6 +5,8 @@
 // только показанную, регрессия на сообщениях без escalation.
 // Задача 94: сравнение моно/мульти — stagedAnswered/stagedOK/monoOK, раздельные средние
 // latency по `report.stages != nil`, только моно/только мульти — противоположный набор nil.
+// Задача 95: escalationNotImprovedCount отдельно от escalatedCount/escalationFailedCount,
+// «полная стоимость» notImproved включает strongReport.metrics, смесь трёх исходов.
 
 import XCTest
 @testable import SecondBrain
@@ -139,9 +141,11 @@ final class TuningChatSessionStatsTests: XCTestCase {
         let shownReport = status == .succeeded
             ? ConfidenceReport(verdict: shownVerdict, reasons: [], metrics: strongMetrics, checks: [])
             : cheapReport
+        let strongReportForRecord = ConfidenceReport(verdict: .fail, reasons: [], metrics: strongMetrics, checks: [])
         let escalation = EscalationRecord(status: status, trigger: .unsure, providerID: "openai", model: "gpt-5",
-                                           failureReason: status == .succeeded ? nil : "причина",
-                                           primaryReport: status == .succeeded ? cheapReport : nil)
+                                           failureReason: status == .succeeded || status == .notImproved ? nil : "причина",
+                                           primaryReport: status == .succeeded ? cheapReport : nil,
+                                           strongReport: status == .notImproved ? strongReportForRecord : nil)
         return TuningChatMessage(role: "assistant", content: "{}", report: shownReport, escalation: escalation)
     }
 
@@ -198,6 +202,56 @@ final class TuningChatSessionStatsTests: XCTestCase {
         XCTAssertEqual(stats.promptTokens, 40)
         XCTAssertEqual(stats.completionTokens, 8)
         XCTAssertEqual(stats.avgTotalLatency, 2, accuracy: 0.0001)
+    }
+
+    // MARK: - Задача 95: вердикт-осознанная эскалация (notImproved)
+
+    /// `notImproved` — свой счётчик, не смешивается ни с `escalatedCount` (только
+    /// успешно улучшившие), ни с `escalationFailedCount` (только failed/unavailable).
+    func testNotImprovedEscalationHasOwnCounterSeparateFromEscalatedAndFailed() throws {
+        let messages = [escalatedMessage(status: .notImproved)]
+        let stats = try XCTUnwrap(TuningChatSessionStats.compute(messages: messages))
+        XCTAssertEqual(stats.escalationNotImprovedCount, 1)
+        XCTAssertEqual(stats.escalatedCount, 0, "notImproved не улучшила — не succeeded")
+        XCTAssertEqual(stats.escalationFailedCount, 0, "эскалация отработала, это не неудача")
+    }
+
+    /// Сильную ступень оплатили, даже если её ответ не показан — полная стоимость
+    /// сессии включает `strongReport.metrics` вдобавок к показанному (дешёвому) отчёту.
+    func testFullCostForNotImprovedEscalationIncludesStrongReportMetrics() throws {
+        let messages = [escalatedMessage(status: .notImproved, cheapPromptTokens: 40, cheapCompletionTokens: 8,
+                                          cheapTotalLatency: 2, strongPromptTokens: 100, strongCompletionTokens: 20,
+                                          strongTotalLatency: 5)]
+        let stats = try XCTUnwrap(TuningChatSessionStats.compute(messages: messages))
+        XCTAssertEqual(stats.promptTokens, 140, "40 (дешёвая, показана) + 100 (сильная, оплачена)")
+        XCTAssertEqual(stats.completionTokens, 28, "8 (дешёвая) + 20 (сильная)")
+        XCTAssertEqual(stats.avgTotalLatency, 7, accuracy: 0.0001, "2 (дешёвая) + 5 (сильная)")
+        XCTAssertEqual(stats.avgPrimaryLatency, 2, accuracy: 0.0001, "primaryLatency — показанный (дешёвый) ответ")
+        XCTAssertEqual(stats.escalationAddedLatency, 5, "стоимость эскалации — сильная ступень, хоть и не показана")
+        XCTAssertEqual(stats.escalationPromptTokens, 100)
+        XCTAssertEqual(stats.escalationCompletionTokens, 20)
+    }
+
+    /// Смесь всех трёх исходов эскалации в одной сессии — счётчики не текут друг в друга,
+    /// «полная стоимость» суммирует оплаченные ступени каждого сообщения независимо.
+    func testMixOfSucceededNotImprovedAndFailedEscalationsInOneSession() throws {
+        let messages = [
+            escalatedMessage(status: .succeeded, cheapPromptTokens: 10, cheapCompletionTokens: 2, cheapTotalLatency: 1,
+                              strongPromptTokens: 20, strongCompletionTokens: 4, strongTotalLatency: 2),
+            escalatedMessage(status: .notImproved, cheapPromptTokens: 30, cheapCompletionTokens: 6, cheapTotalLatency: 3,
+                              strongPromptTokens: 40, strongCompletionTokens: 8, strongTotalLatency: 4),
+            escalatedMessage(status: .failed, cheapPromptTokens: 50, cheapCompletionTokens: 10, cheapTotalLatency: 5),
+        ]
+        let stats = try XCTUnwrap(TuningChatSessionStats.compute(messages: messages))
+        XCTAssertEqual(stats.escalatedCount, 1)
+        XCTAssertEqual(stats.escalationNotImprovedCount, 1)
+        XCTAssertEqual(stats.escalationFailedCount, 1)
+        // Полная стоимость каждого сообщения — обе ступени (показанная + оплаченная):
+        // succeeded (10+20 ток, latency 1+2), notImproved (30+40 ток, latency 3+4),
+        // failed — только дешёвая (50 ток, latency 5).
+        XCTAssertEqual(stats.promptTokens, (10 + 20) + (30 + 40) + 50)
+        XCTAssertEqual(stats.completionTokens, (2 + 4) + (6 + 8) + 10)
+        XCTAssertEqual(stats.avgTotalLatency, ((1 + 2) + (3 + 4) + 5) / 3.0, accuracy: 0.0001)
     }
 
     // MARK: - Задача 94: сравнение моно/мульти (stages)

@@ -208,7 +208,7 @@ struct FineTuneChatDetailView: View {
                             GridRow {
                                 Text("")
                                 Text(lastEscalationLine(escalation, shownVerdict: last.verdict))
-                                    .foregroundStyle(escalation.status == .succeeded ? .purple : .orange)
+                                    .foregroundStyle(escalation.status.uiColor)
                             }
                         }
                     }
@@ -245,13 +245,10 @@ struct FineTuneChatDetailView: View {
                         Text("Токены (cost)").foregroundStyle(.secondary)
                         Text("\(formattedTokens(stats.promptTokens)) запрос + \(formattedTokens(stats.completionTokens)) ответ")
                     }
-                    if stats.escalatedCount + stats.escalationFailedCount > 0 {
+                    if stats.escalatedCount + stats.escalationFailedCount + stats.escalationNotImprovedCount > 0 {
                         GridRow {
                             Text("Эскалация").foregroundStyle(.secondary)
-                            Text(String(format: "%d из %d (%.0f%%) · неудач %d · +%.1f с · +%@ ток.",
-                                        stats.escalatedCount, stats.answered, stats.escalationShare * 100,
-                                        stats.escalationFailedCount, stats.escalationAddedLatency,
-                                        formattedTokens(stats.escalationPromptTokens + stats.escalationCompletionTokens)))
+                            Text(escalationSessionLine(stats)).lineLimit(1)
                         }
                     }
                     if stats.stagedAnswered > 0 {
@@ -300,11 +297,27 @@ struct FineTuneChatDetailView: View {
         case .succeeded:
             return "эскалация: \(escalation.providerID ?? "?")/\(escalation.model ?? "?"), " +
                 "\(escalation.trigger.uiLabel) → \(shownVerdict.uiLabel)"
+        case .notImproved:
+            return "эскалация не улучшила (\(escalation.providerID ?? "?")/\(escalation.model ?? "?")): " +
+                "\(escalation.strongReport?.verdict.uiLabel ?? "?") хуже \(shownVerdict.uiLabel)"
         case .failed:
             return "эскалация не удалась: \(escalation.failureReason ?? "причина неизвестна")"
         case .unavailable:
             return "эскалация недоступна: \(escalation.failureReason ?? "причина неизвестна")"
         }
+    }
+
+    /// Строка «Эскалация» блока «Сессия»: «не улучшила K» дописывается только при
+    /// ненулевом счётчике (задача 95) — не разводить пользователя нулём.
+    private func escalationSessionLine(_ stats: TuningChatSessionStats) -> String {
+        var line = String(format: "%d из %d (%.0f%%) · неудач %d · +%.1f с · +%@ ток.",
+                           stats.escalatedCount, stats.answered, stats.escalationShare * 100,
+                           stats.escalationFailedCount, stats.escalationAddedLatency,
+                           formattedTokens(stats.escalationPromptTokens + stats.escalationCompletionTokens))
+        if stats.escalationNotImprovedCount > 0 {
+            line += " · не улучшила \(stats.escalationNotImprovedCount)"
+        }
+        return line
     }
 
     /// Разбивка «Последний запрос» по стадиям: имя + latency, ⚠ перед именем стадии,
@@ -349,8 +362,9 @@ struct FineTuneChatDetailView: View {
         } else {
             escalationLast = ""
         }
-        let escalationSession = (stats.escalatedCount + stats.escalationFailedCount) > 0
-            ? "эскалаций \(stats.escalatedCount), неудач \(stats.escalationFailedCount); "
+        let escalationSession = (stats.escalatedCount + stats.escalationFailedCount + stats.escalationNotImprovedCount) > 0
+            ? "эскалаций \(stats.escalatedCount), неудач \(stats.escalationFailedCount), " +
+              "не улучшила \(stats.escalationNotImprovedCount); "
             : ""
         let stagesSession = stats.stagedAnswered > 0
             ? "стадии: \(stats.stagedAnswered) \(RussianPlural.form(stats.stagedAnswered, "ответ", "ответа", "ответов")); "
@@ -727,11 +741,12 @@ private struct EscalationBadge: View {
         .accessibilityValue("эскалация: \(capsuleLabel) — \(detailText)")
     }
 
-    private var color: Color { record.status == .succeeded ? .purple : .orange }
+    private var color: Color { record.status.uiColor }
 
     private var capsuleLabel: String {
         switch record.status {
         case .succeeded: return "⤴ \(record.providerID ?? "?")/\(record.model ?? "?")"
+        case .notImproved: return "эскалация не улучшила"
         case .failed: return "эскалация не удалась"
         // Недоступность — эскалация не запускалась вовсе, «не удалась» вводила бы в заблуждение.
         case .unavailable: return "эскалация недоступна"
@@ -742,6 +757,9 @@ private struct EscalationBadge: View {
         switch record.status {
         case .succeeded:
             return "\(record.trigger.uiLabel) → \(shownVerdict?.uiLabel ?? "?")"
+        case .notImproved:
+            return "\(record.providerID ?? "?")/\(record.model ?? "?"): " +
+                "\(record.strongReport?.verdict.uiLabel ?? "?") хуже \(shownVerdict?.uiLabel ?? "?")"
         case .failed, .unavailable:
             return record.failureReason ?? "причина неизвестна"
         }
@@ -785,6 +803,19 @@ extension ConfidenceVerdict {
         case .ok: return .green
         case .unsure: return .yellow
         case .fail: return .red
+        }
+    }
+}
+
+// Единая точка цвета статуса эскалации (задача 95) — используется бейджем сообщения
+// и блоком «Последний запрос».
+extension EscalationStatus {
+    var uiColor: Color {
+        switch self {
+        case .succeeded: return .purple
+        // Оранжево-серый: эскалация отработала (не «не удалась»), но не улучшила ответ.
+        case .notImproved: return Color(red: 0.65, green: 0.55, blue: 0.4)
+        case .failed, .unavailable: return .orange
         }
     }
 }

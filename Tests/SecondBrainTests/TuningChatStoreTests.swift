@@ -9,6 +9,8 @@
 // Задача 94: миграция документа эпохи 93 без `stagesEnabled`/`stages` → false/nil;
 // round-trip заполненных стадий (кириллица в промптах); незнакомое поле в объекте
 // стадии («из будущего») не роняет декод.
+// Задача 95: round-trip сообщения с `notImproved`+`strongReport`; JSON без `strongReport`
+// в `escalation` мигрирует на nil.
 
 import XCTest
 @testable import SecondBrain
@@ -274,6 +276,53 @@ final class TuningChatStoreTests: XCTestCase {
             chatBaseModel: legacy7B)
         TuningChatPersistence.save(document, to: url)
         XCTAssertEqual(TuningChatPersistence.load(from: url), document)
+    }
+
+    /// Задача 95: `notImproved` + `strongReport` — round-trip документа с сообщением,
+    /// показавшим дешёвый ответ после строго худшей сильной ступени.
+    func testRoundTripWithNotImprovedEscalationAndStrongReport() {
+        let url = tempDir.appendingPathComponent("chat.json")
+        let cheapReport = ConfidenceReport(verdict: .unsure, reasons: [], metrics: ConfidenceMetrics(totalCalls: 1), checks: [])
+        let strongReport = ConfidenceReport(verdict: .fail, reasons: ["не распарсился"],
+                                             metrics: ConfidenceMetrics(totalCalls: 1), checks: [])
+        let escalation = EscalationRecord(status: .notImproved, trigger: .unsure, providerID: "mlx-local",
+                                           model: "Qwen2.5-7B-Instruct-4bit", strongReport: strongReport)
+        let document = TuningChatDocument(
+            threads: [
+                "baseline|\(legacy7B)": TuningChatThread(
+                    messages: [
+                        TuningChatMessage(role: "user", content: "Привет"),
+                        TuningChatMessage(role: "assistant", content: "дешёвый ответ", report: cheapReport,
+                                          modelVariant: "baseline", escalation: escalation),
+                    ],
+                    pipelineConfig: .default, escalationEnabled: true),
+            ],
+            modelVariant: "baseline",
+            chatBaseModel: legacy7B)
+        TuningChatPersistence.save(document, to: url)
+        let loaded = TuningChatPersistence.load(from: url)
+        XCTAssertEqual(loaded, document)
+        let loadedEscalation = loaded.threads["baseline|\(legacy7B)"]?.messages[1].escalation
+        XCTAssertEqual(loadedEscalation?.status, .notImproved)
+        XCTAssertEqual(loadedEscalation?.strongReport, strongReport)
+        XCTAssertNil(loadedEscalation?.primaryReport)
+    }
+
+    /// Записи эпохи ≤94 — JSON сообщения без `strongReport` в `escalation` — декодируются,
+    /// `strongReport` дефолтится в `nil` (снисходительный декодер).
+    func testMessageEscalationWithoutStrongReportFieldDecodesToNil() throws {
+        let url = tempDir.appendingPathComponent("chat.json")
+        let json = """
+        {"threads":{"baseline|\(legacy7B)":{"messages":[
+            {"role":"assistant","content":"сильный ответ",
+             "escalation":{"status":"succeeded","trigger":"unsure","providerID":"openai","model":"gpt-5"}}
+        ],"pipelineConfig":{},"escalationEnabled":true}},"modelVariant":"baseline"}
+        """
+        try json.write(to: url, atomically: true, encoding: .utf8)
+        let loaded = TuningChatPersistence.load(from: url)
+        let escalation = try XCTUnwrap(loaded.threads["baseline|\(legacy7B)"]?.messages.first?.escalation)
+        XCTAssertEqual(escalation.status, .succeeded)
+        XCTAssertNil(escalation.strongReport)
     }
 
     /// Задача 93: цель эскалации `.localTuned` (сентинел providerID "mlx-local") —
