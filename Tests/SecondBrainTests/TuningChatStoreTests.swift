@@ -11,6 +11,8 @@
 // стадии («из будущего») не роняет декод.
 // Задача 95: round-trip сообщения с `notImproved`+`strongReport`; JSON без `strongReport`
 // в `escalation` мигрирует на nil.
+// Задача 98: тред эпохи ≤97 (без `escalationTrigger`) мигрирует на `.failOnly`; round-trip
+// с `.unsureOrFail`.
 
 import XCTest
 @testable import SecondBrain
@@ -370,6 +372,39 @@ final class TuningChatStoreTests: XCTestCase {
         XCTAssertNil(loaded.threads["baseline"], "легаси-ключ переименован")
         XCTAssertNotNil(loaded.threads["baseline|\(legacy7B)"])
         XCTAssertNotNil(loaded.threads["future-variant"], "незнакомый тред сохраняется как есть, не выбрасывается")
+    }
+
+    // MARK: - Задача 98: настраиваемый порог эскалации
+
+    /// Тред эпохи ≤97 (JSON без `escalationTrigger`) — `decodeIfPresent` дефолтит на
+    /// `.failOnly` (СОЗНАТЕЛЬНО пониженный порог для существующих тредов).
+    func testMigrationFromEpoch97ThreadWithoutEscalationTriggerDefaultsToFailOnly() throws {
+        let url = tempDir.appendingPathComponent("chat.json")
+        let json = """
+        {"threads":{"baseline|\(legacy7B)":{"messages":[
+            {"id":"11111111-1111-1111-1111-111111111111","role":"user","content":"Привет"}],
+            "pipelineConfig":{"constraintEnabled":true,"redundancyEnabled":false,"scoringEnabled":false,"selfCheckEnabled":false},
+            "escalationEnabled":true}},
+        "modelVariant":"baseline","chatBaseModel":"\(legacy7B)"}
+        """
+        try Data(json.utf8).write(to: url)
+        let loaded = TuningChatPersistence.load(from: url)
+        let baselineThread = try XCTUnwrap(loaded.threads["baseline|\(legacy7B)"])
+        XCTAssertEqual(baselineThread.escalationTrigger, .failOnly)
+        XCTAssertTrue(baselineThread.escalationEnabled, "тумблер эскалации не тронут миграцией порога")
+        XCTAssertEqual(baselineThread.messages.count, 1, "история цела")
+    }
+
+    /// Round-trip с явным `.unsureOrFail` — прежнее поведение сохраняется, если выбрано.
+    func testRoundTripWithUnsureOrFailEscalationTrigger() {
+        let url = tempDir.appendingPathComponent("chat.json")
+        let document = TuningChatDocument(
+            threads: ["baseline|\(legacy7B)": TuningChatThread(escalationEnabled: true, escalationTrigger: .unsureOrFail)],
+            modelVariant: "baseline", chatBaseModel: legacy7B)
+        TuningChatPersistence.save(document, to: url)
+        let loaded = TuningChatPersistence.load(from: url)
+        XCTAssertEqual(loaded, document)
+        XCTAssertEqual(loaded.threads["baseline|\(legacy7B)"]?.escalationTrigger, .unsureOrFail)
     }
 
     // MARK: - Задача 94: multi-stage inference

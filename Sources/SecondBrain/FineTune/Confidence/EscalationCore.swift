@@ -54,6 +54,20 @@ struct EscalationTarget: Equatable, Codable {
     }
 }
 
+/// Порог вызова сильной модели (задача 98): дефолт понижен на `.failOnly` — UNSURE
+/// остаётся ответом дешёвой ступени с жёлтым чипом, эскалация только на явный провал.
+/// Прежнее поведение («каждая неуверенность») доступно явно через `.unsureOrFail`.
+enum EscalationTrigger: String, Codable {
+    case failOnly, unsureOrFail
+
+    /// Незнакомое значение «из будущего» → `.failOnly` (безопасная деградация, тот же
+    /// приём, что `EscalationStatus`/`EscalationTargetKind`).
+    init(from decoder: Decoder) throws {
+        let raw = try decoder.singleValueContainer().decode(String.self)
+        self = EscalationTrigger(rawValue: raw) ?? .failOnly
+    }
+}
+
 enum EscalationStatus: String, Codable {
     case succeeded, failed, unavailable
     /// Сильная модель ответила строго хуже дешёвой (задача 95) — показан ответ дешёвой.
@@ -102,8 +116,15 @@ struct EscalationRecord: Equatable, Codable {
 }
 
 enum EscalationCore {
-    static func shouldEscalate(enabled: Bool, verdict: ConfidenceVerdict) -> Bool {
-        enabled && (verdict == .unsure || verdict == .fail)
+    /// `trigger` — задача 98: `.failOnly` зовёт сильную модель только на `.fail`,
+    /// `.unsureOrFail` — прежнее поведение (`.unsure` тоже эскалирует). `.ok` не
+    /// эскалирует никогда, независимо от порога.
+    static func shouldEscalate(enabled: Bool, verdict: ConfidenceVerdict, trigger: EscalationTrigger = .failOnly) -> Bool {
+        guard enabled else { return false }
+        switch trigger {
+        case .failOnly: return verdict == .fail
+        case .unsureOrFail: return verdict == .unsure || verdict == .fail
+        }
     }
 
     /// Повторы на облаке дороги — redundancy второй ступени принудительно OFF;

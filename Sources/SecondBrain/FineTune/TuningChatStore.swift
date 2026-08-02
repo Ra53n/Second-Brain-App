@@ -47,14 +47,19 @@ struct TuningChatThread: Codable, Equatable {
     var messages: [TuningChatMessage]
     var pipelineConfig: ConfidencePipelineConfig
     var escalationEnabled: Bool
+    /// Порог эскалации (задача 98) — тредовый, симметрично `escalationEnabled`.
+    /// СОЗНАТЕЛЬНО: треды эпохи ≤97 (поле отсутствует в JSON) получают дефолт
+    /// `.failOnly` — понижение порога распространяется и на них (требование пользователя).
+    var escalationTrigger: EscalationTrigger
     /// Тумблер декомпозиции primary на стадии (задача 94) — зеркально `escalationEnabled`.
     var stagesEnabled: Bool
 
     init(messages: [TuningChatMessage] = [], pipelineConfig: ConfidencePipelineConfig = .default,
-         escalationEnabled: Bool = false, stagesEnabled: Bool = false) {
+         escalationEnabled: Bool = false, escalationTrigger: EscalationTrigger = .failOnly, stagesEnabled: Bool = false) {
         self.messages = messages
         self.pipelineConfig = pipelineConfig
         self.escalationEnabled = escalationEnabled
+        self.escalationTrigger = escalationTrigger
         self.stagesEnabled = stagesEnabled
     }
 
@@ -63,6 +68,7 @@ struct TuningChatThread: Codable, Equatable {
         messages = try c.decodeIfPresent([TuningChatMessage].self, forKey: .messages) ?? []
         pipelineConfig = try c.decodeIfPresent(ConfidencePipelineConfig.self, forKey: .pipelineConfig) ?? .default
         escalationEnabled = try c.decodeIfPresent(Bool.self, forKey: .escalationEnabled) ?? false
+        escalationTrigger = try c.decodeIfPresent(EscalationTrigger.self, forKey: .escalationTrigger) ?? .failOnly
         stagesEnabled = try c.decodeIfPresent(Bool.self, forKey: .stagesEnabled) ?? false
     }
 }

@@ -8,6 +8,8 @@
 // Задача 95: composeMessage сравнивает вердикты succeeded-ветки (ok > unsure > fail) —
 // таблица случаев, `.notImproved` при строго худшей сильной, round-trip `strongReport`,
 // `notImproved` в старом декодере деградирует в `.failed`.
+// Задача 98: `EscalationTrigger` — таблица shouldEscalate 2 триггера × 3 вердикта ×
+// enabled/disabled, снисходительный декодер (незнакомое → `.failOnly`), round-trip.
 
 import XCTest
 @testable import SecondBrain
@@ -16,19 +18,35 @@ final class EscalationCoreTests: XCTestCase {
 
     // MARK: - shouldEscalate
 
+    /// Задача 98: 2 триггера × 3 вердикта × enabled/disabled — `.failOnly` зовёт сильную
+    /// только на `.fail`, `.unsureOrFail` — прежнее поведение; `.ok` не эскалирует никогда.
     func testShouldEscalateTable() {
-        let cases: [(enabled: Bool, verdict: ConfidenceVerdict, expected: Bool)] = [
-            (false, .ok, false),
-            (false, .unsure, false),
-            (false, .fail, false),
-            (true, .ok, false),
-            (true, .unsure, true),
-            (true, .fail, true),
+        let cases: [(enabled: Bool, verdict: ConfidenceVerdict, trigger: EscalationTrigger, expected: Bool)] = [
+            (false, .ok, .failOnly, false),
+            (false, .unsure, .failOnly, false),
+            (false, .fail, .failOnly, false),
+            (false, .ok, .unsureOrFail, false),
+            (false, .unsure, .unsureOrFail, false),
+            (false, .fail, .unsureOrFail, false),
+            (true, .ok, .failOnly, false),
+            (true, .unsure, .failOnly, false),
+            (true, .fail, .failOnly, true),
+            (true, .ok, .unsureOrFail, false),
+            (true, .unsure, .unsureOrFail, true),
+            (true, .fail, .unsureOrFail, true),
         ]
         for c in cases {
-            let name = "enabled=\(c.enabled) verdict=\(c.verdict)"
-            XCTAssertEqual(EscalationCore.shouldEscalate(enabled: c.enabled, verdict: c.verdict), c.expected, name)
+            let name = "enabled=\(c.enabled) verdict=\(c.verdict) trigger=\(c.trigger)"
+            XCTAssertEqual(EscalationCore.shouldEscalate(enabled: c.enabled, verdict: c.verdict, trigger: c.trigger),
+                            c.expected, name)
         }
+    }
+
+    /// Дефолт параметра `trigger` — `.failOnly` (задача 98): вызывающий код без явного
+    /// значения получает пониженный порог.
+    func testShouldEscalateDefaultsToFailOnly() {
+        XCTAssertFalse(EscalationCore.shouldEscalate(enabled: true, verdict: .unsure))
+        XCTAssertTrue(EscalationCore.shouldEscalate(enabled: true, verdict: .fail))
     }
 
     // MARK: - escalationPipelineConfig
@@ -272,5 +290,22 @@ final class EscalationCoreTests: XCTestCase {
 
     func testLocalTunedProviderIDRawValue() {
         XCTAssertEqual(ProviderID.localTunedProviderID.rawValue, "mlx-local")
+    }
+
+    // MARK: - Задача 98: EscalationTrigger
+
+    /// Незнакомое значение «из будущего» → `.failOnly` — самый безопасный порог, не краш.
+    func testEscalationTriggerUnknownRawValueDecodesToFailOnly() throws {
+        let json = Data(#""будущий-триггер""#.utf8)
+        let decoded = try JSONDecoder().decode(EscalationTrigger.self, from: json)
+        XCTAssertEqual(decoded, .failOnly)
+    }
+
+    func testEscalationTriggerKnownValuesRoundTrip() throws {
+        for trigger: EscalationTrigger in [.failOnly, .unsureOrFail] {
+            let data = try JSONEncoder().encode(trigger)
+            let decoded = try JSONDecoder().decode(EscalationTrigger.self, from: data)
+            XCTAssertEqual(decoded, trigger, "trigger=\(trigger)")
+        }
     }
 }

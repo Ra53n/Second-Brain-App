@@ -15,6 +15,11 @@
 // до Task, effectiveStages пустой при включённом тумблере → монолит без бейджа.
 // Задача 95: сильная модель отвечает `{}` (hard-fail) на UNSURE дешёвой — `.notImproved`,
 // показан ответ дешёвой, `errorText` нетронут, `strongReport` сохранён.
+// Задача 98: настраиваемый порог — тесты механики эскалации (succeeded/unavailable/
+// failed/notImproved/localTuned) явно выставляют `.unsureOrFail` (их предмет не порог,
+// а механика на UNSURE-фикстуре); дефолт `.failOnly` покрыт отдельно: UNSURE не
+// эскалируется, FAIL (невалидный JSON у micro) эскалируется; `setEscalationTrigger`
+// персистится per-thread и переживает перезагрузку VM.
 
 import XCTest
 @testable import SecondBrain
@@ -547,6 +552,7 @@ final class TuningChatViewModelTests: XCTestCase {
                                                 providerID: "openai", displayName: "OpenAI"))
             })
         vm.escalationEnabled = true
+        vm.escalationTrigger = .unsureOrFail // предмет теста — механика эскалации, не порог
         vm.escalationTarget = EscalationTarget(providerID: "openai", model: "strong-model")
         vm.input = "фрагмент встречи"
         await vm.send()
@@ -583,6 +589,7 @@ final class TuningChatViewModelTests: XCTestCase {
                                                 providerID: "openai", displayName: "OpenAI"))
             })
         vm.escalationEnabled = true
+        vm.escalationTrigger = .unsureOrFail // предмет теста — механика эскалации, не порог
         vm.escalationTarget = EscalationTarget(providerID: "openai", model: "strong-model")
         vm.input = "фрагмент встречи"
         await vm.send()
@@ -612,6 +619,7 @@ final class TuningChatViewModelTests: XCTestCase {
             fileURL: tempFileURL(),
             escalationResolver: { _ in .unavailable(reason: "модель эскалации не выбрана") })
         vm.escalationEnabled = true
+        vm.escalationTrigger = .unsureOrFail // предмет теста — механика эскалации, не порог
         vm.input = "фрагмент встречи"
         await vm.send()
 
@@ -640,6 +648,7 @@ final class TuningChatViewModelTests: XCTestCase {
                                                 providerID: "openai", displayName: "OpenAI"))
             })
         vm.escalationEnabled = true
+        vm.escalationTrigger = .unsureOrFail // предмет теста — механика эскалации, не порог
         vm.escalationTarget = EscalationTarget(providerID: "openai", model: "strong-model")
         vm.input = "фрагмент встречи"
         await vm.send()
@@ -672,6 +681,7 @@ final class TuningChatViewModelTests: XCTestCase {
                                                 providerID: "openai", displayName: "OpenAI"))
             })
         vm.escalationEnabled = true
+        vm.escalationTrigger = .unsureOrFail // предмет теста — механика эскалации, не порог
         vm.escalationTarget = EscalationTarget(providerID: "openai", model: "strong-model")
         vm.input = "фрагмент встречи"
 
@@ -730,6 +740,86 @@ final class TuningChatViewModelTests: XCTestCase {
         XCTAssertEqual(vm.messages.last?.report?.verdict, .unsure, "вердикт честно UNSURE")
         XCTAssertNil(vm.messages.last?.escalation, "тумблер выключен — эскалация не запускается")
         XCTAssertEqual(strongProvider.receivedMessages.count, 0, "сильная модель не вызывалась")
+    }
+
+    // MARK: - Задача 98: настраиваемый порог эскалации
+
+    /// Дефолт `.failOnly` (VM не выставляет триггер явно): UNSURE-ответ micro НЕ
+    /// эскалируется — остаётся ответом дешёвой ступени без записи эскалации.
+    func testDefaultFailOnlyTriggerDoesNotEscalateOnUnsureVerdict() async throws {
+        let dataset = makeDataset()
+        let cheapProvider = MockChatProvider(responses: [unsureResponse])
+        let strongProvider = MockChatProvider(responses: [okResponse])
+        let vm = TuningChatViewModel(
+            server: makeReadyServer(),
+            providerFactory: { _ in cheapProvider },
+            dataset: { dataset },
+            isTuneOrBaselineActive: { false },
+            fileURL: tempFileURL(),
+            escalationResolver: { _ in
+                .resolved(ResolvedChatProvider(provider: strongProvider, model: "strong-model",
+                                                providerID: "openai", displayName: "OpenAI"))
+            })
+        XCTAssertEqual(vm.escalationTrigger, .failOnly, "дефолт нового VM — .failOnly")
+        vm.escalationEnabled = true
+        vm.escalationTarget = EscalationTarget(providerID: "openai", model: "strong-model")
+        vm.input = "фрагмент встречи"
+        await vm.send()
+
+        XCTAssertEqual(vm.messages.last?.report?.verdict, .unsure)
+        XCTAssertNil(vm.messages.last?.escalation, "дефолт .failOnly — UNSURE не эскалируется")
+        XCTAssertEqual(strongProvider.receivedMessages.count, 0, "сильная модель не вызывалась")
+    }
+
+    /// Дефолт `.failOnly`: FAIL-ответ micro (невалидный JSON — проза вместо ответа)
+    /// эскалируется.
+    func testDefaultFailOnlyTriggerEscalatesOnFailVerdict() async throws {
+        let dataset = makeDataset()
+        let cheapProvider = MockChatProvider(responses: ["кажется, поручений тут нет"])
+        let strongProvider = MockChatProvider(responses: [okResponse])
+        let vm = TuningChatViewModel(
+            server: makeReadyServer(),
+            providerFactory: { _ in cheapProvider },
+            dataset: { dataset },
+            isTuneOrBaselineActive: { false },
+            fileURL: tempFileURL(),
+            escalationResolver: { _ in
+                .resolved(ResolvedChatProvider(provider: strongProvider, model: "strong-model",
+                                                providerID: "openai", displayName: "OpenAI"))
+            })
+        vm.escalationEnabled = true
+        vm.escalationTarget = EscalationTarget(providerID: "openai", model: "strong-model")
+        vm.input = "фрагмент встречи"
+        await vm.send()
+
+        let assistant = try XCTUnwrap(vm.messages.last)
+        XCTAssertEqual(assistant.content, okResponse, "показанный ответ — сильной модели")
+        let escalation = try XCTUnwrap(assistant.escalation, "дефолт .failOnly — FAIL эскалируется")
+        XCTAssertEqual(escalation.trigger, .fail)
+        XCTAssertEqual(strongProvider.receivedMessages.count, 1, "сильная модель вызвана")
+    }
+
+    /// `setEscalationTrigger` персистится per-thread и переживает перезагрузку VM
+    /// (симметрично `testEscalationEnabledAndTargetPersistAcrossReload`).
+    func testSetEscalationTriggerPersistsAndSurvivesReload() {
+        let fileURL = tempFileURL()
+        let vm = TuningChatViewModel(
+            server: makeReadyServer(),
+            providerFactory: { _ in MockChatProvider(responses: [self.okResponse]) },
+            dataset: { self.makeDataset() },
+            isTuneOrBaselineActive: { false },
+            fileURL: fileURL)
+        XCTAssertEqual(vm.escalationTrigger, .failOnly)
+        vm.setEscalationTrigger(.unsureOrFail)
+        XCTAssertEqual(vm.escalationTrigger, .unsureOrFail)
+
+        let reloaded = TuningChatViewModel(
+            server: makeReadyServer(),
+            providerFactory: { _ in MockChatProvider(responses: [self.okResponse]) },
+            dataset: { self.makeDataset() },
+            isTuneOrBaselineActive: { false },
+            fileURL: fileURL)
+        XCTAssertEqual(reloaded.escalationTrigger, .unsureOrFail)
     }
 
     /// Тумблер/цель переживают перезапуск VM из того же файла; тумблер — per-thread
@@ -821,6 +911,7 @@ final class TuningChatViewModelTests: XCTestCase {
                                                        providerID: .localTunedProviderID, displayName: "Тюн 7B (локально)"))
             })
         vm.escalationEnabled = true
+        vm.escalationTrigger = .unsureOrFail // предмет теста — механика эскалации, не порог
         vm.escalationTarget = EscalationTarget(providerID: .localTunedProviderID, model: "Qwen2.5-7B-Instruct-4bit", kind: .localTuned)
         vm.input = "фрагмент встречи"
         await vm.send()
@@ -848,6 +939,7 @@ final class TuningChatViewModelTests: XCTestCase {
             fileURL: tempFileURL(),
             escalationResolver: { _ in .unavailable(reason: "нет тюна базы «Qwen2.5-7B-Instruct-4bit»") })
         vm.escalationEnabled = true
+        vm.escalationTrigger = .unsureOrFail // предмет теста — механика эскалации, не порог
         vm.escalationTarget = EscalationTarget(providerID: .localTunedProviderID, model: "Qwen2.5-7B-Instruct-4bit", kind: .localTuned)
         vm.input = "фрагмент встречи"
         await vm.send()

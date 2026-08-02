@@ -485,6 +485,14 @@ struct FineTuneChatDetailView: View {
                     .frame(width: 180)
                     .disabled(viewModel.escalationTarget == nil)
             }
+            Picker("Порог", selection: escalationTriggerBinding) {
+                Text("только FAIL").tag(EscalationTrigger.failOnly)
+                Text("UNSURE или FAIL").tag(EscalationTrigger.unsureOrFail)
+            }
+            .labelsHidden()
+            .frame(width: 150)
+            .accessibilityValue("порог эскалации: \(escalationTriggerLabel)")
+            .help("Когда звать сильную модель: только на явный провал (FAIL) или уже при неуверенности (UNSURE)")
             Spacer()
         }
         .disabled(viewModel.isGenerating)
@@ -528,6 +536,14 @@ struct FineTuneChatDetailView: View {
                 viewModel.setEscalationTarget(EscalationTarget(providerID: providerID, model: newModel))
             }
         )
+    }
+
+    private var escalationTriggerBinding: Binding<EscalationTrigger> {
+        Binding(get: { viewModel.escalationTrigger }, set: { viewModel.setEscalationTrigger($0) })
+    }
+
+    private var escalationTriggerLabel: String {
+        viewModel.escalationTrigger == .failOnly ? "только FAIL" : "UNSURE или FAIL"
     }
 
     private var escalationChoiceAccessibilityValue: String {

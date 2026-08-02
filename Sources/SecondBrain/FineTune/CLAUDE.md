@@ -45,6 +45,12 @@
   по кандидатам как в `MeetingPipeline.summarizeStep`.
 - `Confidence/EscalationCore` (P1) — каскадная эскалация (задача 91): дешёвая модель
   чата тюнинга не уверена (UNSURE/FAIL) → повтор на выбранной пользователем сильной.
+  Порог настраивается (`EscalationTrigger`, задача 98) — дефолт `.failOnly` (только
+  явный провал; UNSURE остаётся ответом дешёвой с жёлтым чипом), прежнее поведение —
+  `.unsureOrFail` (UNSURE тоже эскалирует). Поле тредовое (`TuningChatThread.
+  escalationTrigger`, симметрично `escalationEnabled`), снисходительный декодер:
+  отсутствующее поле/незнакомое значение → `.failOnly` — понижение порога сознательно
+  распространяется и на существующие треды (требование пользователя, не только на новые).
   `EscalationTargetResolver` — единственная точка контакта эскалации с
   `ProviderRegistry` (только для `EscalationTarget.kind == .registry`). Инвариант:
   `TuningChatMessage.report` — всегда отчёт ПОКАЗАННОГО ответа; отчёт дешёвой ступени

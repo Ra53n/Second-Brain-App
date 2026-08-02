@@ -20,6 +20,9 @@
 // `TuneSelection.selectTunedRun` по инжектированным `runs()`, легаси-путь
 // (`adapters/adapters.safetensors` без per-model подкаталога) — только когда
 // `TuneSelection.legacyAdapterFallback` разрешает.
+//
+// Задача 98: `escalationTrigger` тредовая (симметрично `escalationEnabled`), снимок
+// в `send()` рядом со снимком тумблера — дефолт `.failOnly`.
 
 import Foundation
 
@@ -48,12 +51,15 @@ final class TuningChatViewModel: ObservableObject {
             messages = next.messages
             pipelineConfig = next.pipelineConfig
             escalationEnabled = next.escalationEnabled
+            escalationTrigger = next.escalationTrigger
             stagesEnabled = next.stagesEnabled
             persistNow()
         }
     }
     @Published var pipelineConfig: ConfidencePipelineConfig
     @Published var escalationEnabled: Bool
+    /// Порог эскалации (задача 98) — тредовый, симметрично `escalationEnabled`.
+    @Published var escalationTrigger: EscalationTrigger
     @Published var escalationTarget: EscalationTarget?
     /// Тумблер декомпозиции primary на стадии (задача 94) — тредовый, зеркально
     /// `escalationEnabled`.
@@ -122,6 +128,7 @@ final class TuningChatViewModel: ObservableObject {
         messages = activeThread.messages
         pipelineConfig = activeThread.pipelineConfig
         escalationEnabled = activeThread.escalationEnabled
+        escalationTrigger = activeThread.escalationTrigger
         stagesEnabled = activeThread.stagesEnabled
         escalationTarget = document.escalationTarget
         stages = document.stages
@@ -139,6 +146,14 @@ final class TuningChatViewModel: ObservableObject {
     /// симметрично `setPipelineConfig`.
     func setEscalationEnabled(_ enabled: Bool) {
         escalationEnabled = enabled
+        syncActiveThread()
+        persistNow()
+    }
+
+    /// Порог эскалации действует только на следующее сообщение активного треда —
+    /// симметрично `setEscalationEnabled`.
+    func setEscalationTrigger(_ trigger: EscalationTrigger) {
+        escalationTrigger = trigger
         syncActiveThread()
         persistNow()
     }
@@ -195,6 +210,7 @@ final class TuningChatViewModel: ObservableObject {
         messages = next.messages
         pipelineConfig = next.pipelineConfig
         escalationEnabled = next.escalationEnabled
+        escalationTrigger = next.escalationTrigger
         stagesEnabled = next.stagesEnabled
         persistNow()
     }
@@ -243,7 +259,7 @@ final class TuningChatViewModel: ObservableObject {
     private func saveThread(for variant: FineTuneModelVariant) {
         threads[threadKey(variant: variant)] = TuningChatThread(
             messages: messages, pipelineConfig: pipelineConfig, escalationEnabled: escalationEnabled,
-            stagesEnabled: stagesEnabled)
+            escalationTrigger: escalationTrigger, stagesEnabled: stagesEnabled)
     }
 
     var sessionStats: TuningChatSessionStats? {
@@ -329,6 +345,7 @@ final class TuningChatViewModel: ObservableObject {
         let pipeline = ConfidencePipeline(provider: provider, settings: settings, redundancyCount: redundancyCount,
                                            config: pipelineConfig, primary: primaryStrategy)
         let escalationEnabledSnapshot = escalationEnabled
+        let escalationTriggerSnapshot = escalationTrigger
         let escalationTargetSnapshot = escalationTarget
         let escalationConfig = EscalationCore.escalationPipelineConfig(from: pipelineConfig)
 
@@ -348,7 +365,8 @@ final class TuningChatViewModel: ObservableObject {
                 guard gen == chatGen else { return }
 
                 var attempt: EscalationCore.Attempt?
-                if EscalationCore.shouldEscalate(enabled: escalationEnabledSnapshot, verdict: result.report.verdict) {
+                if EscalationCore.shouldEscalate(enabled: escalationEnabledSnapshot, verdict: result.report.verdict,
+                                                  trigger: escalationTriggerSnapshot) {
                     switch escalationResolver(escalationTargetSnapshot) {
                     case let .unavailable(reason):
                         attempt = .unavailable(reason: reason)
