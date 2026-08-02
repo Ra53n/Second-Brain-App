@@ -245,6 +245,10 @@ struct FineTuneChatDetailView: View {
                         Text("Токены (cost)").foregroundStyle(.secondary)
                         Text("\(formattedTokens(stats.promptTokens)) запрос + \(formattedTokens(stats.completionTokens)) ответ")
                     }
+                    GridRow {
+                        Text("Micro-first").foregroundStyle(.secondary)
+                        Text(microFirstSessionLine(stats)).lineLimit(1)
+                    }
                     if stats.escalatedCount + stats.escalationFailedCount + stats.escalationNotImprovedCount > 0 {
                         GridRow {
                             Text("Эскалация").foregroundStyle(.secondary)
@@ -320,6 +324,24 @@ struct FineTuneChatDetailView: View {
         return line
     }
 
+    /// Главная строка домашки «День 10»: сколько закрыла micro-модель, сколько ушло
+    /// в fallback, вызовы большой LLM и latency обеих групп. Показывается всегда —
+    /// «fallback 0» при выключенной эскалации тоже результат замера.
+    private func microFirstSessionLine(_ stats: TuningChatSessionStats) -> String {
+        let share = Int((stats.microShare * 100).rounded())
+        var parts = ["micro закрыла \(stats.microAnsweredCount) из \(stats.answered) (\(share)%)",
+                     "fallback \(stats.fallbackAttemptedCount)",
+                     "вызовов сильной LLM \(stats.strongCallsTotal)"]
+        if let micro = stats.avgTotalLatencyMicroOnly, let fallback = stats.avgTotalLatencyWithFallback {
+            parts.append(String(format: "latency %.1f с → %.1f с", micro, fallback))
+        } else if let micro = stats.avgTotalLatencyMicroOnly {
+            parts.append(String(format: "latency %.1f с", micro))
+        } else if let fallback = stats.avgTotalLatencyWithFallback {
+            parts.append(String(format: "latency каскада %.1f с", fallback))
+        }
+        return parts.joined(separator: " · ")
+    }
+
     /// Разбивка «Последний запрос» по стадиям: имя + latency, ⚠ перед именем стадии,
     /// чей compact-JSON не распарсился (P6 — сигнал виден, запрос не провален).
     private func stagesLine(_ stages: [StageMetric]) -> String {
@@ -370,6 +392,8 @@ struct FineTuneChatDetailView: View {
             ? "стадии: \(stats.stagedAnswered) \(RussianPlural.form(stats.stagedAnswered, "ответ", "ответа", "ответов")); "
             : ""
         return "статистика (\(variantLabel(variant))): \(last)\(escalationLast)\(escalationSession)\(stagesSession)" +
+        "micro \(stats.microAnsweredCount) из \(stats.answered), fallback \(stats.fallbackAttemptedCount), " +
+        "вызовов сильной \(stats.strongCallsTotal); " +
         "сессия: отвечено \(stats.answered), отклонено \(stats.rejected), " +
         "повторный инференс \(stats.needingReinference), доп. вызовов \(stats.extraCallsTotal), " +
         "наценка latency ×\(String(format: "%.2f", stats.latencyFactor))"

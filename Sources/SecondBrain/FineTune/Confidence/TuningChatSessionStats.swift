@@ -42,6 +42,23 @@ struct TuningChatSessionStats: Equatable {
     var monoOK: Int
     var avgTotalLatencyStaged: TimeInterval?
     var avgTotalLatencyMono: TimeInterval?
+    /// Micro-first (задача 96, термины домашки «День 10»). «Обработала micro» —
+    /// ПОКАЗАННЫЙ ответ от дешёвой ступени: эскалации не было (nil/unavailable) либо
+    /// сильная вызывалась, но её ответ не показан (failed/notImproved). «Ушло в
+    /// fallback» — сильная модель ВЫЗЫВАЛАСЬ (succeeded/notImproved/failed).
+    var microAnsweredCount: Int
+    var fallbackAttemptedCount: Int
+    /// Доля micro-ответов от answered (0 при пустом входе) — симметрично escalationShare.
+    var microShare: Double
+    /// Вызовы большой LLM: сумма totalCalls сильной ступени (succeeded — показанный
+    /// отчёт, notImproved — strongReport; failed — 1: вызов был, отчёта нет).
+    var strongCallsTotal: Int
+    /// Latency сообщений без вызова сильной против сообщений с вызовом (полная
+    /// стоимость). Оговорка: при `failed` отчёта сильной нет — её потраченное время в
+    /// полную стоимость не входит, среднее каскада на таких сообщениях занижено.
+    /// nil при пустой группе.
+    var avgTotalLatencyMicroOnly: TimeInterval?
+    var avgTotalLatencyWithFallback: TimeInterval?
 
     /// Считает по `report` сообщений ассистента; сообщения без отчёта (ошибка, ещё не
     /// снятые) в агрегаты не попадают. Пустой вход/нет отчётов → nil, панель скрыта.
@@ -92,6 +109,23 @@ struct TuningChatSessionStats: Equatable {
         let stagedLatencies = stagedReports.map { $0.metrics.totalLatency }
         let monoLatencies = monoReports.map { $0.metrics.totalLatency }
 
+        // Micro-first: разрез по факту ВЫЗОВА сильной модели, не по показанному ответу.
+        let fallbackStatuses: Set<EscalationStatus> = [.succeeded, .notImproved, .failed]
+        let pairs = Array(zip(entries, fullMetrics))
+        let withFallback = pairs.filter { entry, _ in
+            entry.escalation.map { fallbackStatuses.contains($0.status) } ?? false
+        }
+        let microOnly = pairs.filter { entry, _ in
+            !(entry.escalation.map { fallbackStatuses.contains($0.status) } ?? false)
+        }
+        let strongCallsTotal = withFallback.reduce(0) { sum, pair in
+            switch pair.0.escalation?.status {
+            case .succeeded: return sum + pair.0.report.metrics.totalCalls
+            case .notImproved: return sum + (pair.0.escalation?.strongReport?.metrics.totalCalls ?? 1)
+            default: return sum + 1
+            }
+        }
+
         return TuningChatSessionStats(
             answered: reports.count,
             ok: reports.filter { $0.verdict == .ok }.count,
@@ -117,7 +151,14 @@ struct TuningChatSessionStats: Equatable {
             stagedOK: stagedReports.filter { $0.verdict == .ok }.count,
             monoOK: monoReports.filter { $0.verdict == .ok }.count,
             avgTotalLatencyStaged: stagedLatencies.isEmpty ? nil : average(stagedLatencies),
-            avgTotalLatencyMono: monoLatencies.isEmpty ? nil : average(monoLatencies))
+            avgTotalLatencyMono: monoLatencies.isEmpty ? nil : average(monoLatencies),
+            microAnsweredCount: entries.filter { $0.escalation?.status != .succeeded }.count,
+            fallbackAttemptedCount: withFallback.count,
+            microShare: reports.isEmpty ? 0
+                : Double(entries.filter { $0.escalation?.status != .succeeded }.count) / Double(reports.count),
+            strongCallsTotal: strongCallsTotal,
+            avgTotalLatencyMicroOnly: microOnly.isEmpty ? nil : average(microOnly.map(\.1.totalLatency)),
+            avgTotalLatencyWithFallback: withFallback.isEmpty ? nil : average(withFallback.map(\.1.totalLatency)))
     }
 
     private static func average(_ values: [TimeInterval]) -> TimeInterval {

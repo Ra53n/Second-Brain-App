@@ -129,12 +129,14 @@ final class TuningChatSessionStatsTests: XCTestCase {
     private func escalatedMessage(status: EscalationStatus, cheapPromptTokens: Int = 40,
                                    cheapCompletionTokens: Int = 8, cheapTotalLatency: TimeInterval = 2,
                                    strongPromptTokens: Int = 100, strongCompletionTokens: Int = 20,
-                                   strongTotalLatency: TimeInterval = 5) -> TuningChatMessage {
+                                   strongTotalLatency: TimeInterval = 5,
+                                   strongTotalCalls: Int = 1) -> TuningChatMessage {
         let cheapMetrics = ConfidenceMetrics(totalCalls: 1, extraCalls: 0, primaryLatency: cheapTotalLatency,
                                               totalLatency: cheapTotalLatency, promptTokens: cheapPromptTokens,
                                               completionTokens: cheapCompletionTokens)
         let cheapReport = ConfidenceReport(verdict: .unsure, reasons: [], metrics: cheapMetrics, checks: [])
-        let strongMetrics = ConfidenceMetrics(totalCalls: 1, extraCalls: 0, primaryLatency: strongTotalLatency,
+        let strongMetrics = ConfidenceMetrics(totalCalls: strongTotalCalls, extraCalls: strongTotalCalls - 1,
+                                               primaryLatency: strongTotalLatency,
                                                totalLatency: strongTotalLatency, promptTokens: strongPromptTokens,
                                                completionTokens: strongCompletionTokens)
         let shownVerdict: ConfidenceVerdict = status == .succeeded ? .ok : .unsure
@@ -301,5 +303,69 @@ final class TuningChatSessionStatsTests: XCTestCase {
         XCTAssertEqual(try XCTUnwrap(stats.avgTotalLatencyStaged), 5, accuracy: 0.0001)
         XCTAssertEqual(stats.monoOK, 0)
         XCTAssertNil(stats.avgTotalLatencyMono)
+    }
+
+    // MARK: - Micro-first (задача 96, термины домашки «День 10»)
+
+    /// Таблица по исходам: «micro обработала» = показанный ответ от дешёвой ступени;
+    /// «fallback» = сильная ВЫЗЫВАЛАСЬ (succeeded/notImproved/failed).
+    func testMicroFirstCountsByEscalationOutcome() throws {
+        let cases: [(EscalationStatus?, micro: Int, fallback: Int, name: String)] = [
+            (nil, 1, 0, "без эскалации — micro, не fallback"),
+            (.unavailable, 1, 0, "цель недоступна — сильная не вызывалась"),
+            (.failed, 1, 1, "сильная упала — вызов был, ответ micro"),
+            (.notImproved, 1, 1, "не улучшила — вызов был, ответ micro"),
+            (.succeeded, 0, 1, "успех — ответ сильной, не micro"),
+        ]
+        for (status, micro, fallback, name) in cases {
+            let msg = status.map { escalatedMessage(status: $0) }
+                ?? message(verdict: .ok, extraCalls: 0, primaryLatency: 1, totalLatency: 1)
+            let stats = try XCTUnwrap(TuningChatSessionStats.compute(messages: [msg]))
+            XCTAssertEqual(stats.microAnsweredCount, micro, name)
+            XCTAssertEqual(stats.fallbackAttemptedCount, fallback, name)
+        }
+    }
+
+    func testMicroFirstStrongCallsSumByOutcome() throws {
+        // Разные totalCalls на ступень — регрессия «захардкоженная 1 вместо метрик»:
+        // succeeded — из показанного отчёта сильной (3); notImproved — из strongReport (2);
+        // failed — отчёта нет, минимум 1; unavailable/обычное — не считаются.
+        let messages = [
+            escalatedMessage(status: .succeeded, strongTotalCalls: 3),
+            escalatedMessage(status: .notImproved, strongTotalCalls: 2),
+            escalatedMessage(status: .failed),
+            escalatedMessage(status: .unavailable),
+            message(verdict: .ok, extraCalls: 0, primaryLatency: 1, totalLatency: 1),
+        ]
+        let stats = try XCTUnwrap(TuningChatSessionStats.compute(messages: messages))
+        XCTAssertEqual(stats.strongCallsTotal, 6, "3 (succeeded) + 2 (notImproved) + 1 (failed)")
+        XCTAssertEqual(stats.fallbackAttemptedCount, 3)
+        XCTAssertEqual(stats.microAnsweredCount, 4, "все, кроме succeeded")
+    }
+
+    func testMicroFirstLatencySplitsByFallbackFact() throws {
+        // Без вызова сильной: обычное (1 с) + unavailable (2 с) → среднее 1.5.
+        // С вызовом: succeeded — полная стоимость 2+5=7; notImproved — 2+5=7 → среднее 7.
+        let messages = [
+            message(verdict: .ok, extraCalls: 0, primaryLatency: 1, totalLatency: 1),
+            escalatedMessage(status: .unavailable),
+            escalatedMessage(status: .succeeded),
+            escalatedMessage(status: .notImproved),
+        ]
+        let stats = try XCTUnwrap(TuningChatSessionStats.compute(messages: messages))
+        XCTAssertEqual(try XCTUnwrap(stats.avgTotalLatencyMicroOnly), 1.5, accuracy: 0.0001)
+        XCTAssertEqual(try XCTUnwrap(stats.avgTotalLatencyWithFallback), 7, accuracy: 0.0001)
+    }
+
+    func testMicroFirstLatencyGroupsNilWhenGroupEmpty() throws {
+        let onlyMicro = try XCTUnwrap(TuningChatSessionStats.compute(
+            messages: [message(verdict: .ok, extraCalls: 0, primaryLatency: 1, totalLatency: 1)]))
+        XCTAssertNil(onlyMicro.avgTotalLatencyWithFallback)
+        XCTAssertNotNil(onlyMicro.avgTotalLatencyMicroOnly)
+
+        let onlyFallback = try XCTUnwrap(TuningChatSessionStats.compute(
+            messages: [escalatedMessage(status: .succeeded)]))
+        XCTAssertNil(onlyFallback.avgTotalLatencyMicroOnly)
+        XCTAssertNotNil(onlyFallback.avgTotalLatencyWithFallback)
     }
 }

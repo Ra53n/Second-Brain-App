@@ -99,6 +99,7 @@
 | 93 | [Локальная mlx-цель эскалации](93-mlx-escalation-target.md) | 91, 92 | [x] |
 | 94 | [Multi-stage inference в чате тюнинга](94-multi-stage-inference.md) | 85, 86, 91, 92, 93 | [x] |
 | 95 | [Вердикт-осознанная композиция эскалации](95-verdict-aware-escalation.md) | 91, 94 | [x] |
+| 96 | [Строка «Micro-first» в статистике сессии](96-micro-first-stats.md) | 91, 95 | [x] |
 
 ## Рекомендуемый порядок
 
