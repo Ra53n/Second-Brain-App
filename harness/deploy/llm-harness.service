@@ -1,0 +1,37 @@
+# systemd-юнит llm-harness. deploy.sh ставит копию в
+# /etc/systemd/system/llm-harness.service. Зеркалит llm-gateway.service.
+# Сервис слушает 127.0.0.1:3500; наружу — только через Caddy (/harness/*).
+# Ходит ТОЛЬКО в gateway (127.0.0.1:3400) — своего LLM-ключа не держит.
+
+[Unit]
+Description=llm-harness — FSM execution loop перед LLM Gateway (генерация кода + security review)
+After=network-online.target llm-gateway.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=llmharness
+Group=llmharness
+EnvironmentFile=/etc/llm-harness.env
+WorkingDirectory=/opt/llm-harness
+Environment=HOME=/opt/llm-harness
+Environment=XDG_CACHE_HOME=/opt/llm-harness/.cache
+Environment=npm_config_cache=/opt/llm-harness/.npm
+ExecStart=/usr/bin/node /opt/llm-harness/dist/index.js
+Restart=on-failure
+RestartSec=5
+
+# Усиление безопасности. Сервис исполняет git/node --check над сгенерированным
+# кодом — ограничения здесь отделяют его от остальной системы.
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectHome=true
+PrivateTmp=true
+ProtectControlGroups=true
+ProtectKernelTunables=true
+RestrictSUIDSGID=true
+# БД и рабочие копии прогонов — единственный путь на запись
+ReadWritePaths=/opt/llm-harness/data
+
+[Install]
+WantedBy=multi-user.target

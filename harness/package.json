@@ -1,0 +1,31 @@
+{
+  "name": "llm-harness",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "FSM execution loop перед LLM Gateway: генерирует JS-код по задаче, гоняет цикл генерация → node --check → security review → коммит, все вызовы через /gw/chat. Домашка «День 14 — Security step».",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/index.js",
+    "dev": "node --watch --import tsx/esm src/index.ts",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@fastify/rate-limit": "^9.1.0",
+    "better-sqlite3": "^11.8.0",
+    "fastify": "^4.28.1",
+    "pino": "^9.5.0"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.11",
+    "@types/node": "^20.14.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.5.4",
+    "vitest": "^2.1.8"
+  }
+}

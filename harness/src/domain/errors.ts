@@ -1,0 +1,52 @@
+// errors.ts — типизированные ошибки с единым форматом для API. Порт gateway.
+
+export type ErrorCode =
+  | "validation_error"
+  | "unauthorized"
+  | "not_found"
+  | "config_error"
+  | "upstream_error"
+  | "busy"
+  | "internal";
+
+export class AppError extends Error {
+  constructor(
+    public readonly code: ErrorCode,
+    message: string,
+    public readonly httpStatus: number,
+    public readonly details?: unknown,
+  ) {
+    super(message);
+    this.name = new.target.name;
+  }
+}
+
+export class ValidationError extends AppError {
+  constructor(message: string, details?: unknown) {
+    super("validation_error", message, 400, details);
+  }
+}
+
+export class UnauthorizedError extends AppError {
+  constructor(message = "Требуется авторизация") {
+    super("unauthorized", message, 401);
+  }
+}
+
+export class NotFoundError extends AppError {
+  constructor(message = "Не найдено") {
+    super("not_found", message, 404);
+  }
+}
+
+export class ConfigError extends AppError {
+  constructor(message: string) {
+    super("config_error", message, 503);
+  }
+}
+
+export class UpstreamError extends AppError {
+  constructor(message: string, details?: unknown) {
+    super("upstream_error", message, 502, details);
+  }
+}
