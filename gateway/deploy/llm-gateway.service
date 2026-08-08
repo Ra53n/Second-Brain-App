@@ -1,0 +1,36 @@
+# systemd-юнит llm-gateway. deploy.sh ставит копию в
+# /etc/systemd/system/llm-gateway.service. Зеркалит agent-lab.service.
+# Сервис слушает 127.0.0.1:3400; наружу — только через Caddy (/gw/*).
+
+[Unit]
+Description=llm-gateway — гардед-прокси перед DeepSeek (input/output guard, rate limit, cost tracking)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=llmgateway
+Group=llmgateway
+EnvironmentFile=/etc/llm-gateway.env
+WorkingDirectory=/opt/llm-gateway
+Environment=HOME=/opt/llm-gateway
+Environment=XDG_CACHE_HOME=/opt/llm-gateway/.cache
+Environment=npm_config_cache=/opt/llm-gateway/.npm
+ExecStart=/usr/bin/node /opt/llm-gateway/dist/index.js
+Restart=on-failure
+RestartSec=5
+
+# Усиление безопасности. Сервис держит платный ключ DeepSeek — ограничения
+# здесь единственное, что отделяет его от данных соседних сервисов.
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectHome=true
+PrivateTmp=true
+ProtectControlGroups=true
+ProtectKernelTunables=true
+RestrictSUIDSGID=true
+# БД аудита — единственный путь на запись
+ReadWritePaths=/opt/llm-gateway/data
+
+[Install]
+WantedBy=multi-user.target

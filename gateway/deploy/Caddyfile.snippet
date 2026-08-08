@@ -1,0 +1,12 @@
+# Маршрут llm-gateway для /etc/caddy/Caddyfile (справка для ручного
+# восстановления; deploy.sh вставляет его автоматически перед handle /lab/*).
+#
+# Блок добавляется ВНУТРЬ существующего блока домена, рядом с handle /agent/*,
+# handle /support/*, handle /lab/* и handle_path /llm/* — их НЕ трогать.
+#
+# handle (в отличие от handle_path) префикс НЕ срезает: все маршруты сервиса
+# сами начинаются с /gw, health = /gw/health.
+
+    handle /gw/* {
+        reverse_proxy 127.0.0.1:3400
+    }
