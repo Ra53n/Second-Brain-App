@@ -60,10 +60,32 @@
 7. `./scripts/build.sh` и `./scripts/test.sh` зелёные; секретов в индексе нет.
 
 ## Отчёт тестов
-_(заполняется на стадии 2)_
+Стадия 1 (стенд) — готова: 3 вектора, README, live_probe/probe, REPORT.
+Стадия 2 (детерминированные слои) — реализована, всё гейтится `promptSecurityEnabled`:
+- Слой 1+2: `ChatPromptBuilder.wrapToolResult` (санитизация + границы) на результатах
+  инструментов централизованно в `ChatToolAssembly` (rag/project/mcp), ERROR-контракт
+  `ToolUseLoop` сохранён; статический FSM rag-блок обёрнут.
+- Слой 3: `OutputEgressGuard.neutralize` в `ChatViewModel.finishGeneration` — режет внешние
+  markdown-картинки и data-несущие ссылки; allowedHosts из сообщений пользователя.
+Тесты: `OutputEgressGuardTests` (12), расширенный `PromptSecurityTests`
+(`wrapToolResult` secure/insecure/ERROR), `ToolResultWrappingIntegrationTests`.
+Итог: `./scripts/build.sh` — Build complete; `./scripts/test.sh` — 1862 теста, 0 падений.
+
+Живой прогон (5×, `./run_live.sh --both --repeat 5`):
+- DeepSeek: ВЫКЛ A/B/C 5/5 → ВКЛ 0/5.
+- Llama-3.1-8B (OpenRouter, слабая): C ВЫКЛ 5/5 → ВКЛ **1/5** (промпт-слой вероятностен,
+  слабую модель продавливает); A/B она игнорит и без защиты (0/5). Детерминированные слои
+  (sanitize, egress) держат независимо от модели — см. `REPORT.md`.
 
 ## Вердикт ревью
-_(reviewer, после стадии 2)_
+`reviewer`, два круга. Круг 1 — NO-GO: egress-guard не покрывал FSM-прогон (терминальный
+ответ агента шёл мимо `neutralize`), обход через `![x](<url>)`, host:port в allowlist.
+Исправлено: egress на каждом сообщении FSM-фазы (`ChatViewModel+AgentRun`), снятие угловых
+скобок в `externalURLComponents`, нормализация host в `userMentionedHosts`, реальный-путь
+тест `testFSMTerminalAnswerEgressNeutralized`. Круг 2 — **GO**: блокирующее закрыто,
+ingress без регрессий (ERROR-контракт цел), секретов нет. Оставлены осознанно (fail-safe,
+не гейт): инлайн-код в одиночных бэктиках, длинный путь в `carriesData`, обёртка
+write-результатов; окно автозагрузки при одиночном стриминге до `finishGeneration` — в бэклог.
 
 ## Результат
 _(после GO)_

@@ -154,6 +154,12 @@ extension ChatViewModel {
             if Task.isCancelled { pauseAgentAt(chatID, gen: gen); return }
             ragBlock = retrieval?.block ?? ""
             ragSources = retrieval?.sources ?? []
+            // Статический ретрив (ragAsTool off) идёт мимо ChatToolAssembly —
+            // обёртка недоверенных данных иначе не применяется вообще (задача 100).
+            if !ragBlock.isEmpty {
+                ragBlock = ChatPromptBuilder.wrapToolResult(name: "rag_search", body: ragBlock,
+                                                            secure: configuration.promptSecurityEnabled)
+            }
         }
 
         while true {
@@ -240,6 +246,13 @@ extension ChatViewModel {
                 // Источники статического ретрива — на финальном ответе (цитаты).
                 if outcome.isTerminal, !ragSources.isEmpty {
                     message.sources = (message.sources ?? []) + ragSources
+                }
+                // Egress-guard (слой 3 задачи 100) на КАЖДОМ сообщении прогона:
+                // фаза execution переваривает тул-результаты, эксфильтрующая
+                // картинка/ссылка может всплыть не только в терминальном ответе.
+                if chats[j].configuration.promptSecurityEnabled {
+                    let hosts = userMentionedHosts(in: chats[j])
+                    message.content = OutputEgressGuard.neutralize(message.content, allowedHosts: hosts)
                 }
                 chats[j].messages.append(message)
                 chats[j].agentContext = outcome.ctx

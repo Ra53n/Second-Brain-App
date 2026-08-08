@@ -814,6 +814,29 @@ final class ChatViewModel: ObservableObject {
         }
     }
 
+    private static let mentionedURLHostPattern = try! NSRegularExpression(
+        pattern: #"https?://([^\s/?#]+)"#, options: .caseInsensitive)
+
+    /// Хосты из URL, которые пользователь сам написал в СВОИХ сообщениях этого
+    /// чата — egress-guard (задача 100) не считает их внешними. `internal` —
+    /// зовётся и из FSM-прогона (ChatViewModel+AgentRun). Нормализуем до чистого
+    /// host (без `user@` и `:port`), чтобы совпадать с `URLComponents.host`.
+    func userMentionedHosts(in chat: Chat) -> Set<String> {
+        var hosts: Set<String> = []
+        for message in chat.messages where message.role == .user {
+            let ns = message.content as NSString
+            let matches = Self.mentionedURLHostPattern.matches(
+                in: message.content, range: NSRange(location: 0, length: ns.length))
+            for match in matches where match.numberOfRanges >= 2 {
+                let raw = ns.substring(with: match.range(at: 1)).lowercased()
+                let hostPort = raw.split(separator: "@").last.map(String.init) ?? raw
+                let host = hostPort.split(separator: ":").first.map(String.init) ?? hostPort
+                if !host.isEmpty { hosts.insert(host) }
+            }
+        }
+        return hosts
+    }
+
     private func finishGeneration(chatID: UUID, messageID: UUID,
                                   duration: TimeInterval,
                                   usage: ChatUsage?,
@@ -838,6 +861,14 @@ final class ChatViewModel: ObservableObject {
             // Пустая заглушка (ошибка до первого токена / мгновенная отмена) — убираем.
             chats[chatIndex].messages.remove(at: messageIndex)
         } else {
+            // Egress-guard (задача 100): картинки/ссылки в ОТВЕТЕ ассистента —
+            // канал эксфильтрации (автозагрузка рендерером). Хосты, названные
+            // пользователем в этом чате, разрешены — он сам дал этот адрес.
+            if chats[chatIndex].configuration.promptSecurityEnabled {
+                let allowedHosts = userMentionedHosts(in: chats[chatIndex])
+                chats[chatIndex].messages[messageIndex].content = OutputEgressGuard.neutralize(
+                    chats[chatIndex].messages[messageIndex].content, allowedHosts: allowedHosts)
+            }
             // Метрики хода (задача 29): токены и фактическая модель ответа.
             chats[chatIndex].messages[messageIndex].metrics = MessageMetrics(
                 promptTokens: usage?.promptTokens,

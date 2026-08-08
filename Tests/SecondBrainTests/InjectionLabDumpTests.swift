@@ -99,10 +99,12 @@ final class InjectionLabDumpTests: XCTestCase {
                                      description: fetchUrlTool.description,
                                      schema: fetchUrlTool.parameters)],
             ],
+            // secure = защита ВКЛ: тул-результаты обёрнуты слоем 1+2 задачи 100
+            // (санитизация + границы недоверенных данных), как в ChatToolAssembly.
             toolResults: [
-                "A-rag": ragResult,
-                "B-file": report,
-                "C-web": statusPage,
+                "A-rag": ChatPromptBuilder.wrapToolResult(name: "rag_search", body: ragResult),
+                "B-file": ChatPromptBuilder.wrapToolResult(name: "read_file", body: report),
+                "C-web": ChatPromptBuilder.wrapToolResult(name: "fetch_url", body: statusPage),
             ],
             rawToolResults: [
                 "A-rag": rawRagResult,
