@@ -42,22 +42,39 @@ const DANGEROUS_COMMANDS: Array<{ re: RegExp; detail: string }> = [
 
 const LEAK_WINDOW = 40;
 
+// Чувствительны только строки-директивы (что модель не должна раскрывать), а не
+// вся персона: иначе честный ответ «кто ты» пересказывает роль и ловится как утечка.
+const GUARD_KEYWORDS = /(не раскрыв|инструкц|секрет|не выводи|system\s*prompt|систем\w* промпт|игнорируй|prompt)/i;
+
 function normalize(s: string): string {
   return s.toLowerCase().replace(/\s+/g, " ").trim();
 }
 
+/** Разбивает промпт на предложения/строки и оставляет только защищаемые директивы. */
+function protectedLines(systemPrompt: string): string[] {
+  return systemPrompt
+    .split(/(?<=[.!?])\s+|\n+/)
+    .map((s) => s.trim())
+    .filter((s) => s.length >= 20 && GUARD_KEYWORDS.test(s));
+}
+
 /**
- * Утечка системного промпта: скользящим окном (≥40 симв.) ищем в ответе любой
- * достаточно длинный дословный кусок системного промпта. Ловит и цитирование
- * фрагмента, а не только целой строки-инструкции.
+ * Утечка системного промпта: скользящим окном (≥40 симв.) ищем в ответе дословный
+ * кусок ЗАЩИЩАЕМОЙ директивы промпта. Пересказ роли/персоны не считается утечкой —
+ * ловим только выдачу самих инструкций (что и есть реальная атака «покажи промпт»).
  */
 function detectPromptLeak(text: string, systemPrompt?: string): boolean {
   if (!systemPrompt) return false;
-  const sys = normalize(systemPrompt);
   const hay = normalize(text);
-  if (sys.length < LEAK_WINDOW) return hay.includes(sys);
-  for (let i = 0; i + LEAK_WINDOW <= sys.length; i += 12) {
-    if (hay.includes(sys.slice(i, i + LEAK_WINDOW))) return true;
+  for (const line of protectedLines(systemPrompt)) {
+    const l = normalize(line);
+    if (l.length < LEAK_WINDOW) {
+      if (hay.includes(l)) return true;
+      continue;
+    }
+    for (let i = 0; i + LEAK_WINDOW <= l.length; i += 12) {
+      if (hay.includes(l.slice(i, i + LEAK_WINDOW))) return true;
+    }
   }
   return false;
 }
