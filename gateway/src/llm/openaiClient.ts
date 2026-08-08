@@ -48,6 +48,8 @@ export interface HttpLlmConfig {
   apiKey: string;
   /** Число ПОВТОРОВ (сверх первой попытки) при транзиентных сбоях. По умолчанию 3. */
   maxRetries?: number;
+  /** Потолок ожидания одного запроса, мс. По умолчанию 90 с. */
+  timeoutMs?: number;
   /** Внедряемый fetch (для тестов); по умолчанию глобальный fetch. */
   fetchImpl?: typeof fetch;
   /** Внедряемая пауза бэкоффа (для тестов — мгновенная). */
@@ -57,6 +59,28 @@ export interface HttpLlmConfig {
 const RETRIABLE_STATUSES = new Set([408, 409, 425, 429, 500, 502, 503, 504]);
 const BACKOFF_BASE_MS = 500;
 const BACKOFF_CAP_MS = 8000;
+const DEFAULT_TIMEOUT_MS = 90_000;
+
+/**
+ * Сигнал «отмена вызывающего ИЛИ истёк таймаут». Без него зависший upstream
+ * вешает запрос навсегда: DeepSeek на неизвестную модель не отвечает вообще.
+ */
+function withTimeout(ms: number, outer?: AbortSignal): { signal: AbortSignal; done: () => void } {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(new Error("timeout")), ms);
+  const onOuter = () => ctrl.abort();
+  if (outer) {
+    if (outer.aborted) ctrl.abort();
+    else outer.addEventListener("abort", onOuter, { once: true });
+  }
+  return {
+    signal: ctrl.signal,
+    done: () => {
+      clearTimeout(timer);
+      outer?.removeEventListener("abort", onOuter);
+    },
+  };
+}
 
 /** Пауза, прерываемая по AbortSignal. */
 export function abortableDelay(ms: number, signal?: AbortSignal): Promise<void> {
@@ -84,11 +108,13 @@ function isAbort(e: unknown, signal?: AbortSignal): boolean {
 
 export class HttpLlmClient implements LlmCompletionClient {
   private readonly maxRetries: number;
+  private readonly timeoutMs: number;
   private readonly fetchImpl: typeof fetch;
   private readonly sleep: (ms: number, signal?: AbortSignal) => Promise<void>;
 
   constructor(private readonly cfg: HttpLlmConfig) {
     this.maxRetries = cfg.maxRetries ?? 3;
+    this.timeoutMs = cfg.timeoutMs ?? DEFAULT_TIMEOUT_MS;
     this.fetchImpl = cfg.fetchImpl ?? fetch;
     this.sleep = cfg.sleep ?? abortableDelay;
   }
@@ -110,24 +136,34 @@ export class HttpLlmClient implements LlmCompletionClient {
     let lastError = "Сбой запроса к LLM";
     for (let attempt = 0; attempt <= this.maxRetries; attempt++) {
       let resp: Response;
+      let raw: string;
+      const t = withTimeout(this.timeoutMs, req.signal);
       try {
         resp = await this.fetchImpl(this.cfg.url, {
           method: "POST",
           headers,
           body: payload,
-          signal: req.signal,
+          signal: t.signal,
         });
+        // Тело читаем под тем же таймаутом: upstream может «замолчать» и после заголовков.
+        raw = await resp.text();
       } catch (e) {
-        if (isAbort(e, req.signal)) throw e;
-        lastError = `Сбой запроса к LLM: ${(e as Error).message}`;
+        // Отмену вызывающим пробрасываем; собственный таймаут — транзиентный сбой.
+        // Различаем строго по внешнему сигналу: наш abort тоже даёт AbortError.
+        if (req.signal?.aborted) throw e;
+        const timedOut = isAbort(e) || t.signal.aborted;
+        lastError = timedOut
+          ? `LLM не ответила за ${Math.round(this.timeoutMs / 1000)} с (проверь, что выбранная модель существует и доступна)`
+          : `Сбой запроса к LLM: ${(e as Error).message}`;
         if (attempt < this.maxRetries) {
           await this.backoff(attempt, null, req.signal);
           continue;
         }
         throw new UpstreamError(lastError);
+      } finally {
+        t.done();
       }
 
-      const raw = await resp.text();
       if (!resp.ok) {
         let message = raw;
         try {
@@ -151,6 +187,13 @@ export class HttpLlmClient implements LlmCompletionClient {
       }
       const choice = parsed?.choices?.[0]?.message;
       if (!choice) throw new UpstreamError("Пустой ответ от LLM (нет choices)");
+      // Reasoning-модели (deepseek-v4-*) кладут размышления в reasoning_content;
+      // если весь бюджет ушёл туда, content пуст — это лимит, а не молчание модели.
+      if (!choice.content && choice.reasoning_content) {
+        throw new UpstreamError(
+          "Модель израсходовала весь лимит токенов на рассуждения и не выдала ответ — увеличь «Макс. токенов» в настройках.",
+        );
+      }
       const u = parsed?.usage ?? {};
       return {
         message: { content: choice.content ?? null },

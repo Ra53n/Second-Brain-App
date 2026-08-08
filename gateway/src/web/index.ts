@@ -32,15 +32,23 @@ export const CHAT_PAGE = String.raw`<!doctype html>
     var prompt = t.value.trim(); if (!prompt) return;
     add('user', prompt); t.value = ''; b.disabled = true;
     var thinking = add('bot', '…');
-    fetch('/gw/chat', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ prompt: prompt }) })
+    // Свой таймаут: без него зависший upstream оставляет «…» навсегда.
+    var ctrl = new AbortController();
+    var killer = setTimeout(function(){ ctrl.abort(); }, 120000);
+    var dots = 1;
+    var tick = setInterval(function(){ dots = dots % 3 + 1; thinking.textContent = Array(dots + 1).join('·'); }, 500);
+    fetch('/gw/chat', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ prompt: prompt }), signal: ctrl.signal })
       .then(function(r){ return r.json().then(function(j){ return { ok:r.ok, j:j }; }); })
       .then(function(res){
         thinking.remove();
         if (!res.ok) { add('warn', (res.j.error && res.j.error.message) || 'Ошибка'); return; }
         add(res.j.blocked ? 'warn' : 'bot', res.j.answer);
       })
-      .catch(function(){ thinking.remove(); add('warn', 'Сеть недоступна'); })
-      .then(function(){ b.disabled = false; t.focus(); });
+      .catch(function(e){
+        thinking.remove();
+        add('warn', e && e.name === 'AbortError' ? 'Ответ не пришёл за 2 минуты — запрос прерван.' : 'Сеть недоступна');
+      })
+      .then(function(){ clearTimeout(killer); clearInterval(tick); b.disabled = false; t.focus(); });
   });
   t.addEventListener('keydown', function(e){ if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); f.requestSubmit(); } });
 </script></body></html>`;

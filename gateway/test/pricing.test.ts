@@ -21,7 +21,7 @@ describe("cost tracking", () => {
   });
 
   it("pricesFor берёт тариф модели, иначе fallback", () => {
-    expect(pricesFor("deepseek-chat")).toEqual(DEFAULT_PRICES["deepseek-chat"]);
+    expect(pricesFor("deepseek-v4-flash")).toEqual(DEFAULT_PRICES["deepseek-v4-flash"]);
     expect(pricesFor("неизвестная-модель")).toEqual(FALLBACK_PRICE);
   });
 });

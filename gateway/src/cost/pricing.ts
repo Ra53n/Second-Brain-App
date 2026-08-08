@@ -11,10 +11,14 @@ export interface TokenPrices {
   outputPerMillion: number;
 }
 
-/** Дефолтные тарифы (USD за 1M токенов). ⚠️ сверять с актуальным прайсом DeepSeek. */
+/**
+ * Дефолтные тарифы (USD за 1M токенов). ⚠️ Не сверены с актуальным прайсом
+ * DeepSeek для линейки v4 — задаются в админке и правятся без передеплоя.
+ * Неизвестная модель считается по FALLBACK_PRICE, стоимость тогда ориентировочна.
+ */
 export const DEFAULT_PRICES: Record<string, TokenPrices> = {
-  "deepseek-chat": { inputPerMillion: 0.27, outputPerMillion: 1.1 },
-  "deepseek-reasoner": { inputPerMillion: 0.55, outputPerMillion: 2.19 },
+  "deepseek-v4-flash": { inputPerMillion: 0.27, outputPerMillion: 1.1 },
+  "deepseek-v4-pro": { inputPerMillion: 0.55, outputPerMillion: 2.19 },
 };
 
 export const FALLBACK_PRICE: TokenPrices = { inputPerMillion: 0.27, outputPerMillion: 1.1 };

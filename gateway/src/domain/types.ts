@@ -38,14 +38,17 @@ export const DEFAULT_SYSTEM_PROMPT =
 export const DEFAULT_SETTINGS: GatewaySettings = {
   llmUrl: "https://api.deepseek.com/chat/completions",
   llmApiKey: "",
-  model: "deepseek-chat",
+  // Линейка v4: старый deepseek-chat снят провайдером (на него API просто молчит).
+  // Актуальный список — GET https://api.deepseek.com/models.
+  model: "deepseek-v4-flash",
   temperature: 0.4,
-  maxTokens: 1200,
+  // v4 — reasoning-модели: часть бюджета уходит в reasoning_content, лимит нужен с запасом.
+  maxTokens: 2000,
   systemPrompt: DEFAULT_SYSTEM_PROMPT,
   inputPolicy: "mask",
   prices: {
-    "deepseek-chat": { inputPerMillion: 0.27, outputPerMillion: 1.1 },
-    "deepseek-reasoner": { inputPerMillion: 0.55, outputPerMillion: 2.19 },
+    "deepseek-v4-flash": { inputPerMillion: 0.27, outputPerMillion: 1.1 },
+    "deepseek-v4-pro": { inputPerMillion: 0.55, outputPerMillion: 2.19 },
   },
   rateLimitPerMin: 20,
   dailyLimit: 1000,
