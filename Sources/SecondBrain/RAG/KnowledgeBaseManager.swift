@@ -51,11 +51,14 @@ final class KnowledgeBaseManager: ObservableObject {
 
     /// Вызов rag_search от модели: разбор аргументов → поиск по базе (или
     /// всем сразу) → форматированный текст + источники. Ошибки — текстом
-    /// «ERROR: …» (конвенция ToolUseLoop: модель видит и реагирует).
+    /// «ERROR: …» (конвенция ToolUseLoop: модель видит и реагирует). `secure:
+    /// false` (задача 101) — режим сравнения baseline: без anti-injection
+    /// оговорки в выдаче.
     func executeSearchTool(argumentsJSON: String,
                            enabledIDs: Set<String>,
                            topK: Int,
-                           minScore: Double) async -> RagToolOutcome {
+                           minScore: Double,
+                           secure: Bool = true) async -> RagToolOutcome {
         let bases = chatBases(enabledIDs: enabledIDs)
         guard !bases.isEmpty else {
             return RagToolOutcome(
@@ -74,7 +77,7 @@ final class KnowledgeBaseManager: ObservableObject {
             }
             let merged = KnowledgeMerge.dedupSorted(hitsPerBase: hitsPerBase,
                                                     topK: topK)
-            let formatted = RagSearchTool.formatResult(hits: merged)
+            let formatted = RagSearchTool.formatResult(hits: merged, secure: secure)
             return RagToolOutcome(text: formatted.text,
                                   sources: formatted.included.map(\.ragSource))
         }
@@ -83,12 +86,16 @@ final class KnowledgeBaseManager: ObservableObject {
     // MARK: - Статический фолбэк (провайдер без tools / ragAsTool выключен)
 
     /// Ретрив для подстановки [RAG_CONTEXT]. nil — RAG невозможен (нет баз /
-    /// нет эмбеддера): чат идёт без контекста, чип объясняет причину.
+    /// нет эмбеддера): чат идёт без контекста, чип объясняет причину. `secure:
+    /// false` (задача 101) — режим сравнения baseline: блок без anti-injection
+    /// оговорки. Не действует на спецслучай {vault} — тот идёт старым
+    /// пайплайном RagIndexManager без этого параметра (см. шапку).
     func retrieve(enabledIDs: Set<String>,
                   query: String,
                   history: [ChatMessage],
                   configuration: ChatConfiguration,
-                  chatProvider: ResolvedChatProvider?) async -> RagRetrievalOutcome? {
+                  chatProvider: ResolvedChatProvider?,
+                  secure: Bool = true) async -> RagRetrievalOutcome? {
         let bases = chatBases(enabledIDs: enabledIDs)
         guard !bases.isEmpty else { return nil }
 
@@ -108,7 +115,8 @@ final class KnowledgeBaseManager: ObservableObject {
                                           minScore: configuration.ragMinScore))
         }
         return KnowledgeMerge.merge(hitsPerBase: hitsPerBase,
-                                    topK: configuration.ragTopK)
+                                    topK: configuration.ragTopK,
+                                    secure: secure)
     }
 
     // MARK: - Хиты одной базы

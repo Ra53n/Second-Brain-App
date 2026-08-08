@@ -9,7 +9,8 @@ extension ChatViewModel {
     struct RagToolBridge {
         /// nil — включённых баз нет, инструмент не предлагается.
         var definition: (Set<String>) -> ToolDefinition?
-        /// (аргументы вызова, включённые базы, topK, minScore) → текст + источники.
-        var execute: (String, Set<String>, Int, Double) async -> RagToolOutcome
+        /// (аргументы вызова, включённые базы, topK, minScore, защита от
+        /// инъекций включена — задача 101) → текст + источники.
+        var execute: (String, Set<String>, Int, Double, Bool) async -> RagToolOutcome
     }
 }

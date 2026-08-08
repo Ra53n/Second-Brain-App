@@ -148,7 +148,7 @@ final class ToolRegistryTests: XCTestCase {
                        ["git_branches", "git_status", "git_log", "git_diff",
                         "list_files", "read_file",
                         "search_files", "write_file", "edit_file",
-                        "delete_file", "run_command"])
+                        "delete_file", "run_command", "fetch_url"])
         for def in defs {
             XCTAssertFalse(def.name.contains("__"),
                            "\(def.name): коллизия с qualified-именами MCP")

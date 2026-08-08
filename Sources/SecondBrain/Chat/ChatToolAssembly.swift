@@ -104,7 +104,8 @@ extension ChatViewModel {
                     args,
                     configuration.enabledKnowledgeBaseIDs,
                     configuration.ragTopK,
-                    configuration.ragMinScore)
+                    configuration.ragMinScore,
+                    configuration.promptSecurityEnabled)
                 onRagSources(outcome.sources)
                 return outcome.text
             }

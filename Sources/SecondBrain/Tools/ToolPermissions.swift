@@ -114,6 +114,9 @@ enum ToolRiskClassifier {
             return isConfigPath(path) ? .dangerous : .write
         case "delete_file":
             return .dangerous
+        case "fetch_url":
+            // Сетевой egress — побочный эффект неизвестен приложению, как MCP.
+            return .write
         case "run_command":
             return classifyCommand(arguments["command"]?.stringValue ?? "")
         default:

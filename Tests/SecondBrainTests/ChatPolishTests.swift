@@ -177,17 +177,20 @@ final class RagBindingsTests: XCTestCase {
         viewModel.ragMinScoreBinding = 0.35
         viewModel.ragRerankBinding = true
         viewModel.ragQueryRewriteBinding = true
+        viewModel.temperatureBinding = 0
 
         let config = viewModel.selectedChat?.configuration
         XCTAssertEqual(config?.ragTopK, 8)
         XCTAssertEqual(config?.ragMinScore ?? 0, 0.35, accuracy: 0.0001)
         XCTAssertEqual(config?.ragRerankEnabled, true)
         XCTAssertEqual(config?.ragQueryRewrite, true)
+        XCTAssertEqual(config?.temperature ?? -1, 0, accuracy: 0.0001)
 
         XCTAssertEqual(viewModel.ragTopKBinding, 8)
         XCTAssertEqual(viewModel.ragMinScoreBinding, 0.35, accuracy: 0.0001)
         XCTAssertTrue(viewModel.ragRerankBinding)
         XCTAssertTrue(viewModel.ragQueryRewriteBinding)
+        XCTAssertEqual(viewModel.temperatureBinding, 0, accuracy: 0.0001)
     }
 
     /// Задача 24: выбор недоступного провайдера сохраняется как переопределение
@@ -223,12 +226,16 @@ final class RagBindingsTests: XCTestCase {
         XCTAssertEqual(viewModel.ragMinScoreBinding, 0)
         XCTAssertFalse(viewModel.ragRerankBinding)
         XCTAssertFalse(viewModel.ragQueryRewriteBinding)
+        XCTAssertEqual(viewModel.temperatureBinding, ChatConfiguration().temperature)
 
         // set без выбранного чата — no-op, не крэш.
         viewModel.ragTopKBinding = 9
         viewModel.ragMinScoreBinding = 0.5
         viewModel.ragRerankBinding = true
         viewModel.ragQueryRewriteBinding = true
+        viewModel.temperatureBinding = 0
         XCTAssertEqual(viewModel.chats.first?.configuration.ragTopK, ChatConfiguration().ragTopK)
+        XCTAssertEqual(viewModel.chats.first?.configuration.temperature,
+                       ChatConfiguration().temperature)
     }
 }

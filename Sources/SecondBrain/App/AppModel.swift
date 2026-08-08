@@ -318,7 +318,8 @@ final class AppModel: ObservableObject {
                                           query: query,
                                           history: chat.messages,
                                           configuration: chat.configuration,
-                                          chatProvider: chatProvider)
+                                          chatProvider: chatProvider,
+                                          secure: chat.configuration.promptSecurityEnabled)
         }
     }
 
@@ -331,11 +332,12 @@ final class AppModel: ObservableObject {
             definition: { enabledIDs in
                 manager.toolDefinition(enabledIDs: enabledIDs)
             },
-            execute: { args, enabledIDs, topK, minScore in
+            execute: { args, enabledIDs, topK, minScore, secure in
                 await manager.executeSearchTool(argumentsJSON: args,
                                                 enabledIDs: enabledIDs,
                                                 topK: topK,
-                                                minScore: minScore)
+                                                minScore: minScore,
+                                                secure: secure)
             })
     }
 

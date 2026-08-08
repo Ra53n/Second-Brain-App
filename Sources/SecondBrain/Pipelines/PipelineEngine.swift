@@ -219,6 +219,10 @@ final class PipelineEngine {
         config.agentModeEnabled = pipeline.agentMode == .fsm
         config.providerID = pipeline.providerID
         config.model = pipeline.model
+        // Тумблер задачи 101 — ручной режим проверки атак, у пайплайна его нет.
+        // Без сброса автопрогон над чужим контентом (диффы PR, вебхуки) унаследовал
+        // бы выключенную защиту из destination-чата, и никто бы этого не увидел.
+        config.promptSecurityEnabled = true
         chatViewModel.chats[index].configuration = config
     }
 

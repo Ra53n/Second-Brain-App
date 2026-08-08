@@ -191,6 +191,11 @@ struct ChatConfiguration: Equatable, Codable {
     /// false (дефолт) — «Один запрос»: прежний путь (стриминг / tool-цикл).
     var agentModeEnabled: Bool = false
 
+    /// Текстовая защита от prompt-инъекций (задачи 99/101): правила безопасности,
+    /// обёртка недоверенных секций и оговорки инструментов. Выключается только
+    /// вручную для проверки атак — на старте приложения всегда возвращается в true.
+    var promptSecurityEnabled: Bool = true
+
     static let historyWindowRange = 4...50
     static let temperatureRange = 0.0...2.0
     static let ragTopKRange = 1...12
@@ -206,6 +211,7 @@ struct ChatConfiguration: Equatable, Codable {
         case projectToolsEnabled
         case projectRootPath, permissionMode
         case agentModeEnabled
+        case promptSecurityEnabled
     }
 
     init(from decoder: Decoder) throws {
@@ -242,6 +248,8 @@ struct ChatConfiguration: Equatable, Codable {
                                                forKey: .permissionMode) ?? d.permissionMode
         agentModeEnabled = try c.decodeIfPresent(Bool.self, forKey: .agentModeEnabled)
             ?? d.agentModeEnabled
+        promptSecurityEnabled = try c.decodeIfPresent(Bool.self, forKey: .promptSecurityEnabled)
+            ?? d.promptSecurityEnabled
     }
 
     /// Ручной encode: legacy-ключ knowledgeSource больше не пишем (в CodingKeys
@@ -265,6 +273,7 @@ struct ChatConfiguration: Equatable, Codable {
         try c.encodeIfPresent(projectRootPath, forKey: .projectRootPath)
         try c.encode(permissionMode, forKey: .permissionMode)
         try c.encode(agentModeEnabled, forKey: .agentModeEnabled)
+        try c.encode(promptSecurityEnabled, forKey: .promptSecurityEnabled)
     }
 }
 

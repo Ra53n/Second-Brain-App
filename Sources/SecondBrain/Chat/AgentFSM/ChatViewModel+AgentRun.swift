@@ -190,7 +190,8 @@ extension ChatViewModel {
                 return ChatPromptBuilder.fileToolsDirective(
                     mode: configuration.permissionMode, rootPath: root.path)
             }()
-            let sys = AgentPrompts.systemPrompt(for: ready.state)
+            let sys = AgentPrompts.systemPrompt(for: ready.state,
+                                                secure: configuration.promptSecurityEnabled)
                 + (ragToolDefinition != nil ? "\n\n" + ChatPromptBuilder.ragToolDirective : "")
                 + (fileDirective.map { "\n\n" + $0 } ?? "")
             let user = AgentPrompts.buildPrompt(query: ready.task, ctx: ready,

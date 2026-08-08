@@ -63,6 +63,8 @@ ChatConfiguration
                 ragEnabled (false), ragTopK (4), ragMinScore (0),
                 ragRerankEnabled (false), ragQueryRewrite (false)
                 enabledMCPServerIDs: Set<UUID> — MCP-серверы этого чата
+                promptSecurityEnabled (true) — защита от prompt-инъекций; выключение
+                не переживает перезапуск приложения (задачи 99, 101)
 ```
 
 `sources` — цитируемые чанки RAG-ответа (имя заметки, путь, заголовочный путь, score). `toolCalls` — транскрипт вызовов инструментов (имя, аргументы JSON, результат, ok/fail) для UI.

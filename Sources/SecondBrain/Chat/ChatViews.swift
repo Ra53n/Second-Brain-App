@@ -396,9 +396,9 @@ struct ChatDetailView: View {
         Button {
             showsRagTuning.toggle()
         } label: {
-            Label("Параметры RAG", systemImage: "slider.horizontal.3")
+            Label("Параметры", systemImage: "slider.horizontal.3")
         }
-        .help("Параметры поиска по базе (topK, порог, переранжирование)")
+        .help("Параметры чата: температура модели и поиск по базе")
         .popover(isPresented: $showsRagTuning) {
             RagTuningPopover(viewModel: viewModel)
         }
@@ -527,6 +527,7 @@ struct ChatDetailView: View {
         HStack(spacing: 4) {
             directoryMenu
             permissionModeMenu
+            promptSecurityToggle
             Divider().frame(height: 12)
             modelPicker
             mcpMenu
@@ -647,6 +648,24 @@ struct ChatDetailView: View {
         }
         .help("Режим разрешений операций агента: "
               + viewModel.permissionModeBinding.help)
+    }
+
+    /// Тумблер текстовой защиты от prompt-инъекций (задачи 99/101): выключена —
+    /// заметный красный чип, это режим сравнения baseline для проверки атак.
+    private var promptSecurityToggle: some View {
+        Toggle(isOn: Binding(
+            get: { viewModel.promptSecurityEnabledBinding },
+            set: { viewModel.promptSecurityEnabledBinding = $0 }
+        )) {
+            Label(viewModel.promptSecurityEnabledBinding ? "Защита" : "Защита ВЫКЛ",
+                  systemImage: viewModel.promptSecurityEnabledBinding
+                    ? "checkmark.shield" : "exclamationmark.triangle.fill")
+        }
+        .toggleStyle(.button)
+        .foregroundStyle(viewModel.promptSecurityEnabledBinding ? Color.secondary : Color.red)
+        .help(viewModel.promptSecurityEnabledBinding
+              ? "Правила безопасности и разметка недоверенных данных активны"
+              : "Защита от prompt-инъекций выключена: агент выполнит инструкции из заметок и ответов инструментов")
     }
 
     /// Чипы источников контекста (задачи 27, 28): «База» (RAG) первым, затем
@@ -860,6 +879,20 @@ struct RagTuningPopover: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
+            Text("Модель")
+                .font(.headline)
+            VStack(alignment: .leading, spacing: 2) {
+                Slider(value: Binding(get: { viewModel.temperatureBinding },
+                                      set: { viewModel.temperatureBinding = ($0 * 10).rounded() / 10 }),
+                       in: ChatConfiguration.temperatureRange) {
+                    Text("Температура")
+                }
+                .help("Разброс ответов: 0 — детерминированно и предсказуемо, выше — разнообразнее")
+                Text(String(format: "Температура: %.1f", viewModel.temperatureBinding))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Divider()
             Text("Поиск по базе (RAG)")
                 .font(.headline)
             Stepper("Фрагментов в контекст: \(viewModel.ragTopKBinding)",

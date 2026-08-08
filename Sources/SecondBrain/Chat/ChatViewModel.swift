@@ -152,6 +152,12 @@ final class ChatViewModel: ObservableObject {
         for i in loaded.indices where loaded[i].agentContext?.status == .running {
             loaded[i].agentContext?.status = .paused
         }
+        // Защита от инъекций не переживает перезапуск (задачи 99/101): её
+        // выключают только вручную для проверки атак в текущей сессии.
+        if loaded.contains(where: { !$0.configuration.promptSecurityEnabled }) {
+            for i in loaded.indices { loaded[i].configuration.promptSecurityEnabled = true }
+            ChatPersistence.save(loaded, to: fileURL)
+        }
         if loaded.isEmpty {
             let first = Chat()
             chats = [first]
@@ -272,6 +278,17 @@ final class ChatViewModel: ObservableObject {
         chats[index].configuration.model = model
     }
 
+    /// Тумблер текстовой защиты от prompt-инъекций текущего чата (задачи
+    /// 99/101), persisted per-чат. Выключение — режим сравнения baseline для
+    /// проверки атак; на старте приложения принудительно возвращается в true.
+    var promptSecurityEnabledBinding: Bool {
+        get { selectedChat?.configuration.promptSecurityEnabled ?? true }
+        set {
+            guard let index = selectedIndex else { return }
+            chats[index].configuration.promptSecurityEnabled = newValue
+        }
+    }
+
     /// Тумблер «Отвечать по базе» текущего чата (persisted per-чат).
     var ragEnabledBinding: Bool {
         get { selectedChat?.configuration.ragEnabled ?? false }
@@ -337,6 +354,14 @@ final class ChatViewModel: ObservableObject {
         set {
             guard let index = selectedIndex else { return }
             chats[index].configuration.ragQueryRewrite = newValue
+        }
+    }
+
+    var temperatureBinding: Double {
+        get { selectedChat?.configuration.temperature ?? ChatConfiguration().temperature }
+        set {
+            guard let index = selectedIndex else { return }
+            chats[index].configuration.temperature = newValue
         }
     }
 
@@ -617,7 +642,8 @@ final class ChatViewModel: ObservableObject {
                     ragContext: retrieval?.block,
                     projectDocs: projectDocs,
                     tools: toolDirectives.isEmpty
-                        ? nil : toolDirectives.joined(separator: "\n\n"))
+                        ? nil : toolDirectives.joined(separator: "\n\n"),
+                    secure: chatSnapshot.configuration.promptSecurityEnabled)
                 var settings = ChatSettings(model: resolved.model)
                 settings.temperature = configuration.temperature
 

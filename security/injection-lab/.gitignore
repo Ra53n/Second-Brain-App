@@ -1,0 +1,2 @@
+# Производное: собирается тестом InjectionLabDumpTests при каждом ./run_live.sh
+lab_dump.json

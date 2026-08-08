@@ -482,8 +482,8 @@ final class ProjectToolCatalogDisplayTests: XCTestCase {
                        ["git_branches", "git_status", "git_log", "git_diff",
                         "list_files", "read_file",
                         "search_files", "write_file", "edit_file",
-                        "delete_file", "run_command"])
-        XCTAssertEqual(catalog.count, 11)
+                        "delete_file", "run_command", "fetch_url"])
+        XCTAssertEqual(catalog.count, 12)
         for definition in catalog {
             XCTAssertFalse(definition.description.isEmpty, definition.name)
         }

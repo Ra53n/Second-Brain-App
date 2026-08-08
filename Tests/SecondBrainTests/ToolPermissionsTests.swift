@@ -43,6 +43,12 @@ final class ToolRiskClassifierTests: XCTestCase {
             name: "delete_file", argumentsJSON: #"{"path":"a.md"}"#), .dangerous)
     }
 
+    /// Сетевой egress — побочный эффект, как MCP: write, не safe.
+    func testFetchUrlIsWriteLevel() {
+        XCTAssertEqual(ToolRiskClassifier.classify(
+            name: "fetch_url", argumentsJSON: #"{"url":"https://example.com"}"#), .write)
+    }
+
     /// MCP-инструменты (qualified «slug__tool») — write-уровень: побочный
     /// эффект неизвестен (закрывает BACKLOG п. 10).
     func testMCPToolsAreWriteLevel() {

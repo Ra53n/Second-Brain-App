@@ -17,8 +17,16 @@ enum AgentPrompts {
 
     // MARK: - Системные промпты этапов
 
-    /// Роль этапа — системный промпт фазы.
-    static func systemPrompt(for state: AgentTaskState) -> String {
+    /// Роль этапа — системный промпт фазы. Правила безопасности (задача 99)
+    /// добавляются к каждой фазе: прогон идёт мимо ChatPromptBuilder.systemPrompt
+    /// и иначе унаследовал бы только роль этапа. `secure: false` (задача 101) —
+    /// режим сравнения baseline: только роль, без правил.
+    static func systemPrompt(for state: AgentTaskState, secure: Bool = true) -> String {
+        guard secure else { return phaseRole(for: state) }
+        return phaseRole(for: state) + "\n\n" + ChatPromptBuilder.securityDirective
+    }
+
+    private static func phaseRole(for state: AgentTaskState) -> String {
         switch state {
         case .planning:
             return """

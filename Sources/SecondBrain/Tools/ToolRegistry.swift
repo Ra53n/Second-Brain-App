@@ -61,7 +61,8 @@ final class ToolRegistry: Sendable {
             WriteFileTool(),
             EditFileTool(),
             DeleteFileTool(),
-            RunCommandTool()
+            RunCommandTool(),
+            FetchUrlTool()
         ])
     }
 }

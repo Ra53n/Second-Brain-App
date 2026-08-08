@@ -253,7 +253,9 @@ final class TuningChatSessionStatsTests: XCTestCase {
         // failed — только дешёвая (50 ток, latency 5).
         XCTAssertEqual(stats.promptTokens, (10 + 20) + (30 + 40) + 50)
         XCTAssertEqual(stats.completionTokens, (2 + 4) + (6 + 8) + 10)
-        XCTAssertEqual(stats.avgTotalLatency, ((1 + 2) + (3 + 4) + 5) / 3.0, accuracy: 0.0001)
+        // Явный Double на числитель — иначе тайпчекер перебирает Int/Double-перегрузки
+        // и упирается в лимит «unable to type-check in reasonable time» (merge задач 99–102).
+        XCTAssertEqual(stats.avgTotalLatency, Double((1 + 2) + (3 + 4) + 5) / 3.0, accuracy: 0.0001)
     }
 
     // MARK: - Задача 94: сравнение моно/мульти (stages)

@@ -106,13 +106,16 @@ final class MessageMetricsMigrationTests: XCTestCase {
 
 final class ChatPromptBuilderTests: XCTestCase {
 
-    func testSystemPromptWithoutSectionsIsBaseOnly() {
-        XCTAssertEqual(ChatPromptBuilder.systemPrompt(), ChatPromptBuilder.basePrompt)
+    func testSystemPromptWithoutSectionsIsBaseAndSecurity() {
+        // Задача 99: правила безопасности уходят всегда, даже без секций.
+        XCTAssertEqual(ChatPromptBuilder.systemPrompt(),
+                       ChatPromptBuilder.basePrompt + "\n\n" + ChatPromptBuilder.securityDirective)
     }
 
     func testSystemPromptWithRagSection() {
         let prompt = ChatPromptBuilder.systemPrompt(ragContext: "фрагменты из vault")
-        XCTAssertTrue(prompt.contains("[RAG_CONTEXT]\nфрагменты из vault"))
+        XCTAssertTrue(prompt.contains("[RAG_CONTEXT]"))
+        XCTAssertTrue(prompt.contains("фрагменты из vault"))
         XCTAssertTrue(prompt.hasPrefix(ChatPromptBuilder.basePrompt))
     }
 

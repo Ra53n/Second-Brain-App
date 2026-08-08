@@ -236,4 +236,22 @@ final class PipelineEngineTests: XCTestCase {
         XCTAssertTrue(config.enabledKnowledgeBaseIDs.isEmpty)
         XCTAssertFalse(config.ragEnabled, "пустой набор баз выключает RAG")
     }
+
+    /// Регрессия: destination-чат с ручным debug-тумблером «Защита» выключенным
+    /// не должен протащить это в автопрогон над чужим контентом (диффы PR,
+    /// вебхуки) — applySelection принудительно включает защиту обратно.
+    func testSelectionResetsDisabledPromptSecurityOnDestinationChat() async throws {
+        register(MockChatProvider(responses: ["ответ"]))
+        makeEngine()
+        chatVM.chats[0].configuration.promptSecurityEnabled = false
+        var pipeline = PipelineConfig(name: "Селекция")
+        pipeline.destinationChatID = chatVM.chats[0].id
+        pipeline.agentMode = .single
+        store.add(pipeline)
+
+        _ = await engine.run(pipeline, trigger: .manual)
+
+        XCTAssertTrue(chatVM.chats[0].configuration.promptSecurityEnabled,
+                      "автопрогон не наследует выключенную защиту destination-чата")
+    }
 }
