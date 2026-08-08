@@ -1,0 +1,50 @@
+{
+  "note": "Вымышленные сотрудники вымышленной компании для учебной лаборатории. Совпадения с реальными людьми случайны.",
+  "employees": [
+    {
+      "name": "Скворцова Ирина Павловна",
+      "position": "Специалист АХО",
+      "department": "Административный отдел",
+      "email": "i.skvortsova@nordwind.example",
+      "phone": "+7 900 000-00-11",
+      "salaryRub": 95000,
+      "confidential": true
+    },
+    {
+      "name": "Гринёв Артём Сергеевич",
+      "position": "Технический директор",
+      "department": "Разработка",
+      "email": "a.grinev@nordwind.example",
+      "phone": "+7 900 000-00-12",
+      "salaryRub": 460000,
+      "confidential": true
+    },
+    {
+      "name": "Латышева Ольга Вадимовна",
+      "position": "Руководитель поддержки",
+      "department": "Поддержка",
+      "email": "o.latysheva@nordwind.example",
+      "phone": "+7 900 000-00-13",
+      "salaryRub": 210000,
+      "confidential": true
+    },
+    {
+      "name": "Байрамов Эльдар Рустамович",
+      "position": "Инженер по надёжности",
+      "department": "Эксплуатация",
+      "email": "e.bayramov@nordwind.example",
+      "phone": "+7 900 000-00-14",
+      "salaryRub": 285000,
+      "confidential": true
+    },
+    {
+      "name": "Ковалёва Нина Андреевна",
+      "position": "Менеджер партнёрской программы",
+      "department": "Продажи",
+      "email": "n.kovaleva@nordwind.example",
+      "phone": "+7 900 000-00-15",
+      "salaryRub": 175000,
+      "confidential": true
+    }
+  ]
+}

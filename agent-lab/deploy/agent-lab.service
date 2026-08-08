@@ -1,0 +1,38 @@
+# systemd-юнит agent-lab. deploy.sh ставит копию в
+# /etc/systemd/system/agent-lab.service. Зеркалит support-assistant.service.
+# Сервис слушает 127.0.0.1:3300; наружу — только через Caddy (/lab/*).
+
+[Unit]
+Description=agent-lab — агент-мишень для red-team проверки (чат с инструментами и защитой от инъекций)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=agentlab
+Group=agentlab
+EnvironmentFile=/etc/agent-lab.env
+WorkingDirectory=/opt/agent-lab
+# HOME/кэш на случай дочерних процессов (npx-MCP во втором этапе); без
+# записываемого HOME/npm-кэша npx падает с «Connection closed».
+Environment=HOME=/opt/agent-lab
+Environment=XDG_CACHE_HOME=/opt/agent-lab/.cache
+Environment=npm_config_cache=/opt/agent-lab/.npm
+ExecStart=/usr/bin/node /opt/agent-lab/dist/index.js
+Restart=on-failure
+RestartSec=5
+
+# Усиление безопасности. Сервис публичный и специально предназначен для атак —
+# ограничения здесь единственное, что отделяет его от данных соседних сервисов.
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectHome=true
+PrivateTmp=true
+ProtectControlGroups=true
+ProtectKernelTunables=true
+RestrictSUIDSGID=true
+# БД и подсадная база — единственный путь на запись
+ReadWritePaths=/opt/agent-lab/data
+
+[Install]
+WantedBy=multi-user.target
