@@ -107,6 +107,7 @@
 | 101 | [Тумблер «Защита от инъекций» в чате](101-prompt-security-toggle.md) | 99 | [x] |
 | 102 | [Встроенный fetch_url + вектор C стенда через веб-страницу](102-web-fetch-tool.md) | 99, 100, 101 | [x] |
 | 103 | [LLM Gateway — гардед-прокси перед DeepSeek (День 13)](103-llm-gateway.md) | 26, 88 | [x] |
+| 104 | [Security step в execution loop (День 14)](104-security-step-loop.md) | 103 | [x] |
 
 ## Рекомендуемый порядок
 
