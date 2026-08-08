@@ -122,7 +122,16 @@ PUT `/gw/admin/settings` меняет политику, ключ наружу н
 POST `/gw/chat` с `AKIA…` + картой при policy=block → заблокирован, в LLM не ушло, в аудите
 маскированный превью `[REDACTED_API_KEY]`/`[REDACTED_CARD]`; чистый промпт без ключа →
 `config_error` 503; `/gw/admin/stats` и `/interceptions` показывают перехват; admin без
-токена → 401. Живой вызов DeepSeek через прокси — на VPS после ввода ключа в `/gw/admin`.
+токена → 401.
+
+**Живой прогон на VPS (2026-08-08).** Задеплоено deploy.sh: юнит llm-gateway активен
+(порт 3400), Caddy-маршрут `/gw/*` вставлен, регрессия соседей `/lab` `/support` `/agent` —
+все OK. Ключ DeepSeek установлен из Keychain через PUT `/gw/admin/settings` (в git/логи не
+попал, наружу `hasLlmKey:true`). Через публичный URL: чистый промпт → реальный ответ
+deepseek-chat, usage 156 ток., cost $0.00007449; промпт с `sk-proj-…` → `inputAction:mask`,
+в модель ушёл `[REDACTED_API_KEY]` (модель отвечала про «отзови ключ», значения не видела),
+перехват в аудите с маскированным превью; stats: total 2, intercepted 1, суммарная стоимость
+считается.
 
 ## Вердикт ревью
 
