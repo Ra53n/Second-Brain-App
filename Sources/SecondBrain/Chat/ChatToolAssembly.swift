@@ -107,15 +107,22 @@ extension ChatViewModel {
                     configuration.ragMinScore,
                     configuration.promptSecurityEnabled)
                 onRagSources(outcome.sources)
-                return outcome.text
+                return ChatPromptBuilder.wrapToolResult(name: name, body: outcome.text,
+                                                        secure: configuration.promptSecurityEnabled)
             }
             if projectNames.contains(name), let projectBridge {
-                return await projectBridge.execute(rootOverride, name, args, fileOps)
+                return ChatPromptBuilder.wrapToolResult(
+                    name: name,
+                    body: await projectBridge.execute(rootOverride, name, args, fileOps),
+                    secure: configuration.promptSecurityEnabled)
             }
             guard let mcpBridge else {
                 return "ERROR: исполнитель инструмента «\(name)» недоступен"
             }
-            return await mcpBridge.execute(name, args)
+            return ChatPromptBuilder.wrapToolResult(
+                name: name,
+                body: await mcpBridge.execute(name, args),
+                secure: configuration.promptSecurityEnabled)
         },
         maxIterations: projectNames.isEmpty
             ? ToolUseLoop.defaultMaxIterations : Self.projectToolsMaxIterations,

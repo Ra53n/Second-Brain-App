@@ -182,6 +182,18 @@ final class FileToolsTests: XCTestCase {
         XCTAssertEqual(try read("a.md"), "один\nДВА\nтри\n")
     }
 
+    /// read_file без расширения (fallback на .md) регистрирует в mtime-guard
+    /// РЕАЛЬНЫЙ путь «a.md», поэтому последующий edit_file по «a.md» проходит
+    /// без «сначала прочитай файл».
+    func testReadFileMdFallbackRegistersRealPathForGuard() async throws {
+        try write("один\nдва\nтри\n", to: "a.md")
+        let readResult = await run("read_file", #"{"path":"a"}"#)   // без .md
+        XCTAssertTrue(readResult.contains("два"), "fallback прочитал a.md: \(readResult)")
+        let edit = await run("edit_file",
+                             #"{"path":"a.md","old_string":"два","new_string":"ДВА"}"#)
+        XCTAssertTrue(edit.hasPrefix("OK:"), "guard пройден по a.md: \(edit)")
+    }
+
     func testEditNotFoundAndAmbiguous() async throws {
         try write("яблоко\nяблоко\n", to: "a.md")
         _ = await run("read_file", #"{"path":"a.md"}"#)

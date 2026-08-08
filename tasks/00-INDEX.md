@@ -103,7 +103,7 @@
 | 97 | [Пустой ответ — валидный кейс](97-empty-answer-validity.md) | 85, 86, 91 | [x] |
 | 98 | [Настраиваемый порог эскалации](98-escalation-trigger-threshold.md) | 91, 95 | [x] |
 | 99 | [Защита системного промпта чата от prompt-инъекций](99-prompt-injection-hardening.md) | 14, 34, 39 | [ ] |
-| 100 | [Лаборатория indirect injection + детерминированные защиты (egress, санитизация тул-результатов)](100-injection-lab-egress.md) | 99 | [ ] |
+| 100 | [Лаборатория indirect injection + детерминированные защиты (egress, санитизация тул-результатов)](100-injection-lab-egress.md) | 99 | [x] |
 | 101 | [Тумблер «Защита от инъекций» в чате](101-prompt-security-toggle.md) | 99 | [x] |
 | 102 | [Встроенный fetch_url + вектор C стенда через веб-страницу](102-web-fetch-tool.md) | 99, 100, 101 | [x] |
 | 103 | [LLM Gateway — гардед-прокси перед DeepSeek (День 13)](103-llm-gateway.md) | 26, 88 | [x] |

