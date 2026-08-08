@@ -146,6 +146,13 @@ enum ChatPromptBuilder {
             default: return true
             }
         })
+        // HTML-комментарии — классический канал сокрытия инструкции: в рендере
+        // человек их не видит, а модель читает. Вырезаем целиком, включая
+        // многострочные (задача 100, слой 1).
+        result = Self.htmlCommentPattern.stringByReplacingMatches(
+            in: result,
+            range: NSRange(result.startIndex..<result.endIndex, in: result),
+            withTemplate: "")
         // Спецтокены остаются читаемыми для человека, но перестают совпадать с
         // разделителями шаблона: замены достаточно, вырезать текст не нужно.
         result = result.replacingOccurrences(of: "<|", with: "<¦")
@@ -153,6 +160,9 @@ enum ChatPromptBuilder {
         result = result.replacingOccurrences(of: untrustedEnd, with: "UNTRUSTED_END(экранировано)")
         return result
     }
+
+    private static let htmlCommentPattern = try! NSRegularExpression(
+        pattern: "<!--.*?-->", options: [.dotMatchesLineSeparators])
 
     /// Оборачивает недоверенный контент в явные границы с преамбулой.
     private static func untrustedSection(tag: String, note: String, body: String) -> String {
