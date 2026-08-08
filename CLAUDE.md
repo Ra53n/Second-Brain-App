@@ -11,6 +11,7 @@ macOS-приложение «второй мозг»: аналог Obsidian + з
 |---|---|
 | `CLAUDE.md` (здесь) | правила, конвенции, антипаттерны, флоу работы над задачей |
 | `Sources/**/CLAUDE.md` | специфика модуля — подхватывается автоматически при работе с его файлами |
+| [secure-loop/CLAUDE.md](secure-loop/CLAUDE.md) | схема execution loop с security step (День 14, задача 104): запуск, чтение результата |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | принятые решения, модули, потоки данных. Меняешь решение — обновляешь |
 | [docs/DATA-MODEL.md](docs/DATA-MODEL.md) | что и где хранится: файлы, JSON, SQLite, Keychain |
 | [docs/VISION.md](docs/VISION.md) | зачем всё это, сценарии пользователя |
