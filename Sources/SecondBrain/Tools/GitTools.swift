@@ -256,15 +256,26 @@ final class ReadFileTool: BuiltinTool {
             return .error("путь «\(path)» вне корня проекта или некорректен")
         }
         var isDirectory: ObjCBool = false
-        guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory) else {
-            return .error("файл «\(path)» не найден")
+        var target = url
+        var readPath = path
+        if !FileManager.default.fileExists(atPath: target.path, isDirectory: &isDirectory) {
+            // Заметки — .md; модель и пользователь часто опускают расширение
+            // («заметка Отчёт-анализа»). Пробуем «<path>.md», прежде чем сдаться.
+            if !path.lowercased().hasSuffix(".md"),
+               let mdURL = SafePath.resolve(path + ".md", under: ctx.repoRoot),
+               FileManager.default.fileExists(atPath: mdURL.path, isDirectory: &isDirectory) {
+                target = mdURL
+                readPath = path + ".md"
+            } else {
+                return .error("файл «\(path)» не найден")
+            }
         }
         guard !isDirectory.boolValue else {
             return .error("«\(path)» — папка; используйте list_files")
         }
 
         let cap = min(max(ctx.intInput("maxBytes") ?? Self.hardMaxBytes, 1), Self.hardMaxBytes)
-        guard let handle = try? FileHandle(forReadingFrom: url) else {
+        guard let handle = try? FileHandle(forReadingFrom: target) else {
             return .error("не удалось открыть «\(path)»")
         }
         defer { try? handle.close() }
@@ -287,8 +298,8 @@ final class ReadFileTool: BuiltinTool {
             // Полное чтение регистрируется в контексте чата (задача 39):
             // mtime-guard разрешит последующую перезапись write_file/edit_file.
             // Обрезанное чтение НЕ регистрируется — модель видела не весь файл.
-            await ctx.fileOps?.noteRead(path: path,
-                                        mtime: FileToolSupport.modificationDate(of: url))
+            await ctx.fileOps?.noteRead(path: readPath,
+                                        mtime: FileToolSupport.modificationDate(of: target))
         }
         return .ok(text)
     }

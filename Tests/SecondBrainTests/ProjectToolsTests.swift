@@ -288,6 +288,18 @@ final class GitToolsIntegrationTests: XCTestCase {
         XCTAssertTrue(result.contains("# Проект"), result)
     }
 
+    /// Имя без расширения → пробуем «<path>.md» (модель/пользователь часто
+    /// опускают .md для заметок). README без расширения читает README.md.
+    func testReadFileAppendsMdExtensionWhenMissing() async {
+        let result = await executor.execute(name: "read_file",
+                                            argumentsJSON: #"{"path":"README"}"#)
+        XCTAssertTrue(result.contains("# Проект"), result)
+        // Реально несуществующий файл (даже с .md) — по-прежнему ошибка.
+        let missing = await executor.execute(name: "read_file",
+                                             argumentsJSON: #"{"path":"такого-нет"}"#)
+        XCTAssertTrue(missing.hasPrefix("ERROR:"), missing)
+    }
+
     func testReadFileCapsSize() async throws {
         let big = String(repeating: "а", count: 5000)
         try big.write(to: repoRoot.appendingPathComponent("big.txt"),
