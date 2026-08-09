@@ -65,6 +65,7 @@ HARNESS_PORT=$HARNESS_PORT
 HARNESS_DB_PATH=$DATA_DIR/harness.db
 GW_URL=http://127.0.0.1:3400/gw
 HARNESS_CANARY=$CANARY
+TAVILY_API_KEY=
 LOG_LEVEL=info
 EOF
   chown root:"$APP_USER" "$ENV_FILE"
@@ -86,6 +87,10 @@ else
   fi
   if ! grep -q '^HARNESS_ADMIN_USER=' "$ENV_FILE"; then
     echo "HARNESS_ADMIN_USER=" >> "$ENV_FILE"
+  fi
+  if ! grep -q '^TAVILY_API_KEY=' "$ENV_FILE"; then
+    echo "TAVILY_API_KEY=" >> "$ENV_FILE"
+    log "Добавлен TAVILY_API_KEY (пусто — впиши ключ Tavily для веб-поиска/парсинга)."
   fi
 fi
 

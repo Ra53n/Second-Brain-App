@@ -26,6 +26,18 @@ function decodeLoop(raw: unknown): LoopTrace | null {
       costUsd: typeof t.costUsd === "number" ? t.costUsd : 0,
       totalTokens: typeof t.totalTokens === "number" ? t.totalTokens : 0,
       durationMs: typeof t.durationMs === "number" ? t.durationMs : 0,
+      sources: Array.isArray(t.sources)
+        ? (t.sources as unknown[])
+            .filter((s) => !!s && typeof s === "object")
+            .map((s) => {
+              const o = s as Record<string, unknown>;
+              return {
+                type: o.type === "search" ? ("search" as const) : ("link" as const),
+                title: String(o.title ?? ""),
+                url: String(o.url ?? ""),
+              };
+            })
+        : [],
       phases: Array.isArray(t.phases) ? t.phases : [],
     };
   } catch {

@@ -64,7 +64,7 @@ export class ChatManager {
   }
 
   // ── Отправка ─────────────────────────────────────────────────────────────────
-  send(chatId: string, owner: string, rawContent: string): Message {
+  send(chatId: string, owner: string, rawContent: string, opts: { webSearch?: boolean } = {}): Message {
     const chat = this.repo.getChat(chatId, owner);
     if (!chat) throw new NotFoundError("Чат не найден");
 
@@ -81,11 +81,12 @@ export class ChatManager {
     const assistant = this.repo.addMessage(chatId, "assistant", "", "pending");
     const generation = this.repo.bumpMessageGeneration(assistant.id);
     const startedAt = this.now().toISOString();
+    const webSearch = opts.webSearch === true;
 
     const task =
       chat.mode === "loop"
-        ? runLoopForMessage(this.deps, assistant.id, content, dialog, startedAt, generation)
-        : runNormalForMessage(this.deps, assistant.id, content, dialog, generation);
+        ? runLoopForMessage(this.deps, assistant.id, content, dialog, webSearch, startedAt, generation)
+        : runNormalForMessage(this.deps, assistant.id, content, dialog, webSearch, generation);
 
     const p = task.finally(() => {
       if (this.inFlight.get(assistant.id) === p) this.inFlight.delete(assistant.id);

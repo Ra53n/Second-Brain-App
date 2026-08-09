@@ -56,6 +56,8 @@ export const CHAT_PAGE = String.raw`<!doctype html>
   .seg { display:inline-flex; border:1px solid var(--line2); border-radius:9px; overflow:hidden; }
   .seg button { background:transparent; color:var(--muted); border:0; padding:5px 14px; cursor:pointer; transition:background .12s,color .12s; }
   .seg button:hover { color:var(--text); } .seg button.on { background:var(--accent); color:#fff; }
+  .sources { max-width:720px; margin:6px auto 0; font-size:12px; color:var(--muted); }
+  .sources a { color:var(--accent); text-decoration:none; } .sources a:hover { text-decoration:underline; }
   .empty { color:#6b7280; text-align:center; margin-top:60px; }
   .typing { color:var(--muted); font-style:italic; }
   .dots::after { content:'…'; animation: dots 1.2s steps(4,end) infinite; }
@@ -97,6 +99,7 @@ export const CHAT_PAGE = String.raw`<!doctype html>
       <div class="composer-inner">
         <div class="modewrap">Режим чата:
           <span class="seg"><button data-mode="normal" id="mNormal">Обычный</button><button data-mode="loop" id="mLoop">Execution Loop</button></span>
+          <label id="searchWrap" style="display:none;margin-left:6px;cursor:pointer"><input type="checkbox" id="webSearch"> 🔍 Веб-поиск</label>
         </div>
         <div class="inputbar">
           <textarea id="input" rows="1" placeholder="Сообщение…  (Cmd/Ctrl+Enter — отправить)"></textarea>
@@ -111,7 +114,7 @@ export const CHAT_PAGE = String.raw`<!doctype html>
   var $ = function(id){ return document.getElementById(id); };
   function esc(s){ var d=document.createElement('div'); d.textContent=s==null?'':String(s); return d.innerHTML; }
   function jfetch(url, opts){ opts=opts||{}; opts.headers=opts.headers||{}; return fetch(url,opts).then(function(r){ return r.json().then(function(j){ return {ok:r.ok,status:r.status,j:j}; }); }); }
-  var state = { me:null, chats:[], activeId:null, chat:null, poll:null, registerMode:false };
+  var state = { me:null, chats:[], activeId:null, chat:null, poll:null, registerMode:false, features:{} };
 
   // ── Auth overlay ──
   function showAuth(){ $('app').style.display='none'; $('auth').style.display='flex'; }
@@ -197,7 +200,9 @@ export const CHAT_PAGE = String.raw`<!doctype html>
       if(m.status==='pending') body='<span class="typing">'+progressLabel(m.loop)+'<span class="dots"></span></span>';
       else if(m.status==='failed') body=esc(m.errorText||'ошибка');
       else body=esc(m.content);
-      return trace+'<div class="msg assistant"><div class="who">ассистент</div><div class="bubble">'+body+'</div></div>';
+      var srcs=(m.loop&&m.loop.sources)||[];
+      var srcHtml=srcs.length?'<div class="sources">🔗 '+srcs.map(function(s){return '<a href="'+encodeURI(s.url)+'" target="_blank" rel="noopener noreferrer">'+esc((s.title||s.url).slice(0,50))+'</a>';}).join(' · ')+'</div>':'';
+      return trace+'<div class="msg assistant"><div class="who">ассистент</div><div class="bubble">'+body+'</div>'+srcHtml+'</div>';
     }).join('');
     // Восстанавливаем раскрытые трейсы после перерисовки.
     Array.prototype.forEach.call(thr.querySelectorAll('.trace'), function(d){ if(openMids[d.getAttribute('data-mid')]) d.open=true; });
@@ -212,7 +217,8 @@ export const CHAT_PAGE = String.raw`<!doctype html>
   function sendMsg(){
     var text=$('input').value.trim(); if(!text||!state.activeId) return;
     $('send').disabled=true; $('input').value='';
-    jfetch('/chat/chats/'+state.activeId+'/messages',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({content:text})})
+    var ws = state.features.webSearch && $('webSearch').checked;
+    jfetch('/chat/chats/'+state.activeId+'/messages',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({content:text, webSearch:ws})})
       .then(function(res){ $('send').disabled=false; if(!res.ok){ alert((res.j.error&&res.j.error.message)||'Ошибка'); return; } selectChat(state.activeId); })
       .catch(function(e){ $('send').disabled=false; alert('Сеть: '+e.message); });
   }
@@ -221,11 +227,12 @@ export const CHAT_PAGE = String.raw`<!doctype html>
   // ── Загрузка ──
   function boot(){
     jfetch('/chat/auth/me').then(function(res){
-      state.me = res.j.user;
+      state.me = res.j.user; state.features = res.j.features||{};
       if(!state.me){ showAuth(); return; }
       $('auth').style.display='none'; $('app').style.display='flex';
       $('uname').textContent = state.me.username + (state.me.isAdmin?' (admin)':'');
       $('adminLink').style.display = state.me.isAdmin ? 'inline' : 'none';
+      $('searchWrap').style.display = state.features.webSearch ? 'inline-flex' : 'none';
       loadChats();
     }).catch(function(){ showAuth(); });
   }

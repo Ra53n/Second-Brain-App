@@ -79,10 +79,11 @@ export function registerAuthRoutes(app: FastifyInstance, ctx: AppContext): void 
   });
 
   app.get("/chat/auth/me", async (req) => {
+    const features = { webSearch: ctx.webSearchEnabled };
     const token = req.cookies?.[SESSION_COOKIE];
-    if (!token) return { user: null };
+    if (!token) return { user: null, features };
     const unsigned = req.unsignCookie(token);
-    if (!unsigned.valid || !unsigned.value) return { user: null };
-    return { user: ctx.auth.resolveSession(unsigned.value) };
+    if (!unsigned.valid || !unsigned.value) return { user: null, features };
+    return { user: ctx.auth.resolveSession(unsigned.value), features };
   });
 }

@@ -6,6 +6,7 @@ import { openDb } from "../src/store/db.js";
 import { ChatsRepo } from "../src/store/chatsRepo.js";
 import { UsersRepo } from "../src/store/usersRepo.js";
 import { GatewayClient } from "../src/run/gwClient.js";
+import { TavilyClient } from "../src/run/tavily.js";
 import { ChatManager } from "../src/run/chatManager.js";
 
 interface Reply {
@@ -44,7 +45,8 @@ function make(replies: Reply[], canary = ""): { manager: ChatManager; repo: Chat
   users.insertUser({ id: U2, username: "bob", password_hash: "x", is_admin: 0, created_at: "t" });
   const repo = new ChatsRepo(db);
   const { gateway, prompts } = mockGateway(replies);
-  const manager = new ChatManager({ repo, gateway, canary });
+  const tavily = new TavilyClient(""); // выключен в юнит-тестах (без сети)
+  const manager = new ChatManager({ repo, gateway, tavily, canary });
   return { manager, repo, prompts };
 }
 

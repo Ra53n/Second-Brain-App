@@ -53,10 +53,10 @@ export function registerRoutes(app: FastifyInstance, ctx: AppContext): void {
       async (req, reply) => {
         checkOrigin(req);
         const id = uuid(req.params);
-        const body = (req.body ?? {}) as { content?: unknown };
+        const body = (req.body ?? {}) as { content?: unknown; webSearch?: unknown };
         const content = typeof body.content === "string" ? body.content : "";
         if (!content.trim()) throw new ValidationError("Пустое сообщение");
-        const assistant = ctx.manager.send(id, owner(req), content);
+        const assistant = ctx.manager.send(id, owner(req), content, { webSearch: body.webSearch === true });
         reply.status(202);
         return { id: assistant.id, status: assistant.status };
       },

@@ -20,6 +20,7 @@ export interface BootstrapConfig {
   dbPath: string;
   gwUrl: string;
   canary: string;
+  tavilyKey: string;
   logLevel: string;
 }
 
@@ -51,6 +52,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): BootstrapConfi
     dbPath: (env.HARNESS_DB_PATH ?? "/opt/llm-harness/data/harness.db").trim(),
     gwUrl: (env.GW_URL ?? "http://127.0.0.1:3400/gw").trim().replace(/\/$/, ""),
     canary: (env.HARNESS_CANARY ?? "").trim(),
+    tavilyKey: (env.TAVILY_API_KEY ?? "").trim(),
     logLevel: (env.LOG_LEVEL ?? "info").trim(),
   };
 }

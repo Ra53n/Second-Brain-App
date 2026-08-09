@@ -24,5 +24,6 @@ export interface AppContext {
   auth: AuthService;
   apiToken: string;
   sessionSecret: string;
+  webSearchEnabled: boolean;
   configView: () => AgentConfigView;
 }

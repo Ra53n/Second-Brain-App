@@ -29,6 +29,13 @@ export interface LoopPhase {
   costUsd: number; // стоимость этого вызова (для админ-статистики)
 }
 
+/** Внешний источник, использованный при ответе (ссылка или веб-поиск). */
+export interface Source {
+  type: "link" | "search";
+  title: string;
+  url: string;
+}
+
 /** Трейс прогона execution loop, прикреплённый к ответу ассистента. */
 export interface LoopTrace {
   rounds: number;
@@ -37,6 +44,7 @@ export interface LoopTrace {
   costUsd: number;
   totalTokens: number; // сумма токенов по всем фазам
   durationMs: number; // wall-clock генерации сообщения
+  sources: Source[]; // внешние источники (парсинг ссылок / веб-поиск)
   phases: LoopPhase[];
 }
 

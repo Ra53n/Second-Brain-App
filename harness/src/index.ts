@@ -8,6 +8,7 @@ import { ChatsRepo } from "./store/chatsRepo.js";
 import { UsersRepo } from "./store/usersRepo.js";
 import { AuthService } from "./auth/authService.js";
 import { GatewayClient } from "./run/gwClient.js";
+import { TavilyClient } from "./run/tavily.js";
 import { ChatManager } from "./run/chatManager.js";
 import { buildApp } from "./http/app.js";
 import { CHAT_VERSION } from "./http/version.js";
@@ -26,7 +27,8 @@ async function main(): Promise<void> {
   const usersRepo = new UsersRepo(db);
   const auth = new AuthService(usersRepo, cfg.adminUser);
   const gateway = new GatewayClient(cfg.gwUrl);
-  const manager = new ChatManager({ repo, gateway, canary: cfg.canary });
+  const tavily = new TavilyClient(cfg.tavilyKey);
+  const manager = new ChatManager({ repo, gateway, tavily, canary: cfg.canary });
 
   const recovered = manager.recoverOnBoot();
   usersRepo.deleteExpiredSessions(new Date().toISOString());
@@ -52,6 +54,7 @@ async function main(): Promise<void> {
     auth,
     apiToken: cfg.apiToken,
     sessionSecret: cfg.sessionSecret,
+    webSearchEnabled: tavily.enabled,
     configView,
   };
   const app = await buildApp(ctx, { logger: fastifyLoggerOptions(cfg.logLevel) });

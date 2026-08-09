@@ -17,13 +17,16 @@ import {
 import type { CorrectnessVerdict, Finding, PhaseEvent, RunContext } from "../fsm/types.js";
 import { neutralize } from "../guard/egress.js";
 import type { GatewayClient, GatewayMeta, GatewayReply } from "./gwClient.js";
-import type { LoopPhase, LoopTrace, MsgStatus } from "../domain/chat.js";
+import type { LoopPhase, LoopTrace, MsgStatus, Source } from "../domain/chat.js";
 import { computeAlerts } from "../domain/chat.js";
+import { retrieveContext } from "./retrieval.js";
+import type { TavilyClient } from "./tavily.js";
 import type { ChatsRepo } from "../store/chatsRepo.js";
 
 export interface OrchestratorDeps {
   repo: ChatsRepo;
   gateway: GatewayClient;
+  tavily: TavilyClient;
   canary: string;
 }
 
@@ -82,12 +85,14 @@ export async function runLoopForMessage(
   msgId: string,
   userText: string,
   dialog: string,
+  webSearch: boolean,
   startedAt: string,
   generation: number,
 ): Promise<void> {
   let ctx = freshContext(msgId, userText, startedAt);
   const phases: LoopPhase[] = [];
   const t0 = Date.now();
+  let sources: Source[] = [];
 
   const trace = (): LoopTrace => ({
     rounds: ctx.round,
@@ -96,15 +101,27 @@ export async function runLoopForMessage(
     costUsd: phases.reduce((s, p) => s + p.costUsd, 0),
     totalTokens: phases.reduce((s, p) => s + p.tokens, 0),
     durationMs: Date.now() - t0,
+    sources,
     phases,
   });
+
+  // Шаг 0: ретрив внешних материалов (парсинг ссылок / веб-поиск) — как контекст.
+  let augDialog = dialog;
+  try {
+    const r = await retrieveContext(deps.tavily, userText, webSearch);
+    sources = r.sources;
+    augDialog = r.context + dialog;
+  } catch {
+    /* ретрив не критичен — продолжаем без него */
+  }
+  if (deps.repo.generationOf(msgId) !== generation) return;
 
   while (true) {
     if (deps.repo.generationOf(msgId) !== generation) return;
 
     let res: { event: PhaseEvent; phase: LoopPhase } | null;
     try {
-      res = await runPhase(deps, ctx, dialog, generation);
+      res = await runPhase(deps, ctx, augDialog, generation);
     } catch (err) {
       // Сбой фазы (напр. 502 gateway под нагрузкой): не теряем работу — если уже
       // есть сгенерированный результат, показываем его как done с пометкой; иначе failed.
@@ -139,10 +156,20 @@ export async function runNormalForMessage(
   msgId: string,
   userText: string,
   dialog: string,
+  webSearch: boolean,
   generation: number,
 ): Promise<void> {
   const t0 = Date.now();
-  const prompt = buildNormalPrompt(dialog, userText);
+  let sources: Source[] = [];
+  let augDialog = dialog;
+  try {
+    const r = await retrieveContext(deps.tavily, userText, webSearch);
+    sources = r.sources;
+    augDialog = r.context + dialog;
+  } catch {
+    /* ретрив не критичен */
+  }
+  const prompt = buildNormalPrompt(augDialog, userText);
   let reply: GatewayReply;
   try {
     reply = await deps.gateway.chat(prompt);
@@ -165,6 +192,7 @@ export async function runNormalForMessage(
     costUsd: meta.costUsd ?? 0,
     totalTokens: tokens,
     durationMs: Date.now() - t0,
+    sources,
     phases: [
       {
         phase: "generating",
