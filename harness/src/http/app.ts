@@ -1,4 +1,4 @@
-// app.ts — сборка Fastify: единый обработчик ошибок, публичный /harness/health,
+// app.ts — сборка Fastify: единый обработчик ошибок, публичный /chat/health,
 // запуск прогонов (за rate-limit), админка по bearer. Порт gateway/http/app.ts.
 
 import Fastify, { type FastifyInstance, type FastifyServerOptions } from "fastify";
@@ -8,7 +8,7 @@ import { AppError } from "../domain/errors.js";
 import { registerRoutes } from "./routes.js";
 import { registerWebRoutes } from "../web/index.js";
 
-export const HARNESS_VERSION = "0.1.0";
+export const CHAT_VERSION = "0.2.0";
 
 export interface BuildAppOptions {
   logger?: FastifyServerOptions["logger"];
@@ -47,9 +47,9 @@ export async function buildApp(ctx: AppContext, opts: BuildAppOptions = {}): Pro
       >,
   });
 
-  app.get("/harness/health", async () => ({
+  app.get("/chat/health", async () => ({
     status: "ok",
-    version: HARNESS_VERSION,
+    version: CHAT_VERSION,
     uptime: Math.round(process.uptime()),
   }));
 

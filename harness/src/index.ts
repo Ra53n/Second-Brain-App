@@ -1,17 +1,15 @@
 // index.ts — точка входа: конфиг → БД → репозиторий → менеджер → HTTP listen.
 // На старте зависшие running → paused (resume-able).
 
-import { dirname, join } from "node:path";
 import { loadConfig } from "./config.js";
 import { fastifyLoggerOptions } from "./logger.js";
 import { openDb } from "./store/db.js";
 import { RunsRepo } from "./store/runsRepo.js";
 import { GatewayClient } from "./run/gwClient.js";
 import { RunManager } from "./run/manager.js";
-import { buildApp, HARNESS_VERSION } from "./http/app.js";
+import { buildApp, CHAT_VERSION } from "./http/app.js";
 import type { AppContext, AgentConfigView } from "./http/context.js";
 import { SECURITY_DIRECTIVE } from "./guard/security.js";
-import { TASKS } from "./tasks.js";
 
 const MAX_ROUNDS = 4;
 const RATE_LIMIT_PER_MIN = 10;
@@ -23,28 +21,26 @@ async function main(): Promise<void> {
 
   const repo = new RunsRepo(db);
   const gateway = new GatewayClient(cfg.gwUrl);
-  const workspaceRoot = join(dirname(cfg.dbPath), "workspaces");
   const manager = new RunManager(
-    { repo, gateway, workspaceRoot, canary: cfg.canary },
+    { repo, gateway, canary: cfg.canary },
     { maxRounds: MAX_ROUNDS, rateLimitPerMin: RATE_LIMIT_PER_MIN, dailyLimit: DAILY_LIMIT },
   );
 
   const recovered = manager.recoverOnBoot();
 
   const configView = (): AgentConfigView => ({
-    version: HARNESS_VERSION,
+    version: CHAT_VERSION,
     gwUrl: cfg.gwUrl,
     model: "(из настроек gateway /gw/admin)",
+    loop: "генерация → проверка корректности → security review → результат (итерация при провале, лимит кругов)",
     maxRounds: MAX_ROUNDS,
-    maxTokensHint: "(из настроек gateway)",
     defaultSecure: true,
     rateLimitPerMin: RATE_LIMIT_PER_MIN,
     dailyLimit: DAILY_LIMIT,
     canaryEnabled: cfg.canary.length > 0,
-    // Превью слоя безопасности, который harness добавляет в каждый запрос.
+    // Превью слоя безопасности, который чат добавляет в каждый запрос.
     // Канарейка сюда не входит (добавляется на рантайме) — раскрытия нет.
     systemPromptPreview: SECURITY_DIRECTIVE,
-    tasks: TASKS.map((t) => ({ id: t.id, title: t.title, trap: t.trap })),
   });
 
   const ctx: AppContext = { repo, manager, apiToken: cfg.apiToken, configView };
@@ -55,6 +51,6 @@ async function main(): Promise<void> {
 }
 
 main().catch((err) => {
-  process.stderr.write(`[harness] фатальный сбой старта: ${(err as Error).message}\n`);
+  process.stderr.write(`[chat] фатальный сбой старта: ${(err as Error).message}\n`);
   process.exit(1);
 });

@@ -1,14 +1,12 @@
-// transitions.test.ts — таблица переходов FSM (порт AgentFSMTests): проверяем
-// каждую упорядоченную пару против эталона, объявленного отдельно от прода.
+// transitions.test.ts — таблица переходов FSM: каждая пара против эталона.
 
 import { describe, it, expect } from "vitest";
 import { ALL_STATES, allows, TRANSITIONS, type RunState } from "../src/fsm/types.js";
 
 const expected: Record<RunState, Set<RunState>> = {
-  generating: new Set<RunState>(["testing"]),
-  testing: new Set<RunState>(["securityReview", "generating"]),
-  securityReview: new Set<RunState>(["committing", "generating"]),
-  committing: new Set<RunState>(["done"]),
+  generating: new Set<RunState>(["verifying"]),
+  verifying: new Set<RunState>(["securityReview", "generating"]),
+  securityReview: new Set<RunState>(["done", "generating"]),
   done: new Set<RunState>(),
 };
 
@@ -25,14 +23,12 @@ describe("таблица переходов FSM", () => {
     expect(TRANSITIONS.done).toEqual([]);
   });
 
-  it("каждое состояние присутствует в таблице", () => {
-    for (const s of ALL_STATES) {
-      expect(TRANSITIONS[s]).toBeDefined();
-    }
+  it("в done можно попасть только из securityReview", () => {
+    expect(ALL_STATES.filter((s) => allows(s, "done"))).toEqual(["securityReview"]);
   });
 
-  it("в committing можно попасть только из securityReview", () => {
-    const sources = ALL_STATES.filter((s) => allows(s, "committing"));
-    expect(sources).toEqual(["securityReview"]);
+  it("на генерацию возвращают и verifying, и securityReview", () => {
+    expect(allows("verifying", "generating")).toBe(true);
+    expect(allows("securityReview", "generating")).toBe(true);
   });
 });

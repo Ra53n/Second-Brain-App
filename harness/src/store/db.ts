@@ -51,6 +51,8 @@ const MIGRATIONS: string[] = [
 
   CREATE INDEX idx_steps_run ON steps (run_id, id);
   `,
+  // ── v2: журнал замечаний корректности в шаге (переход на LLM-only loop) ──────
+  `ALTER TABLE steps ADD COLUMN correctness_json TEXT NOT NULL DEFAULT '[]';`,
 ];
 
 function migrate(db: DB): void {

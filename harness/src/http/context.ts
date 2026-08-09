@@ -8,14 +8,13 @@ export interface AgentConfigView {
   version: string;
   gwUrl: string;
   model: string;
+  loop: string; // человекочитаемая схема цикла
   maxRounds: number;
-  maxTokensHint: string;
   defaultSecure: boolean;
   rateLimitPerMin: number;
   dailyLimit: number;
   canaryEnabled: boolean;
   systemPromptPreview: string;
-  tasks: Array<{ id: string; title: string; trap: string }>;
 }
 
 export interface AppContext {

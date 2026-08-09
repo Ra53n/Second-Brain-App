@@ -1,46 +1,33 @@
-// types.ts — доменная модель FSM execution loop. Порт паттерна
-// Sources/SecondBrain/Chat/AgentFSM/AgentTaskModels.swift на TypeScript.
+// types.ts — доменная модель execution loop чата. Чистый LLM-цикл: генерация
+// результата → самопроверка корректности → security review → готово. Без
+// исполнения кода. Порт паттерна AgentPhaseReducer.
 //
-// Два ортогональных измерения: `state` (этап цикла — что делаем) и `status`
-// (жив ли прогон). Смешивать нельзя — как в приложении.
+// Два ортогональных измерения: `state` (этап цикла) и `status` (жив ли прогон).
 
 /** Этап цикла. `done` терминален. */
-export type RunState = "generating" | "testing" | "securityReview" | "committing" | "done";
+export type RunState = "generating" | "verifying" | "securityReview" | "done";
 
 /** Жив ли прогон. */
 export type RunStatus = "running" | "paused" | "failed" | "finished";
 
-/** Терминальный исход (для журнала и отчёта). */
-export type RunOutcome =
-  | "committed"
-  | "stopped-limit"
-  | "gateway-blocked"
-  | "verdict-unparsed"
-  | "failed";
+/** Терминальный исход (для журнала). */
+export type RunOutcome = "done" | "stopped-limit" | "gateway-blocked" | "verdict-unparsed" | "failed";
 
-export const ALL_STATES: RunState[] = [
-  "generating",
-  "testing",
-  "securityReview",
-  "committing",
-  "done",
-];
+export const ALL_STATES: RunState[] = ["generating", "verifying", "securityReview", "done"];
 
 /**
- * Таблица переходов — единственный источник истины (как AgentFSM.transitions).
- *   generating → testing              сгенерировали код, компилируем
- *   testing    → securityReview       собралось, проверяем безопасность
- *   testing    → generating           не собралось, чиним по ошибкам
- *   securityReview → committing        чисто / только Medium-Low
- *   securityReview → generating        Critical/High, чиним по фидбеку
- *   committing → done                  закоммитили
- *   done       → []                    терминал
+ * Таблица переходов — единственный источник истины.
+ *   generating     → verifying         получили результат, проверяем корректность
+ *   verifying      → securityReview     корректно, проверяем безопасность
+ *   verifying      → generating         не корректно, переделываем по замечаниям
+ *   securityReview → done               чисто / только Medium-Low
+ *   securityReview → generating         Critical/High, переделываем по фидбеку
+ *   done           → []                 терминал
  */
 export const TRANSITIONS: Record<RunState, RunState[]> = {
-  generating: ["testing"],
-  testing: ["securityReview", "generating"],
-  securityReview: ["committing", "generating"],
-  committing: ["done"],
+  generating: ["verifying"],
+  verifying: ["securityReview", "generating"],
+  securityReview: ["done", "generating"],
   done: [],
 };
 
@@ -51,18 +38,21 @@ export function allows(from: RunState, to: RunState): boolean {
 /** Одна находка security review. */
 export interface Finding {
   severity: "critical" | "high" | "medium" | "low";
-  line: number | null;
   issue: string;
 }
 
+/** Одно замечание проверки корректности. */
+export interface CorrectnessVerdict {
+  correct: boolean;
+  issues: string[];
+}
+
 /**
- * Весь стейт прогона в одной структуре — персистится целиком (как
- * AgentTaskContext). Снисходительный декодер живёт в store/runsRepo.
+ * Весь стейт прогона в одной структуре — персистится целиком. Снисходительный
+ * декодер живёт в store/runsRepo.
  */
 export interface RunContext {
   id: string;
-  taskId: string;
-  taskTitle: string;
   taskPrompt: string;
   secure: boolean;
 
@@ -71,25 +61,24 @@ export interface RunContext {
   round: number; // текущий круг (1-based), растёт при возврате на генерацию
   maxRounds: number;
 
-  code: string; // последний сгенерированный код
-  buildErrors: string; // хвост ошибок node --check (для фидбека)
+  result: string; // последний сгенерированный результат (после egress-guard)
+  correctness: CorrectnessVerdict | null; // вердикт последней проверки корректности
   findings: Finding[]; // находки последнего security review
   warnings: string[]; // накопленные Medium/Low
-  feedback: string; // фидбек следующей генерации (build или security)
+  feedback: string; // фидбек следующей генерации (корректность или security)
 
   outcome: RunOutcome | null;
   errorText: string | null;
-  pwned: boolean; // канарейка утекла в ответе
-  costUsd: number; // накопленная стоимость прогона
+  pwned: boolean; // канарейка утекла в результате
+  costUsd: number;
   startedAt: string;
 }
 
-/** Событие фазы, которое получает редьюсер (уже как результат I/O). */
+/** Событие фазы для редьюсера (результат уже свершившегося I/O). */
 export type PhaseEvent =
-  | { kind: "generated"; code: string | null; truncated: boolean; gatewayBlocked: boolean }
-  | { kind: "tested"; ok: boolean; errors: string }
-  | { kind: "reviewed"; findings: Finding[] | null; gatewayBlocked: boolean }
-  | { kind: "committed" };
+  | { kind: "generated"; result: string | null; gatewayBlocked: boolean }
+  | { kind: "verified"; verdict: CorrectnessVerdict | null; gatewayBlocked: boolean }
+  | { kind: "reviewed"; findings: Finding[] | null; gatewayBlocked: boolean };
 
 export interface Outcome {
   ctx: RunContext;

@@ -5,14 +5,12 @@
 import { randomUUID } from "node:crypto";
 import { ValidationError, NotFoundError } from "../domain/errors.js";
 import type { RunContext } from "../fsm/types.js";
-import { findTask } from "../tasks.js";
+import { sanitizeUntrusted } from "../guard/security.js";
 import { runToCompletion, type OrchestratorDeps } from "./orchestrator.js";
 import type { RunsRepo } from "../store/runsRepo.js";
 
 export interface StartParams {
-  taskId?: string;
   prompt?: string;
-  title?: string;
   secure?: boolean;
 }
 
@@ -46,31 +44,22 @@ export class RunManager {
       throw new ValidationError("Суточный лимит прогонов исчерпан. Попробуй завтра.");
     }
 
-    let taskId = "custom";
-    let title = params.title?.trim() || "Свой промпт";
-    let prompt = params.prompt?.trim() ?? "";
-
-    if (params.taskId) {
-      const task = findTask(params.taskId);
-      if (!task) throw new ValidationError(`Нет задачи с id ${params.taskId}`);
-      taskId = task.id;
-      title = task.title;
-      prompt = task.prompt;
-    }
-    if (!prompt) throw new ValidationError("Пустой промпт задачи");
+    const raw = params.prompt?.trim() ?? "";
+    if (!raw) throw new ValidationError("Пустой промпт");
+    // Ingress-санитизация: убираем невидимые символы, спецтокены чат-шаблона и
+    // HTML-комментарии из ввода — вектор, которым тестировщик прячет payload.
+    const prompt = sanitizeUntrusted(raw);
 
     const ctx: RunContext = {
       id: randomUUID(),
-      taskId,
-      taskTitle: title,
       taskPrompt: prompt,
       secure: params.secure ?? true,
       state: "generating",
       status: "running",
       round: 1,
       maxRounds: this.cfg.maxRounds,
-      code: "",
-      buildErrors: "",
+      result: "",
+      correctness: null,
       findings: [],
       warnings: [],
       feedback: "",

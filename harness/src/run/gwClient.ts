@@ -1,6 +1,6 @@
-// gwClient.ts — ЕДИНСТВЕННАЯ точка выхода harness наружу: POST $GW_URL/chat.
-// И генерация, и security review идут только сюда. Прямых обращений к DeepSeek
-// в harness нет — ключ живёт в gateway. Ретраи 429 (Retry-After) и 5xx.
+// gwClient.ts — ЕДИНСТВЕННАЯ точка выхода чата наружу: POST $GW_URL/chat.
+// Все три фазы цикла идут только сюда. Прямых обращений к DeepSeek у чата нет —
+// ключ живёт в gateway. Ретраи 429 (Retry-After) и 5xx.
 
 import { UpstreamError } from "../domain/errors.js";
 

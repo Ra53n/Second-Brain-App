@@ -1,10 +1,10 @@
-# systemd-юнит llm-harness. deploy.sh ставит копию в
+# systemd-юнит llm-harness (чат /chat/). deploy.sh ставит копию в
 # /etc/systemd/system/llm-harness.service. Зеркалит llm-gateway.service.
-# Сервис слушает 127.0.0.1:3500; наружу — только через Caddy (/harness/*).
+# Сервис слушает 127.0.0.1:3500; наружу — только через Caddy (/chat/*).
 # Ходит ТОЛЬКО в gateway (127.0.0.1:3400) — своего LLM-ключа не держит.
 
 [Unit]
-Description=llm-harness — FSM execution loop перед LLM Gateway (генерация кода + security review)
+Description=llm-harness — чат с execution loop перед LLM Gateway (корректность + security review)
 After=network-online.target llm-gateway.service
 Wants=network-online.target
 
@@ -21,8 +21,8 @@ ExecStart=/usr/bin/node /opt/llm-harness/dist/index.js
 Restart=on-failure
 RestartSec=5
 
-# Усиление безопасности. Сервис исполняет git/node --check над сгенерированным
-# кодом — ограничения здесь отделяют его от остальной системы.
+# Усиление безопасности. Сервис только ходит в gateway и пишет свою БД —
+# ограничения здесь отделяют его от остальной системы.
 NoNewPrivileges=true
 ProtectSystem=full
 ProtectHome=true

@@ -9,7 +9,7 @@
 //  - на старте сервиса зависшие running → paused (resume-able).
 
 import type { DB } from "./db.js";
-import type { Finding, RunContext, RunState, RunStatus } from "../fsm/types.js";
+import type { CorrectnessVerdict, Finding, RunContext, RunState, RunStatus } from "../fsm/types.js";
 import { ALL_STATES } from "../fsm/types.js";
 
 export interface StepRow {
@@ -20,10 +20,17 @@ export interface StepRow {
   promptPreview: string;
   answerPreview: string;
   findings: Finding[];
+  correctnessIssues: Array<{ severity: string; issue: string }>;
   gateway: Record<string, unknown>;
   egress: string[];
   pwned: boolean;
   costUsd: number;
+}
+
+/** Короткий заголовок прогона из промпта пользователя (для списка в админке). */
+function titleOf(prompt: string): string {
+  const line = prompt.trim().split("\n")[0] ?? "";
+  return line.length <= 60 ? line : `${line.slice(0, 57)}…`;
 }
 
 const VALID_STATUS = new Set<RunStatus>(["running", "paused", "failed", "finished"]);
@@ -69,8 +76,8 @@ export class RunsRepo {
       .run({
         id: ctx.id,
         ts,
-        taskId: ctx.taskId,
-        taskTitle: ctx.taskTitle,
+        taskId: "chat",
+        taskTitle: titleOf(ctx.taskPrompt),
         state: ctx.state,
         status: ctx.status,
         outcome: ctx.outcome ?? "",
@@ -150,18 +157,21 @@ export class RunsRepo {
     const arr = <T>(k: string): T[] => (Array.isArray(raw[k]) ? (raw[k] as T[]) : []);
 
     const outcomeRaw = raw.outcome;
+    const corr = raw.correctness as Partial<CorrectnessVerdict> | undefined;
+    const correctness: CorrectnessVerdict | null =
+      corr && typeof corr === "object" && typeof corr.correct === "boolean"
+        ? { correct: corr.correct, issues: Array.isArray(corr.issues) ? corr.issues.map(String) : [] }
+        : null;
     return {
       id: str("id"),
-      taskId: str("taskId"),
-      taskTitle: str("taskTitle"),
       taskPrompt: str("taskPrompt"),
       secure: bool("secure", true),
       state: coerceState(raw.state),
       status: coerceStatus(raw.status),
       round: num("round", 1),
       maxRounds: num("maxRounds", 4),
-      code: str("code"),
-      buildErrors: str("buildErrors"),
+      result: str("result"),
+      correctness,
       findings: arr<Finding>("findings"),
       warnings: arr<string>("warnings"),
       feedback: str("feedback"),
@@ -177,9 +187,9 @@ export class RunsRepo {
     this.db
       .prepare(
         `INSERT INTO steps (run_id, created_at, round, phase, display, prompt_preview,
-           answer_preview, findings_json, gateway_json, egress_json, pwned, cost_usd)
+           answer_preview, findings_json, correctness_json, gateway_json, egress_json, pwned, cost_usd)
          VALUES (@runId, @ts, @round, @phase, @display, @promptPreview, @answerPreview,
-           @findings, @gateway, @egress, @pwned, @cost)`,
+           @findings, @correctness, @gateway, @egress, @pwned, @cost)`,
       )
       .run({
         runId: step.runId,
@@ -190,6 +200,7 @@ export class RunsRepo {
         promptPreview: step.promptPreview,
         answerPreview: step.answerPreview,
         findings: JSON.stringify(step.findings),
+        correctness: JSON.stringify(step.correctnessIssues),
         gateway: JSON.stringify(step.gateway),
         egress: JSON.stringify(step.egress),
         pwned: step.pwned ? 1 : 0,

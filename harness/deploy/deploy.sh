@@ -29,7 +29,6 @@ die() { echo -e "\033[1;31m[deploy] ОШИБКА:\033[0m $*" >&2; exit 1; }
 [ "$(id -u)" = "0" ] || die "Запускай от root (sudo)."
 [ -f "$SRC_DIR/dist/index.js" ] || die "Нет $SRC_DIR/dist/index.js — сначала собери: npm ci && npm run build"
 command -v node >/dev/null || die "Не найден node."
-command -v git >/dev/null || die "Не найден git (harness делает git init/commit в рабочих копиях)."
 
 # ── 1. Пользователь и каталоги ───────────────────────────────────────────────
 if ! id "$APP_USER" >/dev/null 2>&1; then
@@ -88,29 +87,34 @@ systemctl daemon-reload
 systemctl enable llm-harness >/dev/null 2>&1 || true
 systemctl restart --no-block llm-harness
 
-# ── 5. Маршрут Caddy: ВСТАВКА, а не перезапись ────────────────────────────────
+# ── 5. Маршрут Caddy: /chat/*. Если остался старый /harness/* — переименовываем ─
 patch_caddy() {
   [ -f "$CADDYFILE" ] || { log "Caddyfile не найден ($CADDYFILE) — добавь маршрут вручную (Caddyfile.snippet)."; return; }
-  if grep -q '/harness/' "$CADDYFILE"; then
-    log "Caddy: маршрут /harness/* уже есть — пропускаю."
+  local backup anchor
+  if grep -q 'handle /chat/\*' "$CADDYFILE"; then
+    log "Caddy: маршрут /chat/* уже есть — пропускаю."
     return
   fi
-  local backup anchor
+
   backup="$CADDYFILE.bak.$(date +%s)"
   cp "$CADDYFILE" "$backup"
 
-  # Встаём рядом с /gw/ (наш ближайший сосед), иначе перед любым handle.
-  anchor="$(grep -n 'handle /gw/\*' "$CADDYFILE" | head -1 | cut -d: -f1)"
-  [ -n "$anchor" ] || anchor="$(grep -n 'handle /lab/\*' "$CADDYFILE" | head -1 | cut -d: -f1)"
-  [ -n "$anchor" ] || anchor="$(grep -n '^[[:space:]]*handle' "$CADDYFILE" | head -1 | cut -d: -f1)"
-  [ -n "$anchor" ] || die "Не нашёл блок handle в $CADDYFILE — добавь маршрут вручную (Caddyfile.snippet). Бэкап: $backup"
-
-  log "Caddy: вставляю handle /harness/* → 127.0.0.1:$HARNESS_PORT (перед строкой $anchor)"
-  awk -v line="$anchor" -v port="$HARNESS_PORT" 'NR==line{
-    print "    handle /harness/* {"
-    print "        reverse_proxy 127.0.0.1:" port
-    print "    }"
-  } {print}' "$backup" > "$CADDYFILE"
+  if grep -q 'handle /harness/\*' "$CADDYFILE"; then
+    log "Caddy: переименовываю /harness/* → /chat/*"
+    sed 's#handle /harness/\*#handle /chat/*#' "$backup" > "$CADDYFILE"
+  else
+    # Свежая установка: вставляем рядом с /gw/ (ближайший сосед).
+    anchor="$(grep -n 'handle /gw/\*' "$CADDYFILE" | head -1 | cut -d: -f1)"
+    [ -n "$anchor" ] || anchor="$(grep -n 'handle /lab/\*' "$CADDYFILE" | head -1 | cut -d: -f1)"
+    [ -n "$anchor" ] || anchor="$(grep -n '^[[:space:]]*handle' "$CADDYFILE" | head -1 | cut -d: -f1)"
+    [ -n "$anchor" ] || die "Не нашёл блок handle в $CADDYFILE — добавь маршрут вручную (Caddyfile.snippet). Бэкап: $backup"
+    log "Caddy: вставляю handle /chat/* → 127.0.0.1:$HARNESS_PORT (перед строкой $anchor)"
+    awk -v line="$anchor" -v port="$HARNESS_PORT" 'NR==line{
+      print "    handle /chat/* {"
+      print "        reverse_proxy 127.0.0.1:" port
+      print "    }"
+    } {print}' "$backup" > "$CADDYFILE"
+  fi
 
   if command -v caddy >/dev/null; then
     caddy validate --config "$CADDYFILE" --adapter caddyfile >/dev/null 2>&1 \
@@ -122,8 +126,8 @@ patch_caddy
 
 # ── 6. Смоук-проверки: наш сервис + регрессия соседей ────────────────────────
 sleep 5
-log "Смоук: локальный /harness/health"
-curl -fsS --max-time 10 "http://127.0.0.1:$HARNESS_PORT/harness/health" && echo || die "Сервис не отвечает — смотри journalctl -u llm-harness"
+log "Смоук: локальный /chat/health"
+curl -fsS --max-time 10 "http://127.0.0.1:$HARNESS_PORT/chat/health" && echo || die "Сервис не отвечает — смотри journalctl -u llm-harness"
 log "Проверка связи с gateway"
 curl -fsS --max-time 10 "http://127.0.0.1:3400/gw/health" >/dev/null 2>&1 && echo "  /gw OK" || echo "  ВНИМАНИЕ: gateway /gw/health не ответил — harness без него не работает!"
 log "Регрессия соседей (не должны сломаться)"
@@ -132,4 +136,4 @@ curl -fsS --max-time 10 "http://127.0.0.1:3200/support/health" >/dev/null 2>&1 &
 curl -fsS --max-time 10 "http://127.0.0.1:3100/agent/health"   >/dev/null 2>&1 && echo "  /agent OK"   || echo "  ВНИМАНИЕ: /agent не ответил"
 log "Статус сервиса:"
 systemctl --no-pager --lines=5 status llm-harness || true
-log "Готово. Открой /harness/ — запускай прогоны; /harness/admin — токен из вывода выше."
+log "Готово. Открой /chat/ — запускай прогоны; /chat/admin — токен из вывода выше."

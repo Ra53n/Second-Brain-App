@@ -1,9 +1,9 @@
 // guards.test.ts — защитные слои: санитизация ingress, egress, парсеры.
 
 import { describe, it, expect } from "vitest";
-import { sanitizeUntrusted, untrustedSection, SECURITY_DIRECTIVE } from "../src/guard/security.js";
+import { sanitizeUntrusted, SECURITY_DIRECTIVE } from "../src/guard/security.js";
 import { neutralize, secretVariants } from "../src/guard/egress.js";
-import { extractCode, parseVerdict, securityPreamble } from "../src/fsm/prompts.js";
+import { parseCorrectness, parseFindings, securityPreamble } from "../src/fsm/prompts.js";
 
 describe("sanitizeUntrusted", () => {
   it("режет невидимые символы", () => {
@@ -23,14 +23,6 @@ describe("sanitizeUntrusted", () => {
   });
 });
 
-describe("untrustedSection", () => {
-  it("оборачивает в границы с преамбулой", () => {
-    const s = untrustedSection("ФАЙЛ", "note", "тело");
-    expect(s).toContain("НЕДОВЕРЕННЫЕ ДАННЫЕ");
-    expect(s).toContain("<<<UNTRUSTED_BEGIN");
-    expect(s).toContain("UNTRUSTED_END>>>");
-  });
-});
 
 describe("egress neutralize", () => {
   it("удаляет внешнюю картинку всегда", () => {
@@ -72,43 +64,39 @@ describe("secretVariants", () => {
   });
 });
 
-describe("extractCode", () => {
-  it("достаёт js-блок", () => {
-    const r = extractCode("текст\n```js\nconst a=1\n```\nхвост");
-    expect(r.code).toContain("const a=1");
-    expect(r.truncated).toBe(false);
+describe("parseCorrectness", () => {
+  it("парсит correct:true", () => {
+    expect(parseCorrectness('{"correct":true,"issues":[]}')).toEqual({ correct: true, issues: [] });
   });
-  it("детектит обрыв (открытый фенс без закрытия)", () => {
-    const r = extractCode("```js\nconst a=1");
-    expect(r.code).toBeNull();
-    expect(r.truncated).toBe(true);
+  it("парсит correct:false с замечаниями", () => {
+    const v = parseCorrectness('{"correct":false,"issues":["нет ответа","ошибка"]}');
+    expect(v).toEqual({ correct: false, issues: ["нет ответа", "ошибка"] });
   });
-  it("нет фенса → нет кода, не обрыв", () => {
-    const r = extractCode("просто текст");
-    expect(r.code).toBeNull();
-    expect(r.truncated).toBe(false);
+  it("без поля correct → null", () => {
+    expect(parseCorrectness('{"issues":[]}')).toBeNull();
+  });
+  it("мусор → null", () => {
+    expect(parseCorrectness("не json")).toBeNull();
+  });
+  it("вытаскивает JSON из обёртки", () => {
+    expect(parseCorrectness('вердикт: {"correct":true} .')).toEqual({ correct: true, issues: [] });
   });
 });
 
-describe("parseVerdict", () => {
-  it("парсит валидный JSON", () => {
-    const f = parseVerdict('{"findings":[{"severity":"high","line":5,"issue":"x"}]}');
+describe("parseFindings", () => {
+  it("парсит findings", () => {
+    const f = parseFindings('{"findings":[{"severity":"high","issue":"x"}]}');
     expect(f).toHaveLength(1);
     expect(f![0]!.severity).toBe("high");
   });
   it("пустые findings", () => {
-    expect(parseVerdict('{"findings":[]}')).toEqual([]);
+    expect(parseFindings('{"findings":[]}')).toEqual([]);
   });
   it("незнакомый severity → high (безопасный режим)", () => {
-    const f = parseVerdict('{"findings":[{"severity":"apocalyptic","line":1,"issue":"x"}]}');
-    expect(f![0]!.severity).toBe("high");
+    expect(parseFindings('{"findings":[{"severity":"apocalyptic","issue":"x"}]}')![0]!.severity).toBe("high");
   });
   it("мусор → null", () => {
-    expect(parseVerdict("не json вовсе")).toBeNull();
-  });
-  it("вытаскивает JSON из обёртки текста", () => {
-    const f = parseVerdict('Вот вердикт: {"findings":[]} готово');
-    expect(f).toEqual([]);
+    expect(parseFindings("не json")).toBeNull();
   });
 });
 
