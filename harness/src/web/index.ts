@@ -47,10 +47,10 @@ export const CHAT_PAGE = String.raw`<!doctype html>
   .pwned { background:#3a1d1d; color:#ff6b6b; font-weight:700; }
   #composer { padding:10px 18px 16px; }
   #composer .composer-inner { max-width:720px; margin:0 auto; }
-  .inputbar { display:flex; align-items:flex-end; gap:8px; background:var(--panel2); border:1px solid var(--line2); border-radius:16px; padding:8px 8px 8px 14px; transition:border-color .15s; }
+  .inputbar { display:flex; align-items:center; gap:8px; background:var(--panel2); border:1px solid var(--line2); border-radius:16px; padding:6px 6px 6px 14px; transition:border-color .15s; }
   .inputbar:focus-within { border-color:var(--accent); }
-  #input { flex:1; background:transparent; color:var(--text); border:0; padding:6px 0; font:inherit; resize:none; max-height:180px; line-height:1.5; }
-  #send { flex:0 0 auto; align-self:flex-end; background:var(--accent); color:#fff; border:0; border-radius:11px; padding:9px 18px; font-weight:600; cursor:pointer; transition:background .15s; }
+  #input { flex:1; background:transparent; color:var(--text); border:0; padding:9px 0; margin:0; font:inherit; resize:none; max-height:180px; line-height:1.4; display:block; }
+  #send { flex:0 0 auto; align-self:flex-end; height:38px; background:var(--accent); color:#fff; border:0; border-radius:11px; padding:0 20px; font-weight:600; cursor:pointer; transition:background .15s; }
   #send:hover { background:var(--accent-hover); } #send:disabled { opacity:.5; cursor:default; }
   .modewrap { display:flex; align-items:center; gap:8px; font-size:13px; color:var(--muted); margin-bottom:8px; }
   .seg { display:inline-flex; border:1px solid var(--line2); border-radius:9px; overflow:hidden; }
