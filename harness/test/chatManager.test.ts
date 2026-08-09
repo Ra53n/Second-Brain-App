@@ -130,6 +130,22 @@ describe("ChatManager — Execution Loop + алерты", () => {
     expect(repo.listAllMessages(true).some((m) => m.id === msg.id)).toBe(true);
   });
 
+  it("трейс суммирует токены по фазам и меряет время", async () => {
+    const u = (n: number) => ({ usage: { totalTokens: n }, costUsd: 0.0001 });
+    const { manager, repo } = make([
+      { answer: "результат", meta: u(100) },
+      { answer: CORRECT, meta: u(30) },
+      { answer: CLEAN, meta: u(20) },
+    ]);
+    const chat = manager.createChat(U1);
+    manager.setMode(chat.id, U1, "loop");
+    const msg = manager.send(chat.id, U1, "задача");
+    await manager.wait(msg.id);
+    const loop = repo.getMessageForOwner(msg.id, U1)!.loop!;
+    expect(loop.totalTokens).toBe(150);
+    expect(loop.durationMs).toBeGreaterThanOrEqual(0);
+  });
+
   it("recoverOnBoot переводит зависшие pending в failed", () => {
     const { manager, repo } = make([{ answer: "x" }]);
     const chat = manager.createChat(U1);

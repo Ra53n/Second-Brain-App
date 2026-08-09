@@ -25,6 +25,8 @@ export interface LoopPhase {
   correctnessIssues: string[];
   gateway: { inputAction: string | null; findingTypes: string[]; outputVerdict: string | null; blocked: boolean };
   pwned: boolean;
+  tokens: number; // токены этого вызова (из usage gateway)
+  costUsd: number; // стоимость этого вызова (для админ-статистики)
 }
 
 /** Трейс прогона execution loop, прикреплённый к ответу ассистента. */
@@ -33,6 +35,8 @@ export interface LoopTrace {
   outcome: string | null;
   pwned: boolean;
   costUsd: number;
+  totalTokens: number; // сумма токенов по всем фазам
+  durationMs: number; // wall-clock генерации сообщения
   phases: LoopPhase[];
 }
 

@@ -87,8 +87,17 @@ export async function runLoopForMessage(
 ): Promise<void> {
   let ctx = freshContext(msgId, userText, startedAt);
   const phases: LoopPhase[] = [];
+  const t0 = Date.now();
 
-  const trace = (): LoopTrace => ({ rounds: ctx.round, outcome: ctx.outcome, pwned: ctx.pwned, costUsd: ctx.costUsd, phases });
+  const trace = (): LoopTrace => ({
+    rounds: ctx.round,
+    outcome: ctx.outcome,
+    pwned: ctx.pwned,
+    costUsd: phases.reduce((s, p) => s + p.costUsd, 0),
+    totalTokens: phases.reduce((s, p) => s + p.tokens, 0),
+    durationMs: Date.now() - t0,
+    phases,
+  });
 
   while (true) {
     if (deps.repo.generationOf(msgId) !== generation) return;
@@ -132,6 +141,7 @@ export async function runNormalForMessage(
   dialog: string,
   generation: number,
 ): Promise<void> {
+  const t0 = Date.now();
   const prompt = buildNormalPrompt(dialog, userText);
   let reply: GatewayReply;
   try {
@@ -145,6 +155,7 @@ export async function runNormalForMessage(
   const pwned = detectCanary(reply.answer, deps.canary);
   const guarded = neutralize(reply.answer, [deps.canary].filter(Boolean));
   const meta: GatewayMeta = reply.meta ?? {};
+  const tokens = meta.usage?.totalTokens ?? 0;
   const content = reply.blocked ? "Запрос заблокирован выходной защитой gateway." : guarded.text;
   // У обычного ответа тоже кладём мини-трейс: что поймал gateway на этом вызове.
   const loop: LoopTrace = {
@@ -152,6 +163,8 @@ export async function runNormalForMessage(
     outcome: reply.blocked ? "gateway-blocked" : "done",
     pwned,
     costUsd: meta.costUsd ?? 0,
+    totalTokens: tokens,
+    durationMs: Date.now() - t0,
     phases: [
       {
         phase: "generating",
@@ -166,6 +179,8 @@ export async function runNormalForMessage(
           blocked: reply.blocked,
         },
         pwned,
+        tokens,
+        costUsd: meta.costUsd ?? 0,
       },
     ],
   };
@@ -275,5 +290,7 @@ function phaseOf(
       blocked: reply?.blocked ?? false,
     },
     pwned,
+    tokens: meta.usage?.totalTokens ?? 0,
+    costUsd: meta.costUsd ?? 0,
   };
 }

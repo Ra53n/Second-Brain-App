@@ -158,7 +158,8 @@ export const CHAT_PAGE = String.raw`<!doctype html>
       return '<div style="margin:4px 0"><b>'+esc(p.display||p.phase)+'</b>'+c+f+gw+'</div>';
     }).join('');
     var pw=loop.pwned?'<span class="chip pwned">PWNED</span>':'';
-    return '<details class="trace"><summary>execution loop: '+chips+' '+pw+' · $'+(loop.costUsd||0).toFixed(5)+'</summary><div class="tracebody">'+body+'</div></details>';
+    var meta=(loop.totalTokens||0)+' токенов · '+(((loop.durationMs||0)/1000).toFixed(1))+' с';
+    return '<details class="trace"><summary>execution loop: '+chips+' '+pw+' · '+meta+'</summary><div class="tracebody">'+body+'</div></details>';
   }
   function renderThread(){
     if(!state.chat){ $('thread').innerHTML='<div class="empty">Создай чат кнопкой слева</div>'; return; }

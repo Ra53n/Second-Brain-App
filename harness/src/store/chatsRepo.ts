@@ -24,6 +24,8 @@ function decodeLoop(raw: unknown): LoopTrace | null {
       outcome: typeof t.outcome === "string" ? t.outcome : null,
       pwned: t.pwned === true,
       costUsd: typeof t.costUsd === "number" ? t.costUsd : 0,
+      totalTokens: typeof t.totalTokens === "number" ? t.totalTokens : 0,
+      durationMs: typeof t.durationMs === "number" ? t.durationMs : 0,
       phases: Array.isArray(t.phases) ? t.phases : [],
     };
   } catch {
