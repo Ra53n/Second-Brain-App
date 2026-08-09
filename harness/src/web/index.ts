@@ -47,7 +47,9 @@ export const CHAT_PAGE = String.raw`<!doctype html>
   .seg button { background:transparent; color:#9aa4b2; border:0; padding:5px 12px; cursor:pointer; font:inherit; }
   .seg button.on { background:#3b82f6; color:#fff; }
   .empty { color:#6b7280; text-align:center; margin-top:40px; }
-  .typing { color:#9aa4b2; }
+  .typing { color:#9aa4b2; font-style:italic; }
+  .dots::after { content:'…'; animation: dots 1.2s steps(4,end) infinite; }
+  @keyframes dots { 0%{content:''} 25%{content:'.'} 50%{content:'..'} 75%{content:'…'} 100%{content:'…'} }
   /* Overlay входа */
   #auth { position:fixed; inset:0; background:#0f1115; display:flex; align-items:center; justify-content:center; }
   #auth .card { width:340px; background:#161a22; border:1px solid #232734; border-radius:12px; padding:22px; }
@@ -143,7 +145,7 @@ export const CHAT_PAGE = String.raw`<!doctype html>
   function renderMode(){ var mode=state.chat&&state.chat.chat?state.chat.chat.mode:'normal'; $('mNormal').className=mode==='normal'?'on':''; $('mLoop').className=mode==='loop'?'on':''; }
   function setMode(mode){ if(!state.activeId) return; jfetch('/chat/chats/'+state.activeId,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({mode:mode})}).then(function(){ if(state.chat&&state.chat.chat) state.chat.chat.mode=mode; renderMode(); loadChats(); }); }
 
-  function traceHtml(loop){
+  function traceHtml(loop, mid){
     if(!loop) return '';
     var chips=(loop.phases||[]).map(function(p){
       var cls='chip', label=({generating:'генерация',verifying:'корректность',securityReview:'security'})[p.phase]||p.phase;
@@ -159,19 +161,33 @@ export const CHAT_PAGE = String.raw`<!doctype html>
     }).join('');
     var pw=loop.pwned?'<span class="chip pwned">PWNED</span>':'';
     var meta=(loop.totalTokens||0)+' токенов · '+(((loop.durationMs||0)/1000).toFixed(1))+' с';
-    return '<details class="trace"><summary>execution loop: '+chips+' '+pw+' · '+meta+'</summary><div class="tracebody">'+body+'</div></details>';
+    return '<details class="trace" data-mid="'+mid+'"><summary>execution loop: '+chips+' '+pw+' · '+meta+'</summary><div class="tracebody">'+body+'</div></details>';
+  }
+  // Живой статус: последняя фаза трейса описывает, что агент делает сейчас.
+  function progressLabel(loop){
+    if(loop&&loop.phases&&loop.phases.length){ var p=loop.phases[loop.phases.length-1]; return esc(p.display||p.phase); }
+    return 'Генерирую ответ';
   }
   function renderThread(){
-    if(!state.chat){ $('thread').innerHTML='<div class="empty">Создай чат кнопкой слева</div>'; return; }
+    var thr=$('thread');
+    if(!state.chat){ thr.innerHTML='<div class="empty">Создай чат кнопкой слева</div>'; return; }
     var msgs=state.chat.messages||[];
-    if(!msgs.length){ $('thread').innerHTML='<div class="empty">Напиши первое сообщение</div>'; return; }
-    $('thread').innerHTML=msgs.map(function(m){
+    if(!msgs.length){ thr.innerHTML='<div class="empty">Напиши первое сообщение</div>'; return; }
+    // Запоминаем раскрытые трейсы и близость к низу — чтобы poll их не сбрасывал.
+    var openMids={}; Array.prototype.forEach.call(thr.querySelectorAll('.trace[open]'), function(d){ openMids[d.getAttribute('data-mid')]=1; });
+    var nearBottom = thr.scrollHeight - thr.scrollTop - thr.clientHeight < 120;
+    thr.innerHTML=msgs.map(function(m){
       if(m.role==='user') return '<div class="msg user"><div class="who">вы</div><div class="bubble">'+esc(m.content)+'</div></div>';
-      var trace=traceHtml(m.loop);
-      var body=m.status==='pending'?'<span class="typing">печатает…</span>':(m.status==='failed'?esc(m.errorText||'ошибка'):esc(m.content));
+      var trace=traceHtml(m.loop, m.id);
+      var body;
+      if(m.status==='pending') body='<span class="typing">'+progressLabel(m.loop)+'<span class="dots"></span></span>';
+      else if(m.status==='failed') body=esc(m.errorText||'ошибка');
+      else body=esc(m.content);
       return trace+'<div class="msg assistant"><div class="who">ассистент</div><div class="bubble">'+body+'</div></div>';
     }).join('');
-    $('thread').scrollTop=$('thread').scrollHeight;
+    // Восстанавливаем раскрытые трейсы после перерисовки.
+    Array.prototype.forEach.call(thr.querySelectorAll('.trace'), function(d){ if(openMids[d.getAttribute('data-mid')]) d.open=true; });
+    if(nearBottom) thr.scrollTop=thr.scrollHeight;
   }
   function maybePoll(){
     if(state.poll) clearInterval(state.poll);
