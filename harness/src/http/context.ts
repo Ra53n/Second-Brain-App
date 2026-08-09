@@ -2,6 +2,7 @@
 
 import type { ChatsRepo } from "../store/chatsRepo.js";
 import type { ChatManager } from "../run/chatManager.js";
+import type { AuthService } from "../auth/authService.js";
 
 /** Публичный снимок настроек агента для админки (без секретных значений). */
 export interface AgentConfigView {
@@ -20,6 +21,8 @@ export interface AgentConfigView {
 export interface AppContext {
   repo: ChatsRepo;
   manager: ChatManager;
+  auth: AuthService;
   apiToken: string;
+  sessionSecret: string;
   configView: () => AgentConfigView;
 }

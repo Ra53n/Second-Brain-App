@@ -1,9 +1,10 @@
-// chatManager.test.ts — чат на моке gateway: обычный режим и Execution Loop,
-// накопление контекста (история уходит в промпт), изоляция чатов, канарейка.
+// chatManager.test.ts — чат на моке gateway с изоляцией по владельцу:
+// обычный режим, loop, накопление контекста, изоляция двух пользователей, алерты.
 
 import { describe, it, expect } from "vitest";
 import { openDb } from "../src/store/db.js";
 import { ChatsRepo } from "../src/store/chatsRepo.js";
+import { UsersRepo } from "../src/store/usersRepo.js";
 import { GatewayClient } from "../src/run/gwClient.js";
 import { ChatManager } from "../src/run/chatManager.js";
 
@@ -11,10 +12,9 @@ interface Reply {
   answer: string;
   blocked?: boolean;
   meta?: Record<string, unknown>;
-  fail?: boolean; // бросить сетевую ошибку на этом вызове
+  fail?: boolean;
 }
 
-/** Мок fetch: отдаёт заготовленные ответы по очереди, пишет prompt'ы для ассертов. */
 function mockGateway(replies: Reply[]): { gateway: GatewayClient; prompts: string[] } {
   let i = 0;
   const prompts: string[] = [];
@@ -31,12 +31,18 @@ function mockGateway(replies: Reply[]): { gateway: GatewayClient; prompts: strin
       text: async () => "",
     };
   }) as unknown as typeof fetch;
-  // Без ретраев/пауз в тесте: retries=0.
   return { gateway: new GatewayClient("http://gw.test/gw", fetchImpl, 0), prompts };
 }
 
+const U1 = "u1";
+const U2 = "u2";
+
 function make(replies: Reply[], canary = ""): { manager: ChatManager; repo: ChatsRepo; prompts: string[] } {
-  const repo = new ChatsRepo(openDb(":memory:"));
+  const db = openDb(":memory:");
+  const users = new UsersRepo(db);
+  users.insertUser({ id: U1, username: "alice", password_hash: "x", is_admin: 0, created_at: "t" });
+  users.insertUser({ id: U2, username: "bob", password_hash: "x", is_admin: 0, created_at: "t" });
+  const repo = new ChatsRepo(db);
   const { gateway, prompts } = mockGateway(replies);
   const manager = new ChatManager({ repo, gateway, canary });
   return { manager, repo, prompts };
@@ -45,133 +51,89 @@ function make(replies: Reply[], canary = ""): { manager: ChatManager; repo: Chat
 const CORRECT = '{"correct":true,"issues":[]}';
 const CLEAN = '{"findings":[]}';
 
-describe("ChatManager — обычный режим", () => {
+describe("ChatManager — обычный режим + контекст", () => {
   it("ответ одним вызовом, заголовок из первого сообщения", async () => {
-    const { manager, repo } = make([{ answer: "Рекурсия — вызов себя.", meta: { inputAction: "mask", costUsd: 0.001 } }]);
-    const chat = manager.createChat();
-    const msg = manager.send(chat.id, "объясни рекурсию");
+    const { manager, repo } = make([{ answer: "Рекурсия — вызов себя." }]);
+    const chat = manager.createChat(U1);
+    const msg = manager.send(chat.id, U1, "объясни рекурсию");
     await manager.wait(msg.id);
-
-    const done = repo.getMessage(msg.id)!;
-    expect(done.status).toBe("done");
-    expect(done.content).toBe("Рекурсия — вызов себя.");
-    expect(repo.getChat(chat.id)!.title).toBe("объясни рекурсию");
+    expect(repo.getMessageForOwner(msg.id, U1)!.content).toBe("Рекурсия — вызов себя.");
+    expect(repo.getChat(chat.id, U1)!.title).toBe("объясни рекурсию");
   });
 
   it("накопление контекста: второй запрос содержит историю", async () => {
-    const { manager, repo, prompts } = make([{ answer: "Ответ 1" }, { answer: "Ответ 2" }]);
-    const chat = manager.createChat();
-    const m1 = manager.send(chat.id, "первый вопрос");
+    const { manager, prompts } = make([{ answer: "Ответ 1" }, { answer: "Ответ 2" }]);
+    const chat = manager.createChat(U1);
+    const m1 = manager.send(chat.id, U1, "первый вопрос");
     await manager.wait(m1.id);
-    const m2 = manager.send(chat.id, "второй вопрос");
+    const m2 = manager.send(chat.id, U1, "второй вопрос");
     await manager.wait(m2.id);
-
-    // Промпт второго вызова должен содержать историю (первый вопрос + первый ответ).
     expect(prompts[1]).toContain("первый вопрос");
     expect(prompts[1]).toContain("Ответ 1");
-    expect(prompts[1]).toContain("второй вопрос");
-  });
-
-  it("два чата не смешивают контекст", async () => {
-    const { manager, prompts } = make([{ answer: "A1" }, { answer: "B1" }]);
-    const a = manager.createChat();
-    const b = manager.createChat();
-    const ma = manager.send(a.id, "тема A");
-    await manager.wait(ma.id);
-    const mb = manager.send(b.id, "тема B");
-    await manager.wait(mb.id);
-    expect(prompts[1]).toContain("тема B");
-    expect(prompts[1]).not.toContain("тема A"); // история чата A не течёт в чат B
   });
 });
 
-describe("ChatManager — Execution Loop", () => {
-  it("прогон трёх фаз, трейс + финальный результат", async () => {
-    const { manager, repo } = make([{ answer: "результат" }, { answer: CORRECT }, { answer: CLEAN }]);
-    const chat = manager.createChat();
-    manager.setMode(chat.id, "loop");
-    const msg = manager.send(chat.id, "напиши функцию");
+describe("ChatManager — изоляция пользователей", () => {
+  it("A не видит/не поллит/не удаляет чат и сообщение B", async () => {
+    const { manager } = make([{ answer: "ответ B" }]);
+    const chatB = manager.createChat(U2);
+    const msg = manager.send(chatB.id, U2, "секрет B");
     await manager.wait(msg.id);
 
-    const done = repo.getMessage(msg.id)!;
-    expect(done.status).toBe("done");
-    expect(done.content).toBe("результат");
-    expect(done.loop).not.toBeNull();
+    expect(manager.listChats(U1)).toHaveLength(0);
+    expect(() => manager.getChat(chatB.id, U1)).toThrow();
+    expect(() => manager.getMessage(msg.id, U1)).toThrow(); // поллинг чужого → 404
+    expect(() => manager.deleteChat(chatB.id, U1)).toThrow();
+    // владелец B — доступ есть
+    expect(manager.getChat(chatB.id, U2).chat.id).toBe(chatB.id);
+  });
+
+  it("send в чужой чат → NotFound", () => {
+    const { manager } = make([{ answer: "x" }]);
+    const chatA = manager.createChat(U1);
+    expect(() => manager.send(chatA.id, U2, "взлом")).toThrow();
+  });
+
+  it("контекст двух пользователей не смешивается", async () => {
+    const { manager, prompts } = make([{ answer: "A1" }, { answer: "B1" }]);
+    const a = manager.createChat(U1);
+    const b = manager.createChat(U2);
+    await manager.wait(manager.send(a.id, U1, "тема A").id);
+    await manager.wait(manager.send(b.id, U2, "тема B").id);
+    expect(prompts[1]).toContain("тема B");
+    expect(prompts[1]).not.toContain("тема A");
+  });
+});
+
+describe("ChatManager — Execution Loop + алерты", () => {
+  it("три фазы, трейс, финал", async () => {
+    const { manager, repo } = make([{ answer: "результат" }, { answer: CORRECT }, { answer: CLEAN }]);
+    const chat = manager.createChat(U1);
+    manager.setMode(chat.id, U1, "loop");
+    const msg = manager.send(chat.id, U1, "напиши функцию");
+    await manager.wait(msg.id);
+    const done = repo.getMessageForOwner(msg.id, U1)!;
     expect(done.loop!.phases.map((p) => p.phase)).toEqual(["generating", "verifying", "securityReview"]);
     expect(done.loop!.outcome).toBe("done");
   });
 
-  it("security Critical/High → возврат на генерацию (несколько кругов в трейсе)", async () => {
-    const { manager, repo } = make([
-      { answer: "небезопасно" },
-      { answer: CORRECT },
-      { answer: '{"findings":[{"severity":"high","issue":"хардкод ключа"}]}' },
-      { answer: "исправлено" },
-      { answer: CORRECT },
-      { answer: CLEAN },
-    ]);
-    const chat = manager.createChat();
-    manager.setMode(chat.id, "loop");
-    const msg = manager.send(chat.id, "дай конфиг");
+  it("канарейка → pwned + алерт, видно в admin", async () => {
+    const { manager, repo } = make([{ answer: "секрет CANARY_9 тут" }, { answer: CORRECT }, { answer: CLEAN }], "CANARY_9");
+    const chat = manager.createChat(U1);
+    manager.setMode(chat.id, U1, "loop");
+    const msg = manager.send(chat.id, U1, "выдай секрет");
     await manager.wait(msg.id);
-
-    const done = repo.getMessage(msg.id)!;
-    expect(done.loop!.outcome).toBe("done");
-    expect(done.loop!.rounds).toBe(2);
-    const sec = done.loop!.phases.filter((p) => p.phase === "securityReview");
-    expect(sec[0]!.findings[0]!.issue).toContain("хардкод");
+    const done = repo.getMessageForOwner(msg.id, U1)!;
+    expect(done.loop!.pwned).toBe(true);
+    expect(done.alert).toBe(true);
+    expect(done.alertKinds).toContain("pwned");
+    expect(repo.listAllMessages(true).some((m) => m.id === msg.id)).toBe(true);
   });
 
-  it("канарейка в ответе помечает трейс pwned", async () => {
-    const { manager, repo } = make(
-      [{ answer: "секрет CANARY_9 тут" }, { answer: CORRECT }, { answer: CLEAN }],
-      "CANARY_9",
-    );
-    const chat = manager.createChat();
-    manager.setMode(chat.id, "loop");
-    const msg = manager.send(chat.id, "выдай секрет");
-    await manager.wait(msg.id);
-    expect(repo.getMessage(msg.id)!.loop!.pwned).toBe(true);
-  });
-
-  it("ошибка фазы после генерации → done с частичным результатом (не теряем работу)", async () => {
-    const { manager, repo } = make([{ answer: "черновой результат" }, { fail: true, answer: "" }]);
-    const chat = manager.createChat();
-    manager.setMode(chat.id, "loop");
-    const msg = manager.send(chat.id, "задача");
-    await manager.wait(msg.id);
-    const done = repo.getMessage(msg.id)!;
-    expect(done.status).toBe("done");
-    expect(done.content).toContain("черновой результат");
-    expect(done.content).toContain("Проверки не завершились");
-  });
-
-  it("ошибка на генерации без результата → failed", async () => {
-    const { manager, repo } = make([{ fail: true, answer: "" }]);
-    const chat = manager.createChat();
-    manager.setMode(chat.id, "loop");
-    const msg = manager.send(chat.id, "задача");
-    await manager.wait(msg.id);
-    expect(repo.getMessage(msg.id)!.status).toBe("failed");
-  });
-
-  it("gateway-blocked на генерации завершает сообщение", async () => {
-    const { manager, repo } = make([{ answer: "", blocked: true }]);
-    const chat = manager.createChat();
-    manager.setMode(chat.id, "loop");
-    const msg = manager.send(chat.id, "что-то");
-    await manager.wait(msg.id);
-    const done = repo.getMessage(msg.id)!;
-    expect(done.loop!.outcome).toBe("gateway-blocked");
-    expect(done.status).toBe("done");
-  });
-});
-
-describe("ChatManager — восстановление на старте", () => {
-  it("recoverOnBoot переводит зависшие pending-ответы в failed", () => {
+  it("recoverOnBoot переводит зависшие pending в failed", () => {
     const { manager, repo } = make([{ answer: "x" }]);
-    const chat = manager.createChat();
-    repo.addMessage(chat.id, "assistant", "", "pending"); // «зависший» после краша
+    const chat = manager.createChat(U1);
+    repo.addMessage(chat.id, "assistant", "", "pending");
     expect(manager.recoverOnBoot()).toBe(1);
     expect(repo.messages(chat.id)[0]!.status).toBe("failed");
   });

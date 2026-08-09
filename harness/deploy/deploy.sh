@@ -54,9 +54,12 @@ gen_canary() { echo "HARNESS_CANARY_$(openssl rand -hex 8 2>/dev/null || head -c
 if [ ! -f "$ENV_FILE" ]; then
   TOKEN="$(gen_secret)"
   CANARY="$(gen_canary)"
-  log "Создаю $ENV_FILE c новыми HARNESS_API_TOKEN + HARNESS_CANARY"
+  SESSION_SECRET="$(gen_secret)"
+  log "Создаю $ENV_FILE c новыми HARNESS_API_TOKEN + SESSION_SECRET + HARNESS_CANARY"
   cat > "$ENV_FILE" <<EOF
 HARNESS_API_TOKEN=$TOKEN
+SESSION_SECRET=$SESSION_SECRET
+HARNESS_ADMIN_USER=
 HARNESS_HOST=127.0.0.1
 HARNESS_PORT=$HARNESS_PORT
 HARNESS_DB_PATH=$DATA_DIR/harness.db
@@ -76,6 +79,14 @@ EOF
   echo
 else
   log "$ENV_FILE уже есть — секреты сохранены."
+  # Идемпотентно дописываем ключи, появившиеся в новых версиях (задача 106).
+  if ! grep -q '^SESSION_SECRET=' "$ENV_FILE"; then
+    echo "SESSION_SECRET=$(gen_secret)" >> "$ENV_FILE"
+    log "Добавлен SESSION_SECRET (подпись cookie-сессий)."
+  fi
+  if ! grep -q '^HARNESS_ADMIN_USER=' "$ENV_FILE"; then
+    echo "HARNESS_ADMIN_USER=" >> "$ENV_FILE"
+  fi
 fi
 
 chown -R "$APP_USER":"$APP_USER" "$APP_DIR"

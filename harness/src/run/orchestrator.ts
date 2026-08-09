@@ -17,7 +17,8 @@ import {
 import type { CorrectnessVerdict, Finding, PhaseEvent, RunContext } from "../fsm/types.js";
 import { neutralize } from "../guard/egress.js";
 import type { GatewayClient, GatewayMeta, GatewayReply } from "./gwClient.js";
-import type { LoopPhase, LoopTrace } from "../domain/chat.js";
+import type { LoopPhase, LoopTrace, MsgStatus } from "../domain/chat.js";
+import { computeAlerts } from "../domain/chat.js";
 import type { ChatsRepo } from "../store/chatsRepo.js";
 
 export interface OrchestratorDeps {
@@ -27,6 +28,17 @@ export interface OrchestratorDeps {
 }
 
 const MAX_ROUNDS = 4;
+
+/** Финализирует сообщение: считает алерт и пишет с защитой поколением. */
+function finalize(
+  deps: OrchestratorDeps,
+  msgId: string,
+  generation: number,
+  patch: { content?: string; status: MsgStatus; errorText?: string | null; loop: LoopTrace | null },
+): boolean {
+  const a = computeAlerts(patch.loop, patch.content ?? "", patch.status);
+  return deps.repo.updateMessage(msgId, generation, { ...patch, alert: a.alert, alertKinds: a.kinds });
+}
 
 const detectCanary = (answer: string, canary: string): boolean => canary.length > 0 && answer.includes(canary);
 
@@ -89,9 +101,9 @@ export async function runLoopForMessage(
       // есть сгенерированный результат, показываем его как done с пометкой; иначе failed.
       const note = "\n\n_(Проверки не завершились: " + (err as Error).message + ")_";
       if (ctx.result) {
-        deps.repo.updateMessage(msgId, generation, { content: ctx.result + note, status: "done", loop: trace() });
+        finalize(deps, msgId, generation, { content: ctx.result + note, status: "done", loop: trace() });
       } else {
-        deps.repo.updateMessage(msgId, generation, { status: "failed", errorText: (err as Error).message, loop: trace() });
+        finalize(deps, msgId, generation, { status: "failed", errorText: (err as Error).message, loop: trace() });
       }
       return;
     }
@@ -104,7 +116,7 @@ export async function runLoopForMessage(
     phases.push({ ...res.phase, display: outcome.display });
 
     if (outcome.isTerminal) {
-      deps.repo.updateMessage(msgId, generation, { content: finalContent(ctx), status: "done", loop: trace() });
+      finalize(deps, msgId, generation, { content: finalContent(ctx), status: "done", loop: trace() });
       return;
     }
     // прогресс: обновляем трейс, статус остаётся pending
@@ -125,7 +137,7 @@ export async function runNormalForMessage(
   try {
     reply = await deps.gateway.chat(prompt);
   } catch (err) {
-    deps.repo.updateMessage(msgId, generation, { status: "failed", errorText: (err as Error).message });
+    finalize(deps, msgId, generation, { status: "failed", errorText: (err as Error).message, loop: null });
     return;
   }
   if (deps.repo.generationOf(msgId) !== generation) return;
@@ -157,7 +169,7 @@ export async function runNormalForMessage(
       },
     ],
   };
-  deps.repo.updateMessage(msgId, generation, { content, status: "done", loop });
+  finalize(deps, msgId, generation, { content, status: "done", loop });
 }
 
 async function runPhase(

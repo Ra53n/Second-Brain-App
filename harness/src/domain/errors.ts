@@ -3,6 +3,8 @@
 export type ErrorCode =
   | "validation_error"
   | "unauthorized"
+  | "forbidden"
+  | "conflict"
   | "not_found"
   | "config_error"
   | "upstream_error"
@@ -30,6 +32,18 @@ export class ValidationError extends AppError {
 export class UnauthorizedError extends AppError {
   constructor(message = "Требуется авторизация") {
     super("unauthorized", message, 401);
+  }
+}
+
+export class ForbiddenError extends AppError {
+  constructor(message = "Доступ запрещён") {
+    super("forbidden", message, 403);
+  }
+}
+
+export class ConflictError extends AppError {
+  constructor(message: string) {
+    super("conflict", message, 409);
   }
 }
 

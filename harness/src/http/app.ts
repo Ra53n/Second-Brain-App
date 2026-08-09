@@ -3,9 +3,11 @@
 
 import Fastify, { type FastifyInstance, type FastifyServerOptions } from "fastify";
 import rateLimit from "@fastify/rate-limit";
+import cookie from "@fastify/cookie";
 import type { AppContext } from "./context.js";
 import { AppError } from "../domain/errors.js";
 import { registerRoutes } from "./routes.js";
+import { registerAuthRoutes } from "./routes.auth.js";
 import { registerWebRoutes } from "../web/index.js";
 import { CHAT_VERSION } from "./version.js";
 
@@ -37,6 +39,8 @@ export async function buildApp(ctx: AppContext, opts: BuildAppOptions = {}): Pro
     });
   });
 
+  await app.register(cookie, { secret: ctx.sessionSecret });
+
   await app.register(rateLimit, {
     global: false,
     errorResponseBuilder: (_req, c) =>
@@ -53,6 +57,7 @@ export async function buildApp(ctx: AppContext, opts: BuildAppOptions = {}): Pro
   }));
 
   registerWebRoutes(app);
+  registerAuthRoutes(app, ctx);
   registerRoutes(app, ctx);
 
   return app;

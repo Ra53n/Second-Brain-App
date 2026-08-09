@@ -1,10 +1,11 @@
-// routes.ts — CRUD чатов, отправка сообщений (за rate-limit), поллинг ответа;
-// админка по bearer (журнал чатов/сообщений + настройки агента).
+// routes.ts — CRUD чатов (за session-авторизацией, скоуп по владельцу),
+// отправка/поллинг; админка по роли (логи всех пользователей + алерты).
 
 import type { FastifyInstance } from "fastify";
 import type { AppContext } from "./context.js";
 import { ValidationError } from "../domain/errors.js";
-import { requireAdmin } from "./authMiddleware.js";
+import { requireUser, requireAdmin } from "./authMiddleware.js";
+import { checkOrigin } from "./routes.auth.js";
 import type { ChatMode } from "../domain/chat.js";
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -16,53 +17,67 @@ function uuid(params: unknown, key = "id"): string {
 }
 
 export function registerRoutes(app: FastifyInstance, ctx: AppContext): void {
-  // ── Чаты ────────────────────────────────────────────────────────────────────
-  app.post("/chat/chats", async (_req, reply) => {
-    reply.status(201);
-    return ctx.manager.createChat();
-  });
+  // ── Чаты пользователя (нужна сессия; всё скоупится по owner) ─────────────────
+  app.register(async (chat) => {
+    chat.addHook("preHandler", requireUser(ctx.apiToken, ctx.auth));
+    const owner = (req: { principal?: { user: { id: string } | null } }): string => req.principal!.user!.id;
 
-  app.get("/chat/chats", async () => ({ items: ctx.manager.listChats() }));
+    chat.post("/chat/chats", async (req, reply) => {
+      checkOrigin(req);
+      reply.status(201);
+      return ctx.manager.createChat(owner(req));
+    });
 
-  app.get("/chat/chats/:id", async (req) => ctx.manager.getChat(uuid(req.params)));
+    chat.get("/chat/chats", async (req) => ({ items: ctx.manager.listChats(owner(req)) }));
 
-  app.patch("/chat/chats/:id", async (req) => {
-    const id = uuid(req.params);
-    const body = (req.body ?? {}) as { title?: unknown; mode?: unknown };
-    if (typeof body.title === "string") ctx.manager.rename(id, body.title);
-    if (body.mode === "normal" || body.mode === "loop") ctx.manager.setMode(id, body.mode as ChatMode);
-    return ctx.manager.getChat(id).chat;
-  });
+    chat.get("/chat/chats/:id", async (req) => ctx.manager.getChat(uuid(req.params), owner(req)));
 
-  app.delete("/chat/chats/:id", async (req) => {
-    ctx.manager.deleteChat(uuid(req.params));
-    return { ok: true };
-  });
-
-  // ── Отправка сообщения (за rate-limit по IP) ────────────────────────────────
-  app.post(
-    "/chat/chats/:id/messages",
-    { config: { rateLimit: { max: () => ctx.configView().rateLimitPerMin, timeWindow: "1 minute" } } },
-    async (req, reply) => {
+    chat.patch("/chat/chats/:id", async (req) => {
+      checkOrigin(req);
       const id = uuid(req.params);
-      const body = (req.body ?? {}) as { content?: unknown };
-      const content = typeof body.content === "string" ? body.content : "";
-      if (!content.trim()) throw new ValidationError("Пустое сообщение");
-      const assistant = ctx.manager.send(id, content);
-      reply.status(202);
-      return { id: assistant.id, status: assistant.status };
-    },
-  );
+      const body = (req.body ?? {}) as { title?: unknown; mode?: unknown };
+      if (typeof body.title === "string") ctx.manager.rename(id, owner(req), body.title);
+      if (body.mode === "normal" || body.mode === "loop") ctx.manager.setMode(id, owner(req), body.mode as ChatMode);
+      return ctx.manager.getChat(id, owner(req)).chat;
+    });
 
-  // Поллинг одного сообщения (пока pending).
-  app.get("/chat/messages/:id", async (req) => ctx.manager.getMessage(uuid(req.params)));
+    chat.delete("/chat/chats/:id", async (req) => {
+      checkOrigin(req);
+      ctx.manager.deleteChat(uuid(req.params), owner(req));
+      return { ok: true };
+    });
 
-  // ── Админка (bearer) ────────────────────────────────────────────────────────
-  const admin = { preHandler: requireAdmin(ctx) };
+    chat.post(
+      "/chat/chats/:id/messages",
+      { config: { rateLimit: { max: () => ctx.configView().rateLimitPerMin, timeWindow: "1 minute" } } },
+      async (req, reply) => {
+        checkOrigin(req);
+        const id = uuid(req.params);
+        const body = (req.body ?? {}) as { content?: unknown };
+        const content = typeof body.content === "string" ? body.content : "";
+        if (!content.trim()) throw new ValidationError("Пустое сообщение");
+        const assistant = ctx.manager.send(id, owner(req), content);
+        reply.status(202);
+        return { id: assistant.id, status: assistant.status };
+      },
+    );
 
-  app.get("/chat/admin/config", admin, async () => ctx.configView());
+    chat.get("/chat/messages/:id", async (req) => ctx.manager.getMessage(uuid(req.params), owner(req)));
+  });
 
-  app.get("/chat/admin/chats", admin, async () => ({ items: ctx.manager.listChats() }));
+  // ── Админка (роль is_admin или break-glass bearer) ──────────────────────────
+  app.register(async (admin) => {
+    admin.addHook("preHandler", requireAdmin(ctx.apiToken, ctx.auth));
 
-  app.get("/chat/admin/chats/:id", admin, async (req) => ctx.manager.getChat(uuid(req.params)));
+    admin.get("/chat/admin/config", async () => ctx.configView());
+    admin.get("/chat/admin/users", async () => ({ items: ctx.auth.listUsers() }));
+    admin.get("/chat/admin/stats", async () => ctx.manager.adminStats());
+    admin.get("/chat/admin/chats", async () => ({ items: ctx.manager.adminChats() }));
+    admin.get("/chat/admin/chats/:id", async (req) => ctx.manager.adminChatDetail(uuid(req.params)));
+    admin.get("/chat/admin/messages", async (req) => {
+      const q = (req.query ?? {}) as Record<string, unknown>;
+      const alertsOnly = q.alertsOnly === "1" || q.alertsOnly === "true";
+      return { items: ctx.manager.adminMessages(alertsOnly) };
+    });
+  });
 }

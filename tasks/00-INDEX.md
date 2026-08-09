@@ -109,6 +109,7 @@
 | 103 | [LLM Gateway — гардед-прокси перед DeepSeek (День 13)](103-llm-gateway.md) | 26, 88 | [x] |
 | 104 | [Security step в execution loop (День 14)](104-security-step-loop.md) | 103 | [x] |
 | 105 | [FSM-harness на VPS — execution loop через LLM Gateway (День 14, часть 2)](105-vps-harness-fsm.md) | 103, 88 | [x] |
+| 106 | [Авторизация, чаты per-user, админ-логи/алерты в чате /chat/](106-chat-auth-users.md) | 105 | [x] |
 
 ## Рекомендуемый порядок
 

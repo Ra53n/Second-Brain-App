@@ -5,6 +5,8 @@ import { loadConfig } from "./config.js";
 import { fastifyLoggerOptions } from "./logger.js";
 import { openDb } from "./store/db.js";
 import { ChatsRepo } from "./store/chatsRepo.js";
+import { UsersRepo } from "./store/usersRepo.js";
+import { AuthService } from "./auth/authService.js";
 import { GatewayClient } from "./run/gwClient.js";
 import { ChatManager } from "./run/chatManager.js";
 import { buildApp } from "./http/app.js";
@@ -21,10 +23,13 @@ async function main(): Promise<void> {
   const db = openDb(cfg.dbPath);
 
   const repo = new ChatsRepo(db);
+  const usersRepo = new UsersRepo(db);
+  const auth = new AuthService(usersRepo, cfg.adminUser);
   const gateway = new GatewayClient(cfg.gwUrl);
   const manager = new ChatManager({ repo, gateway, canary: cfg.canary });
 
   const recovered = manager.recoverOnBoot();
+  usersRepo.deleteExpiredSessions(new Date().toISOString());
 
   const configView = (): AgentConfigView => ({
     version: CHAT_VERSION,
@@ -41,7 +46,14 @@ async function main(): Promise<void> {
     systemPromptPreview: SECURITY_DIRECTIVE,
   });
 
-  const ctx: AppContext = { repo, manager, apiToken: cfg.apiToken, configView };
+  const ctx: AppContext = {
+    repo,
+    manager,
+    auth,
+    apiToken: cfg.apiToken,
+    sessionSecret: cfg.sessionSecret,
+    configView,
+  };
   const app = await buildApp(ctx, { logger: fastifyLoggerOptions(cfg.logLevel) });
 
   await app.listen({ host: cfg.host, port: cfg.port });

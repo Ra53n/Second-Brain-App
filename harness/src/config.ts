@@ -13,6 +13,8 @@ import { ConfigError } from "./domain/errors.js";
 
 export interface BootstrapConfig {
   apiToken: string;
+  sessionSecret: string;
+  adminUser: string;
   host: string;
   port: number;
   dbPath: string;
@@ -29,12 +31,21 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): BootstrapConfi
         "(deploy.sh генерирует его при первой установке).",
     );
   }
+  const sessionSecret = (env.SESSION_SECRET ?? "").trim();
+  if (sessionSecret.length < 16) {
+    throw new ConfigError(
+      "Не задан SESSION_SECRET (мин. 16 символов). Добавь его в /etc/llm-harness.env — " +
+        "секрет для подписи cookie-сессий (deploy.sh генерирует его при первой установке).",
+    );
+  }
   const port = Number.parseInt(env.HARNESS_PORT ?? "3500", 10);
   if (!Number.isInteger(port) || port <= 0 || port > 65535) {
     throw new ConfigError(`Некорректный HARNESS_PORT: ${env.HARNESS_PORT}`);
   }
   return {
     apiToken,
+    sessionSecret,
+    adminUser: (env.HARNESS_ADMIN_USER ?? "").trim(),
     host: (env.HARNESS_HOST ?? "127.0.0.1").trim(),
     port,
     dbPath: (env.HARNESS_DB_PATH ?? "/opt/llm-harness/data/harness.db").trim(),
