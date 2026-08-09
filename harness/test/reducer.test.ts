@@ -8,7 +8,6 @@ function ctx(over: Partial<RunContext> = {}): RunContext {
   return {
     id: "r1",
     taskPrompt: "сделай",
-    secure: true,
     state: "generating",
     status: "running",
     round: 1,

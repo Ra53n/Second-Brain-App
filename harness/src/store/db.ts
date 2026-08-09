@@ -9,50 +9,36 @@ export type DB = Database.Database;
 
 /** SQL-миграции по порядку. Индекс + 1 = целевая user_version. */
 const MIGRATIONS: string[] = [
-  // ── v1: прогоны FSM + журнал фаз ────────────────────────────────────────────
+  // ── v1: чаты + сообщения ─────────────────────────────────────────────────────
   `
-  -- Один прогон execution loop = одна строка. ctx_json — весь RunContext целиком.
-  CREATE TABLE runs (
+  -- Чат = диалог. Активный чат на сервере не храним (помнит клиент).
+  CREATE TABLE chats (
     id           TEXT PRIMARY KEY,
+    title        TEXT NOT NULL DEFAULT 'Новый чат',
+    mode         TEXT NOT NULL DEFAULT 'normal',   -- normal | loop
     created_at   TEXT NOT NULL,
-    updated_at   TEXT NOT NULL,
-    task_id      TEXT NOT NULL DEFAULT '',
-    task_title   TEXT NOT NULL DEFAULT '',
-    state        TEXT NOT NULL DEFAULT 'generating',
-    status       TEXT NOT NULL DEFAULT 'running',
-    outcome      TEXT NOT NULL DEFAULT '',
-    round        INTEGER NOT NULL DEFAULT 1,
-    secure       INTEGER NOT NULL DEFAULT 1,
-    pwned        INTEGER NOT NULL DEFAULT 0,
-    cost_usd     REAL NOT NULL DEFAULT 0,
-    generation   INTEGER NOT NULL DEFAULT 0,
-    ctx_json     TEXT NOT NULL DEFAULT '{}'
+    updated_at   TEXT NOT NULL
   );
 
-  CREATE INDEX idx_runs_created ON runs (created_at DESC);
+  CREATE INDEX idx_chats_updated ON chats (updated_at DESC);
 
-  -- Журнал фаз: по строке на каждый шаг. Секреты не пишем — только маскированные
-  -- превью и метаданные (что поймал security step / что поймал gateway).
-  CREATE TABLE steps (
-    id            INTEGER PRIMARY KEY AUTOINCREMENT,
-    run_id        TEXT NOT NULL,
-    created_at    TEXT NOT NULL,
-    round         INTEGER NOT NULL DEFAULT 0,
-    phase         TEXT NOT NULL DEFAULT '',
-    display       TEXT NOT NULL DEFAULT '',
-    prompt_preview TEXT NOT NULL DEFAULT '',
-    answer_preview TEXT NOT NULL DEFAULT '',
-    findings_json TEXT NOT NULL DEFAULT '[]',
-    gateway_json  TEXT NOT NULL DEFAULT '{}',
-    egress_json   TEXT NOT NULL DEFAULT '[]',
-    pwned         INTEGER NOT NULL DEFAULT 0,
-    cost_usd      REAL NOT NULL DEFAULT 0
+  -- Сообщение чата. У loop-ответа loop_json — компактный трейс фаз + метаданные
+  -- (что поймал security step / gateway). Секреты не пишем — превью маскированы.
+  CREATE TABLE messages (
+    id           TEXT PRIMARY KEY,
+    chat_id      TEXT NOT NULL,
+    seq          INTEGER NOT NULL,
+    role         TEXT NOT NULL DEFAULT 'assistant', -- user | assistant
+    content      TEXT NOT NULL DEFAULT '',
+    status       TEXT NOT NULL DEFAULT 'done',      -- done | pending | failed
+    generation   INTEGER NOT NULL DEFAULT 0,        -- защита от гонок фонового прогона
+    error_text   TEXT,
+    loop_json    TEXT,                              -- null у обычных; трейс у loop-ответа
+    created_at   TEXT NOT NULL
   );
 
-  CREATE INDEX idx_steps_run ON steps (run_id, id);
+  CREATE INDEX idx_messages_chat ON messages (chat_id, seq);
   `,
-  // ── v2: журнал замечаний корректности в шаге (переход на LLM-only loop) ──────
-  `ALTER TABLE steps ADD COLUMN correctness_json TEXT NOT NULL DEFAULT '[]';`,
 ];
 
 function migrate(db: DB): void {

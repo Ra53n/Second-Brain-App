@@ -1,86 +1,68 @@
-// routes.ts — публичный запуск прогонов чата (за rate-limit) + админка по bearer.
+// routes.ts — CRUD чатов, отправка сообщений (за rate-limit), поллинг ответа;
+// админка по bearer (журнал чатов/сообщений + настройки агента).
 
 import type { FastifyInstance } from "fastify";
 import type { AppContext } from "./context.js";
-import { ValidationError, NotFoundError } from "../domain/errors.js";
+import { ValidationError } from "../domain/errors.js";
 import { requireAdmin } from "./authMiddleware.js";
-
-interface StartBody {
-  prompt?: unknown;
-  secure?: unknown;
-}
+import type { ChatMode } from "../domain/chat.js";
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-/** id прогонов рождаются только из randomUUID; ранняя проверка формата. */
-function runId(params: unknown): string {
-  const id = (params as { id?: string }).id ?? "";
-  if (!UUID_RE.test(id)) throw new ValidationError("Некорректный id прогона");
-  return id;
-}
-
-function publicRun(repo: AppContext["repo"], id: string): Record<string, unknown> {
-  const ctx = repo.load(id);
-  if (!ctx) throw new NotFoundError("Прогон не найден");
-  return {
-    id: ctx.id,
-    taskPrompt: ctx.taskPrompt,
-    state: ctx.state,
-    status: ctx.status,
-    outcome: ctx.outcome,
-    round: ctx.round,
-    maxRounds: ctx.maxRounds,
-    secure: ctx.secure,
-    result: ctx.status === "finished" && ctx.outcome === "done" ? ctx.result : "",
-    correctness: ctx.correctness,
-    findings: ctx.findings,
-    warnings: ctx.warnings,
-    pwned: ctx.pwned,
-    costUsd: ctx.costUsd,
-    errorText: ctx.errorText,
-  };
+function uuid(params: unknown, key = "id"): string {
+  const v = (params as Record<string, string>)[key] ?? "";
+  if (!UUID_RE.test(v)) throw new ValidationError("Некорректный идентификатор");
+  return v;
 }
 
 export function registerRoutes(app: FastifyInstance, ctx: AppContext): void {
-  // ── Запуск прогона (за rate-limit по IP) ────────────────────────────────────
+  // ── Чаты ────────────────────────────────────────────────────────────────────
+  app.post("/chat/chats", async (_req, reply) => {
+    reply.status(201);
+    return ctx.manager.createChat();
+  });
+
+  app.get("/chat/chats", async () => ({ items: ctx.manager.listChats() }));
+
+  app.get("/chat/chats/:id", async (req) => ctx.manager.getChat(uuid(req.params)));
+
+  app.patch("/chat/chats/:id", async (req) => {
+    const id = uuid(req.params);
+    const body = (req.body ?? {}) as { title?: unknown; mode?: unknown };
+    if (typeof body.title === "string") ctx.manager.rename(id, body.title);
+    if (body.mode === "normal" || body.mode === "loop") ctx.manager.setMode(id, body.mode as ChatMode);
+    return ctx.manager.getChat(id).chat;
+  });
+
+  app.delete("/chat/chats/:id", async (req) => {
+    ctx.manager.deleteChat(uuid(req.params));
+    return { ok: true };
+  });
+
+  // ── Отправка сообщения (за rate-limit по IP) ────────────────────────────────
   app.post(
-    "/chat/runs",
+    "/chat/chats/:id/messages",
     { config: { rateLimit: { max: () => ctx.configView().rateLimitPerMin, timeWindow: "1 minute" } } },
     async (req, reply) => {
-      const body = (req.body ?? {}) as StartBody;
-      const prompt = typeof body.prompt === "string" ? body.prompt : "";
-      if (!prompt.trim()) throw new ValidationError("Пустой промпт");
-      const run = ctx.manager.start({
-        prompt,
-        secure: typeof body.secure === "boolean" ? body.secure : undefined,
-      });
+      const id = uuid(req.params);
+      const body = (req.body ?? {}) as { content?: unknown };
+      const content = typeof body.content === "string" ? body.content : "";
+      if (!content.trim()) throw new ValidationError("Пустое сообщение");
+      const assistant = ctx.manager.send(id, content);
       reply.status(202);
-      return { id: run.id, state: run.state, status: run.status };
+      return { id: assistant.id, status: assistant.status };
     },
   );
 
-  app.get("/chat/runs/:id", async (req) => {
-    const id = runId(req.params);
-    return { run: publicRun(ctx.repo, id), steps: ctx.repo.steps(id) };
-  });
-
-  app.post("/chat/runs/:id/resume", async (req) => {
-    const run = ctx.manager.resume(runId(req.params));
-    return { id: run.id, state: run.state, status: run.status };
-  });
+  // Поллинг одного сообщения (пока pending).
+  app.get("/chat/messages/:id", async (req) => ctx.manager.getMessage(uuid(req.params)));
 
   // ── Админка (bearer) ────────────────────────────────────────────────────────
   const admin = { preHandler: requireAdmin(ctx) };
 
   app.get("/chat/admin/config", admin, async () => ctx.configView());
 
-  app.get("/chat/admin/runs", admin, async (req) => {
-    const limit = Number((req.query as Record<string, unknown>)?.limit ?? 100);
-    return { items: ctx.repo.listRuns(Number.isFinite(limit) ? limit : 100) };
-  });
+  app.get("/chat/admin/chats", admin, async () => ({ items: ctx.manager.listChats() }));
 
-  app.get("/chat/admin/runs/:id/steps", admin, async (req) => {
-    const id = runId(req.params);
-    return { run: publicRun(ctx.repo, id), steps: ctx.repo.steps(id) };
-  });
+  app.get("/chat/admin/chats/:id", admin, async (req) => ctx.manager.getChat(uuid(req.params)));
 }

@@ -3,7 +3,7 @@
 import { describe, it, expect } from "vitest";
 import { sanitizeUntrusted, SECURITY_DIRECTIVE } from "../src/guard/security.js";
 import { neutralize, secretVariants } from "../src/guard/egress.js";
-import { parseCorrectness, parseFindings, securityPreamble } from "../src/fsm/prompts.js";
+import { parseCorrectness, parseFindings, securityPreamble, buildDialog } from "../src/fsm/prompts.js";
 
 describe("sanitizeUntrusted", () => {
   it("режет невидимые символы", () => {
@@ -101,12 +101,35 @@ describe("parseFindings", () => {
 });
 
 describe("securityPreamble", () => {
-  it("secure=true включает директиву и канарейку", () => {
-    const p = securityPreamble("CANARY_XYZ", true);
+  it("включает директиву и канарейку", () => {
+    const p = securityPreamble("CANARY_XYZ");
     expect(p).toContain(SECURITY_DIRECTIVE.slice(0, 20));
     expect(p).toContain("CANARY_XYZ");
   });
-  it("secure=false → пустая преамбула (baseline)", () => {
-    expect(securityPreamble("CANARY_XYZ", false)).toBe("");
+  it("без канарейки — только директива", () => {
+    expect(securityPreamble("")).toContain(SECURITY_DIRECTIVE.slice(0, 20));
+  });
+});
+
+describe("buildDialog", () => {
+  const m = (role: "user" | "assistant", content: string, status: "done" | "pending" | "failed" = "done") => ({ role, content, status });
+  it("сериализует историю с ролями", () => {
+    const d = buildDialog([m("user", "привет"), m("assistant", "здравствуй")]);
+    expect(d).toContain("Пользователь: привет");
+    expect(d).toContain("Ассистент: здравствуй");
+  });
+  it("пропускает pending и пустые", () => {
+    const d = buildDialog([m("user", "a"), m("assistant", "", "pending"), m("assistant", "  ")]);
+    expect(d).toContain("Пользователь: a");
+    expect(d).not.toContain("Ассистент:");
+  });
+  it("усечение окном по количеству", () => {
+    const many = Array.from({ length: 10 }, (_, i) => m("user", "m" + i));
+    const d = buildDialog(many, 3);
+    expect(d).toContain("m9");
+    expect(d).not.toContain("m6");
+  });
+  it("пустая история → пустая строка", () => {
+    expect(buildDialog([])).toBe("");
   });
 });

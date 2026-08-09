@@ -7,8 +7,7 @@ import type { AppContext } from "./context.js";
 import { AppError } from "../domain/errors.js";
 import { registerRoutes } from "./routes.js";
 import { registerWebRoutes } from "../web/index.js";
-
-export const CHAT_VERSION = "0.2.0";
+import { CHAT_VERSION } from "./version.js";
 
 export interface BuildAppOptions {
   logger?: FastifyServerOptions["logger"];

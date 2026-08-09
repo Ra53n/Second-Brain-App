@@ -48,13 +48,12 @@ export interface CorrectnessVerdict {
 }
 
 /**
- * Весь стейт прогона в одной структуре — персистится целиком. Снисходительный
- * декодер живёт в store/runsRepo.
+ * Стейт прогона loop в одной структуре (в памяти, на время фонового прогона
+ * сообщения). Трейс фаз пишется в store/chatsRepo (message.loop_json).
  */
 export interface RunContext {
   id: string;
   taskPrompt: string;
-  secure: boolean;
 
   state: RunState;
   status: RunStatus;

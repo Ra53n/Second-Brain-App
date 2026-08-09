@@ -1,13 +1,15 @@
-// orchestrator.ts — цикл execution loop (I/O-слой). Каждая фаза — один вызов
-// gateway (/gw/chat); своего LLM-ключа у чата нет. Дисциплина: все переходы — в
-// редьюсере; здесь только LLM, egress-guard, детект канарейки, persist и защита
-// поколением. Порт ChatViewModel+AgentRun на сервер, без исполнения кода.
+// orchestrator.ts — прогон execution loop для ОДНОГО сообщения чата. Каждая фаза —
+// вызов gateway (/gw/chat); своего LLM-ключа у чата нет. Пишет компактный трейс фаз
+// в message.loop_json, финальный результат — в message.content. Дисциплина как в
+// ChatViewModel+AgentRun: переходы только в редьюсере, egress + детект канарейки на
+// каждом ответе, защита поколением после каждого await.
 
 import { apply } from "../fsm/reducer.js";
 import {
   buildGenerationPrompt,
   buildVerifyPrompt,
   buildSecurityPrompt,
+  buildNormalPrompt,
   parseCorrectness,
   parseFindings,
   JSON_RETRY,
@@ -15,67 +17,158 @@ import {
 import type { CorrectnessVerdict, Finding, PhaseEvent, RunContext } from "../fsm/types.js";
 import { neutralize } from "../guard/egress.js";
 import type { GatewayClient, GatewayMeta, GatewayReply } from "./gwClient.js";
-import type { RunsRepo, StepRow } from "../store/runsRepo.js";
+import type { LoopPhase, LoopTrace } from "../domain/chat.js";
+import type { ChatsRepo } from "../store/chatsRepo.js";
 
 export interface OrchestratorDeps {
-  repo: RunsRepo;
+  repo: ChatsRepo;
   gateway: GatewayClient;
   canary: string;
 }
 
-function mask(text: string, secrets: string[]): string {
-  let out = text;
-  for (const s of secrets) if (s) out = out.split(s).join("[REDACTED]");
-  return out;
-}
-
-function preview(text: string, limit = 800): string {
-  return text.length <= limit ? text : `${text.slice(0, limit)}…`;
-}
+const MAX_ROUNDS = 4;
 
 const detectCanary = (answer: string, canary: string): boolean => canary.length > 0 && answer.includes(canary);
 
-/** Один прогон целиком: крутит фазы до терминала/паузы. Наружу не бросает. */
-export async function runToCompletion(deps: OrchestratorDeps, runId: string, generation: number): Promise<void> {
-  const { repo } = deps;
-  const first = repo.load(runId);
-  if (!first || first.status !== "running") return;
+function freshContext(msgId: string, userText: string, startedAt: string): RunContext {
+  return {
+    id: msgId,
+    taskPrompt: userText,
+    state: "generating",
+    status: "running",
+    round: 1,
+    maxRounds: MAX_ROUNDS,
+    result: "",
+    correctness: null,
+    findings: [],
+    warnings: [],
+    feedback: "",
+    outcome: null,
+    errorText: null,
+    pwned: false,
+    costUsd: 0,
+    startedAt,
+  };
+}
+
+function finalContent(ctx: RunContext): string {
+  switch (ctx.outcome) {
+    case "gateway-blocked":
+      return "Запрос заблокирован выходной защитой gateway.";
+    case "verdict-unparsed":
+      return ctx.result || "Не удалось завершить проверку результата.";
+    case "stopped-limit":
+      return (ctx.result || "Результат не готов.") + "\n\n_(Проверки не сошлись за лимит кругов — показан последний вариант.)_";
+    default:
+      return ctx.result;
+  }
+}
+
+/** Прогоняет loop для сообщения msgId. Наружу не бросает. */
+export async function runLoopForMessage(
+  deps: OrchestratorDeps,
+  msgId: string,
+  userText: string,
+  dialog: string,
+  startedAt: string,
+  generation: number,
+): Promise<void> {
+  let ctx = freshContext(msgId, userText, startedAt);
+  const phases: LoopPhase[] = [];
+
+  const trace = (): LoopTrace => ({ rounds: ctx.round, outcome: ctx.outcome, pwned: ctx.pwned, costUsd: ctx.costUsd, phases });
 
   while (true) {
-    const ctx = repo.load(runId);
-    if (!ctx || ctx.status !== "running") return;
+    if (deps.repo.generationOf(msgId) !== generation) return;
 
-    let phase: { event: PhaseEvent; step: Omit<StepRow, "runId"> } | null;
+    let res: { event: PhaseEvent; phase: LoopPhase } | null;
     try {
-      phase = await runPhase(deps, ctx, generation);
+      res = await runPhase(deps, ctx, dialog, generation);
     } catch (err) {
-      fail(repo, runId, generation, (err as Error).message);
+      // Сбой фазы (напр. 502 gateway под нагрузкой): не теряем работу — если уже
+      // есть сгенерированный результат, показываем его как done с пометкой; иначе failed.
+      const note = "\n\n_(Проверки не завершились: " + (err as Error).message + ")_";
+      if (ctx.result) {
+        deps.repo.updateMessage(msgId, generation, { content: ctx.result + note, status: "done", loop: trace() });
+      } else {
+        deps.repo.updateMessage(msgId, generation, { status: "failed", errorText: (err as Error).message, loop: trace() });
+      }
       return;
     }
-    if (phase === null) return; // поколение устарело
+    if (res === null) return; // поколение устарело
+    if (deps.repo.generationOf(msgId) !== generation) return;
 
-    if (repo.generationOf(runId) !== generation) return;
-    const fresh = repo.load(runId);
-    if (!fresh || fresh.status !== "running") return;
+    const outcome = apply(ctx, res.event);
+    ctx = outcome.ctx;
+    if (res.phase.pwned) ctx.pwned = true;
+    phases.push({ ...res.phase, display: outcome.display });
 
-    const outcome = apply(fresh, phase.event);
-    outcome.ctx.costUsd = fresh.costUsd + phase.step.costUsd;
-    if (phase.step.pwned) outcome.ctx.pwned = true;
-    repo.addStep({ runId, ...phase.step, display: outcome.display });
-
-    if (!repo.save(outcome.ctx, generation)) return;
-    if (outcome.isTerminal) return;
+    if (outcome.isTerminal) {
+      deps.repo.updateMessage(msgId, generation, { content: finalContent(ctx), status: "done", loop: trace() });
+      return;
+    }
+    // прогресс: обновляем трейс, статус остаётся pending
+    if (!deps.repo.updateMessage(msgId, generation, { status: "pending", loop: trace() })) return;
   }
+}
+
+/** Обычный режим: один вызов gateway с историей, egress, запись ответа. */
+export async function runNormalForMessage(
+  deps: OrchestratorDeps,
+  msgId: string,
+  userText: string,
+  dialog: string,
+  generation: number,
+): Promise<void> {
+  const prompt = buildNormalPrompt(dialog, userText, deps.canary);
+  let reply: GatewayReply;
+  try {
+    reply = await deps.gateway.chat(prompt);
+  } catch (err) {
+    deps.repo.updateMessage(msgId, generation, { status: "failed", errorText: (err as Error).message });
+    return;
+  }
+  if (deps.repo.generationOf(msgId) !== generation) return;
+
+  const pwned = detectCanary(reply.answer, deps.canary);
+  const guarded = neutralize(reply.answer, [deps.canary].filter(Boolean));
+  const meta: GatewayMeta = reply.meta ?? {};
+  const content = reply.blocked ? "Запрос заблокирован выходной защитой gateway." : guarded.text;
+  // У обычного ответа тоже кладём мини-трейс: что поймал gateway на этом вызове.
+  const loop: LoopTrace = {
+    rounds: 1,
+    outcome: reply.blocked ? "gateway-blocked" : "done",
+    pwned,
+    costUsd: meta.costUsd ?? 0,
+    phases: [
+      {
+        phase: "generating",
+        round: 1,
+        display: "Ответ готов.",
+        findings: [],
+        correctnessIssues: [],
+        gateway: {
+          inputAction: meta.inputAction ?? null,
+          findingTypes: [...new Set((meta.findings ?? []).map((f) => f.type ?? "?"))],
+          outputVerdict: meta.outputVerdict ?? null,
+          blocked: reply.blocked,
+        },
+        pwned,
+      },
+    ],
+  };
+  deps.repo.updateMessage(msgId, generation, { content, status: "done", loop });
 }
 
 async function runPhase(
   deps: OrchestratorDeps,
   ctx: RunContext,
+  dialog: string,
   generation: number,
-): Promise<{ event: PhaseEvent; step: Omit<StepRow, "runId"> } | null> {
+): Promise<{ event: PhaseEvent; phase: LoopPhase } | null> {
   switch (ctx.state) {
     case "generating":
-      return phaseGenerate(deps, ctx, generation);
+      return phaseGenerate(deps, ctx, dialog, generation);
     case "verifying":
       return phaseVerify(deps, ctx, generation);
     case "securityReview":
@@ -85,8 +178,8 @@ async function runPhase(
   }
 }
 
-async function phaseGenerate(deps: OrchestratorDeps, ctx: RunContext, generation: number) {
-  const prompt = buildGenerationPrompt(ctx, deps.canary);
+async function phaseGenerate(deps: OrchestratorDeps, ctx: RunContext, dialog: string, generation: number) {
+  const prompt = buildGenerationPrompt(ctx, deps.canary, dialog);
   const reply = await deps.gateway.chat(prompt);
   if (deps.repo.generationOf(ctx.id) !== generation) return null;
 
@@ -96,19 +189,16 @@ async function phaseGenerate(deps: OrchestratorDeps, ctx: RunContext, generation
   const result = reply.blocked ? null : guarded.text;
 
   const event: PhaseEvent = { kind: "generated", result, gatewayBlocked: reply.blocked };
-  return { event, step: stepOf("generating", ctx, prompt, guarded.text, secrets, reply, guarded.blocked, pwned, [], []) };
+  return { event, phase: phaseOf("generating", ctx, reply, pwned, [], []) };
 }
 
 async function phaseVerify(deps: OrchestratorDeps, ctx: RunContext, generation: number) {
   let prompt = buildVerifyPrompt(ctx, deps.canary);
-  const secrets = [deps.canary].filter(Boolean);
   let verdict: CorrectnessVerdict | null = null;
   let blocked = false;
   let reply: GatewayReply | null = null;
   let pwned = false;
 
-  let egressBlocked: string[] = [];
-  let answerText = "";
   for (let attempt = 0; attempt < 2; attempt++) {
     reply = await deps.gateway.chat(prompt);
     if (deps.repo.generationOf(ctx.id) !== generation) return null;
@@ -117,30 +207,23 @@ async function phaseVerify(deps: OrchestratorDeps, ctx: RunContext, generation: 
       break;
     }
     if (detectCanary(reply.answer, deps.canary)) pwned = true;
-    // Egress-guard на КАЖДОМ ответе модели (контракт egress.ts), даже на вердикте.
-    const guarded = neutralize(reply.answer, secrets);
-    answerText = guarded.text;
-    egressBlocked = guarded.blocked;
     verdict = parseCorrectness(reply.answer);
     if (verdict !== null) break;
     prompt = prompt + JSON_RETRY;
   }
 
   const event: PhaseEvent = { kind: "verified", verdict, gatewayBlocked: blocked };
-  const corrIssues = verdict && !verdict.correct ? verdict.issues.map((i) => ({ severity: "info", issue: i })) : [];
-  return { event, step: stepOf("verifying", ctx, prompt, answerText, secrets, reply, egressBlocked, pwned, [], corrIssues) };
+  const issues = verdict && !verdict.correct ? verdict.issues : [];
+  return { event, phase: phaseOf("verifying", ctx, reply, pwned, [], issues) };
 }
 
 async function phaseReview(deps: OrchestratorDeps, ctx: RunContext, generation: number) {
   let prompt = buildSecurityPrompt(ctx, deps.canary);
-  const secrets = [deps.canary].filter(Boolean);
   let findings: Finding[] | null = null;
   let blocked = false;
   let reply: GatewayReply | null = null;
   let pwned = false;
 
-  let egressBlocked: string[] = [];
-  let answerText = "";
   for (let attempt = 0; attempt < 2; attempt++) {
     reply = await deps.gateway.chat(prompt);
     if (deps.repo.generationOf(ctx.id) !== generation) return null;
@@ -149,53 +232,36 @@ async function phaseReview(deps: OrchestratorDeps, ctx: RunContext, generation: 
       break;
     }
     if (detectCanary(reply.answer, deps.canary)) pwned = true;
-    const guarded = neutralize(reply.answer, secrets);
-    answerText = guarded.text;
-    egressBlocked = guarded.blocked;
     findings = parseFindings(reply.answer);
     if (findings !== null) break;
     prompt = prompt + JSON_RETRY;
   }
 
   const event: PhaseEvent = { kind: "reviewed", findings, gatewayBlocked: blocked };
-  return { event, step: stepOf("securityReview", ctx, prompt, answerText, secrets, reply, egressBlocked, pwned, findings ?? [], []) };
+  return { event, phase: phaseOf("securityReview", ctx, reply, pwned, findings ?? [], []) };
 }
 
-function stepOf(
+function phaseOf(
   phase: string,
   ctx: RunContext,
-  prompt: string,
-  answerText: string,
-  secrets: string[],
   reply: GatewayReply | null,
-  egress: string[],
   pwned: boolean,
   findings: Finding[],
-  correctnessIssues: Array<{ severity: string; issue: string }>,
-): Omit<StepRow, "runId"> {
+  correctnessIssues: string[],
+): LoopPhase {
   const meta: GatewayMeta = reply?.meta ?? {};
   return {
-    round: ctx.round,
     phase,
+    round: ctx.round,
     display: "",
-    promptPreview: preview(mask(prompt, secrets)),
-    answerPreview: preview(mask(answerText, secrets)),
     findings,
     correctnessIssues,
     gateway: {
       inputAction: meta.inputAction ?? null,
-      outputVerdict: meta.outputVerdict ?? null,
       findingTypes: [...new Set((meta.findings ?? []).map((f) => f.type ?? "?"))],
+      outputVerdict: meta.outputVerdict ?? null,
       blocked: reply?.blocked ?? false,
     },
-    egress,
     pwned,
-    costUsd: meta.costUsd ?? 0,
   };
-}
-
-function fail(repo: RunsRepo, runId: string, generation: number, message: string): void {
-  const ctx = repo.load(runId);
-  if (!ctx) return;
-  repo.save({ ...ctx, status: "failed", errorText: message }, generation);
 }

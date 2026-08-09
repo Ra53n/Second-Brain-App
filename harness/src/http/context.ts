@@ -1,7 +1,7 @@
 // context.ts — зависимости, которые видят маршруты.
 
-import type { RunsRepo } from "../store/runsRepo.js";
-import type { RunManager } from "../run/manager.js";
+import type { ChatsRepo } from "../store/chatsRepo.js";
+import type { ChatManager } from "../run/chatManager.js";
 
 /** Публичный снимок настроек агента для админки (без секретных значений). */
 export interface AgentConfigView {
@@ -9,17 +9,17 @@ export interface AgentConfigView {
   gwUrl: string;
   model: string;
   loop: string; // человекочитаемая схема цикла
+  modes: string; // доступные режимы чата
   maxRounds: number;
-  defaultSecure: boolean;
+  historyWindow: number;
   rateLimitPerMin: number;
-  dailyLimit: number;
   canaryEnabled: boolean;
   systemPromptPreview: string;
 }
 
 export interface AppContext {
-  repo: RunsRepo;
-  manager: RunManager;
+  repo: ChatsRepo;
+  manager: ChatManager;
   apiToken: string;
   configView: () => AgentConfigView;
 }

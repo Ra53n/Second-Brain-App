@@ -27,14 +27,20 @@ const MAX_RETRIES = 5;
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
 export class GatewayClient {
+  private readonly maxRetries: number;
+
   constructor(
     private readonly baseUrl: string,
     private readonly fetchImpl: typeof fetch = fetch,
-  ) {}
+    maxRetries: number = MAX_RETRIES,
+  ) {
+    // >=1 попытка всегда; в тестах передаём 0 → одна попытка без backoff.
+    this.maxRetries = maxRetries < 1 ? 1 : maxRetries;
+  }
 
   async chat(prompt: string): Promise<GatewayReply> {
     let lastErr = "нет ответа";
-    for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
+    for (let attempt = 0; attempt < this.maxRetries; attempt++) {
       const ctl = new AbortController();
       const timer = setTimeout(() => ctl.abort(), HTTP_TIMEOUT_MS);
       try {
@@ -74,11 +80,11 @@ export class GatewayClient {
       } catch (err) {
         if (err instanceof UpstreamError) throw err;
         lastErr = (err as Error).message;
-        await sleep(5000 * (attempt + 1));
+        if (attempt < this.maxRetries - 1) await sleep(5000 * (attempt + 1));
       } finally {
         clearTimeout(timer);
       }
     }
-    throw new UpstreamError(`gateway недоступен после ${MAX_RETRIES} попыток: ${lastErr}`);
+    throw new UpstreamError(`gateway недоступен после ${this.maxRetries} попыток: ${lastErr}`);
   }
 }
