@@ -120,7 +120,7 @@ export async function runNormalForMessage(
   dialog: string,
   generation: number,
 ): Promise<void> {
-  const prompt = buildNormalPrompt(dialog, userText, deps.canary);
+  const prompt = buildNormalPrompt(dialog, userText);
   let reply: GatewayReply;
   try {
     reply = await deps.gateway.chat(prompt);
@@ -179,7 +179,7 @@ async function runPhase(
 }
 
 async function phaseGenerate(deps: OrchestratorDeps, ctx: RunContext, dialog: string, generation: number) {
-  const prompt = buildGenerationPrompt(ctx, deps.canary, dialog);
+  const prompt = buildGenerationPrompt(ctx, dialog);
   const reply = await deps.gateway.chat(prompt);
   if (deps.repo.generationOf(ctx.id) !== generation) return null;
 
@@ -193,7 +193,7 @@ async function phaseGenerate(deps: OrchestratorDeps, ctx: RunContext, dialog: st
 }
 
 async function phaseVerify(deps: OrchestratorDeps, ctx: RunContext, generation: number) {
-  let prompt = buildVerifyPrompt(ctx, deps.canary);
+  let prompt = buildVerifyPrompt(ctx);
   let verdict: CorrectnessVerdict | null = null;
   let blocked = false;
   let reply: GatewayReply | null = null;
@@ -218,7 +218,7 @@ async function phaseVerify(deps: OrchestratorDeps, ctx: RunContext, generation: 
 }
 
 async function phaseReview(deps: OrchestratorDeps, ctx: RunContext, generation: number) {
-  let prompt = buildSecurityPrompt(ctx, deps.canary);
+  let prompt = buildSecurityPrompt(ctx);
   let findings: Finding[] | null = null;
   let blocked = false;
   let reply: GatewayReply | null = null;

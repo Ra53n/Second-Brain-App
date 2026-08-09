@@ -84,22 +84,23 @@ export function checkOutput(text: string, opts: OutputGuardOptions = {}): Output
   let result = text;
   let verdict: OutputVerdict = "pass";
 
-  // 1. Утечка системного промпта — блокируем полностью.
+  // 1. Утечка системного промпта — блокируем полностью (реальная атака «покажи промпт»).
   if (detectPromptLeak(text, opts.systemPrompt)) {
     issues.push({ kind: "system_prompt_leak", detail: "ответ содержит фрагмент системного промпта" });
-    verdict = "block";
+    return { verdict: "block", text, issues };
   }
 
-  // 2. Опасные команды — блокируем.
+  // 2. Опасные команды — ВЫРЕЗАЕМ сам вызов, не рушим весь ответ: в чате `curl … | sh`
+  //    и т.п. часто легитимная install-инструкция, а не исполняемая команда.
   for (const c of DANGEROUS_COMMANDS) {
-    if (c.re.test(text)) {
+    const g = new RegExp(c.re.source, c.re.flags.includes("g") ? c.re.flags : c.re.flags + "g");
+    if (g.test(result)) {
+      // Сам вызов в видимый текст не возвращаем; что именно вырезали — только в issues.
+      result = result.replace(g, "[потенциально опасная команда вырезана]");
       issues.push({ kind: "dangerous_command", detail: c.detail });
-      verdict = "block";
+      if (verdict === "pass") verdict = "redact";
     }
   }
-
-  // Ответ уже блокируется — подчищать текст (шаги 3-4) незачем, наружу он не идёт.
-  if (verdict === "block") return { verdict, text, issues };
 
   // 3. Эксфильтрация известного секрета через URL/картинку — вырезаем.
   if (opts.knownSecrets && opts.knownSecrets.length > 0) {

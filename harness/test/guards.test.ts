@@ -3,7 +3,7 @@
 import { describe, it, expect } from "vitest";
 import { sanitizeUntrusted, SECURITY_DIRECTIVE } from "../src/guard/security.js";
 import { neutralize, secretVariants } from "../src/guard/egress.js";
-import { parseCorrectness, parseFindings, securityPreamble, buildDialog } from "../src/fsm/prompts.js";
+import { parseCorrectness, parseFindings, buildDialog } from "../src/fsm/prompts.js";
 
 describe("sanitizeUntrusted", () => {
   it("режет невидимые символы", () => {
@@ -100,14 +100,11 @@ describe("parseFindings", () => {
   });
 });
 
-describe("securityPreamble", () => {
-  it("включает директиву и канарейку", () => {
-    const p = securityPreamble("CANARY_XYZ");
-    expect(p).toContain(SECURITY_DIRECTIVE.slice(0, 20));
-    expect(p).toContain("CANARY_XYZ");
-  });
-  it("без канарейки — только директива", () => {
-    expect(securityPreamble("")).toContain(SECURITY_DIRECTIVE.slice(0, 20));
+describe("SECURITY_DIRECTIVE", () => {
+  it("содержит ключевые правила паритета с приложением", () => {
+    expect(SECURITY_DIRECTIVE).toContain("Иерархия доверия");
+    expect(SECURITY_DIRECTIVE).toContain("Никакой эксфильтрации");
+    expect(SECURITY_DIRECTIVE).toContain(".env");
   });
 });
 

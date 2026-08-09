@@ -72,12 +72,13 @@ describe("GatewayService — input guard в оркестраторе", () => {
 });
 
 describe("GatewayService — output guard, cost, аудит", () => {
-  it("опасная команда в ответе → blocked, ответ подменён", async () => {
+  it("опасная команда в ответе → redact, команда вырезана, ответ отдан", async () => {
     const h = makeService({ answer: "Выполни rm -rf / срочно" });
     const r = await h.svc.chat({ prompt: "почисть диск" });
-    expect(r.blocked).toBe(true);
-    expect(r.outputVerdict).toBe("block");
+    expect(r.blocked).toBe(false);
+    expect(r.outputVerdict).toBe("redact");
     expect(r.answer).not.toContain("rm -rf");
+    expect(r.answer).toContain("вырезана");
   });
 
   it("стоимость считается и попадает в аудит и stats", async () => {
